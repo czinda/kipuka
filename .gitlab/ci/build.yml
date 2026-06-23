@@ -9,7 +9,7 @@
     # Synta repo uses symlinks in asn1/ schemas; Docker builds need this
     GIT_SUBMODULE_STRATEGY: recursive
   before_script:
-    - apt-get update -qq && apt-get install -y -qq libssl-dev pkg-config clang cmake >/dev/null 2>&1 || true
+    - apt-get update -qq && apt-get install -y -qq libssl-dev pkg-config clang cmake libclang-dev libc6-dev >/dev/null 2>&1 || true
     - git config --global core.symlinks true
   cache:
     key: build-${CI_COMMIT_REF_SLUG}
