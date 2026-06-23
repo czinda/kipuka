@@ -59,7 +59,7 @@
       <task name="/distribution/command" role="STANDALONE">
         <params>
           <param name="CMDS_TO_RUN"
-                 value="curl -sSfL https://raw.githubusercontent.com/czinda/kipuka/main/contrib/beaker/setup.sh | bash"/>
+                 value="curl -sSfLk https://gitlab.cee.redhat.com/czinda/kipuka/-/raw/main/contrib/beaker/setup.sh | bash"/>
         </params>
       </task>
 

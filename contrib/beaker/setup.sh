@@ -20,7 +20,7 @@ export LANG=C.UTF-8
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
-KIPUKA_REPO="https://codeberg.org/czinda/kipuka.git"
+KIPUKA_REPO="https://gitlab.cee.redhat.com/czinda/kipuka.git"
 KIPUKA_BRANCH="main"
 KIPUKA_SRC="/opt/kipuka"
 KIPUKA_CONF="/etc/kipuka"
