@@ -44,6 +44,7 @@ mod est;
 mod hsm;
 mod otp;
 mod server;
+mod star;
 mod tls;
 
 pub use self::admin::*;
@@ -57,6 +58,7 @@ pub use self::est::*;
 pub use self::hsm::*;
 pub use self::otp::*;
 pub use self::server::*;
+pub use self::star::*;
 pub use self::tls::*;
 
 // Re-export OcspConfig from the ocsp module for config-level access.
@@ -119,6 +121,10 @@ pub struct Config {
     /// CMP v3 configuration (RFC 9810).  Absent → CMP disabled.
     #[serde(default)]
     pub cmp: Option<CmpConfig>,
+
+    /// STAR certificate configuration (RFC 8739).  Absent → STAR disabled.
+    #[serde(default)]
+    pub star: Option<StarConfig>,
 
     /// OCSP configuration for certificate revocation checking (RFC 6960).
     /// Absent → OCSP checking disabled (RHELBU-3536 R21).
@@ -231,6 +237,11 @@ impl Config {
         // ── CMP ─────────────────────────────────────────────────────────────
         if let Some(ref cmp) = self.cmp {
             let _ = cmp; // No validation needed yet beyond serde
+        }
+
+        // ── STAR ────────────────────────────────────────────────────────────
+        if let Some(ref star) = self.star {
+            star.validate()?;
         }
 
         // ── File path existence checks ───────────────────────────────────────

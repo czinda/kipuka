@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl *)",
+      "Bash(bkr *)",
+      "Bash(glab *)",
+      "Bash(ssh *)",
+      "Bash(cargo *)",
+      "Bash(git *)",
+      "Bash(python3 *)",
+      "Bash(find *)",
+      "Bash(grep *)",
+      "Bash(sed *)"
+    ]
+  }
+}

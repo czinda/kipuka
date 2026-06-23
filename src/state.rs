@@ -56,6 +56,11 @@ pub struct AppState {
     /// layer uses it to validate `Authorization: Negotiate` tokens.
     pub gss_cred: Option<Arc<dyn std::any::Any + Send + Sync>>,
 
+    /// STAR certificate manager (present when `[star]` is enabled).
+    ///
+    /// Manages active STAR orders and their renewal state (RFC 8739).
+    pub star_manager: Option<Arc<crate::star::StarManager>>,
+
     /// Timestamp when the server process started.
     ///
     /// Used for uptime reporting in health endpoints and session
@@ -115,6 +120,10 @@ impl AppState {
             "otp_revoked" => crate::audit::AuditEventType::OtpRevoke,
             "otp_auth_failure" => crate::audit::AuditEventType::AuthFailure,
             "cert_revoked" => crate::audit::AuditEventType::CertRevoke,
+            "star_order_created" | "star_renewal_success" => {
+                crate::audit::AuditEventType::CertIssue
+            }
+            "star_order_cancelled" => crate::audit::AuditEventType::AdminAction,
             _ => crate::audit::AuditEventType::AdminAction,
         };
 
@@ -185,6 +194,7 @@ pub struct AppStateBuilder {
     audit: Option<Arc<AuditState>>,
     ha_manager: Option<Arc<crate::ha::HaManager>>,
     gss_cred: Option<Arc<dyn std::any::Any + Send + Sync>>,
+    star_manager: Option<Arc<crate::star::StarManager>>,
 }
 
 impl AppStateBuilder {
@@ -202,6 +212,7 @@ impl AppStateBuilder {
             audit: None,
             ha_manager: None,
             gss_cred: None,
+            star_manager: None,
         }
     }
 
@@ -260,6 +271,11 @@ impl AppStateBuilder {
         self
     }
 
+    pub fn star_manager(mut self, manager: Arc<crate::star::StarManager>) -> Self {
+        self.star_manager = Some(manager);
+        self
+    }
+
     /// Build the final `AppState`.
     ///
     /// # Panics
@@ -282,6 +298,7 @@ impl AppStateBuilder {
             audit: self.audit.expect("audit is required"),
             ha_manager: self.ha_manager,
             gss_cred: self.gss_cred,
+            star_manager: self.star_manager,
             startup_time: Instant::now(),
         }
     }

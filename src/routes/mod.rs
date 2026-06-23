@@ -21,6 +21,7 @@ pub mod fullcmc;
 pub mod serverkeygen;
 pub mod simpleenroll;
 pub mod simplereenroll;
+pub mod star;
 
 use std::sync::Arc;
 
@@ -65,6 +66,12 @@ use crate::state::AppState;
 ///     certs            GET
 ///     certs/{serial}   GET
 ///     certs/{serial}/revoke POST
+///
+/// /.well-known/est/star/
+///     POST                  Create STAR order (RFC 8739)
+///     {order_id}       GET  Fetch current certificate
+///     {order_id}       DELETE Cancel STAR order
+///     {order_id}/history GET List certificate series
 /// ```
 pub fn build_router(state: Arc<AppState>) -> Router {
     let max_body = state.config.server.max_body_size;
@@ -84,6 +91,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .nest("/admin", admin_routes)
         // CMS-wrapped EST routes (RFC 8295).
         .nest("/.well-known/est/cms", cms_est::cms_est_router())
+        // STAR certificate routes (RFC 8739).
+        .nest("/.well-known/est/star", star::star_router())
         // CMP v3 endpoint (RFC 9810).
         .route("/.well-known/cmp", post(cmp::post_cmp))
         .layer(RequestBodyLimitLayer::new(max_body))

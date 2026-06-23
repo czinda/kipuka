@@ -102,3 +102,38 @@ CREATE TABLE IF NOT EXISTS server_generated_keys (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE INDEX idx_server_generated_keys_enrollment_id ON server_generated_keys (enrollment_id);
+
+-- STAR (Short-Term Automatic Renewal) tables (RFC 8739).
+-- Tracks STAR orders and their automatically renewed certificates.
+
+CREATE TABLE IF NOT EXISTS star_orders (
+    id                    VARCHAR(255) PRIMARY KEY,
+    subject_dn            TEXT         NOT NULL,
+    key_type              VARCHAR(255) NOT NULL,
+    profile               VARCHAR(255) NOT NULL,
+    renewal_interval_secs INT          NOT NULL,
+    lifetime_end          DATETIME(6)  NOT NULL,
+    max_renewals          INT          NOT NULL,
+    current_renewals      INT          NOT NULL DEFAULT 0,
+    status                ENUM('active', 'cancelled', 'completed', 'expired') NOT NULL DEFAULT 'active',
+    requestor_dn          TEXT,
+    ca_id                 VARCHAR(255) NOT NULL,
+    csr_der               LONGBLOB     NOT NULL,
+    created_at            DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    cancelled_at          DATETIME(6)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS star_certificates (
+    id              BIGINT       AUTO_INCREMENT PRIMARY KEY,
+    star_order_id   VARCHAR(255) NOT NULL,
+    serial_number   VARCHAR(255) NOT NULL,
+    certificate_der LONGBLOB     NOT NULL,
+    not_before      DATETIME(6)  NOT NULL,
+    not_after       DATETIME(6)  NOT NULL,
+    renewal_number  INT          NOT NULL,
+    created_at      DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    CONSTRAINT fk_star_certs_order
+        FOREIGN KEY (star_order_id) REFERENCES star_orders(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE INDEX idx_star_certs_order ON star_certificates(star_order_id, renewal_number DESC);

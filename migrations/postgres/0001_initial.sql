@@ -103,3 +103,38 @@ CREATE TABLE server_generated_keys (
 );
 
 CREATE INDEX idx_server_generated_keys_enrollment_id ON server_generated_keys (enrollment_id);
+
+-- STAR (Short-Term Automatic Renewal) tables (RFC 8739).
+-- Tracks STAR orders and their automatically renewed certificates.
+
+CREATE TYPE star_order_status AS ENUM ('active', 'cancelled', 'completed', 'expired');
+
+CREATE TABLE star_orders (
+    id                    TEXT             PRIMARY KEY,
+    subject_dn            TEXT             NOT NULL,
+    key_type              TEXT             NOT NULL,
+    profile               TEXT             NOT NULL,
+    renewal_interval_secs INTEGER          NOT NULL,
+    lifetime_end          TIMESTAMPTZ      NOT NULL,
+    max_renewals          INTEGER          NOT NULL,
+    current_renewals      INTEGER          NOT NULL DEFAULT 0,
+    status                star_order_status NOT NULL DEFAULT 'active',
+    requestor_dn          TEXT,
+    ca_id                 TEXT             NOT NULL,
+    csr_der               BYTEA            NOT NULL,
+    created_at            TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
+    cancelled_at          TIMESTAMPTZ
+);
+
+CREATE TABLE star_certificates (
+    id              BIGSERIAL    PRIMARY KEY,
+    star_order_id   TEXT         NOT NULL REFERENCES star_orders(id),
+    serial_number   TEXT         NOT NULL,
+    certificate_der BYTEA        NOT NULL,
+    not_before      TIMESTAMPTZ  NOT NULL,
+    not_after       TIMESTAMPTZ  NOT NULL,
+    renewal_number  INTEGER      NOT NULL,
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_star_certs_order ON star_certificates(star_order_id, renewal_number DESC);

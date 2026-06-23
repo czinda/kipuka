@@ -12,5 +12,6 @@ pub mod error;
 pub mod ha;
 pub mod ocsp;
 pub mod routes;
+pub mod star;
 pub mod state;
 pub mod tls;
