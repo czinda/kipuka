@@ -1318,6 +1318,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "kipuka-dogtag"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "parking_lot",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "kipuka-est"
 version = "0.1.0"
 dependencies = [

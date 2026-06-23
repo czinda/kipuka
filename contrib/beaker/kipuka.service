@@ -1,0 +1,32 @@
+[Unit]
+Description=Kipuka EST Enrollment Server
+Documentation=https://codeberg.org/czinda/kipuka
+After=network-online.target pki-tomcatd@pki-tomcat.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kipuka
+Group=kipuka
+
+ExecStart=/usr/local/bin/kipuka --config /etc/kipuka/kipuka.toml
+Restart=on-failure
+RestartSec=5
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/kipuka /var/log/kipuka
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+
+# File descriptor limit for TLS connections
+LimitNOFILE=65536
+
+# Environment (optional; kipuka reads config from the TOML file)
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=multi-user.target
