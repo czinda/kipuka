@@ -28,6 +28,7 @@ mod tests {
         todo!("Implement test server startup")
     }
 
+    #[ignore = "stub: requires full server wiring"]
     #[tokio::test]
     async fn cacerts_returns_200_with_pkcs7_content_type() {
         // let base_url = start_test_server().await;
@@ -55,6 +56,7 @@ mod tests {
         // );
     }
 
+    #[ignore = "stub: requires full server wiring"]
     #[tokio::test]
     async fn cacerts_returns_valid_pkcs7_response() {
         // let base_url = start_test_server().await;
@@ -85,6 +87,7 @@ mod tests {
         // // TODO: Use synta to parse and verify the PKCS#7 structure
     }
 
+    #[ignore = "stub: requires full server wiring"]
     #[tokio::test]
     async fn cacerts_accessible_without_authentication() {
         // The /cacerts endpoint MUST be accessible without any authentication
@@ -106,6 +109,7 @@ mod tests {
         // assert_eq!(resp.status(), 200, "cacerts must not require authentication");
     }
 
+    #[ignore = "stub: requires full server wiring"]
     #[tokio::test]
     async fn cacerts_with_label_returns_label_specific_ca() {
         // EST labels allow different CA certificates for different profiles.
@@ -127,6 +131,7 @@ mod tests {
         // // TODO: Verify the returned cert matches the label's CA, not the default CA
     }
 
+    #[ignore = "stub: requires full server wiring"]
     #[tokio::test]
     async fn cacerts_unknown_label_returns_404() {
         // An unknown label should return 404, not fall back to the default CA.

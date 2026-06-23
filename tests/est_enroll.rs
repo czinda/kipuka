@@ -30,6 +30,7 @@ mod tests {
         todo!("Provision test OTP")
     }
 
+    #[ignore = "stub: requires full server wiring"]
     #[tokio::test]
     async fn simpleenroll_with_valid_otp_issues_certificate() {
         // let base_url = start_test_server().await;
@@ -66,6 +67,7 @@ mod tests {
         // // Verify the subject matches the CSR.
     }
 
+    #[ignore = "stub: requires full server wiring"]
     #[tokio::test]
     async fn simpleenroll_without_auth_returns_401() {
         // let base_url = start_test_server().await;
@@ -87,6 +89,7 @@ mod tests {
         // assert_eq!(resp.status(), 401, "Request without auth must be rejected");
     }
 
+    #[ignore = "stub: requires full server wiring"]
     #[tokio::test]
     async fn simpleenroll_with_invalid_csr_returns_400() {
         // let base_url = start_test_server().await;
@@ -110,6 +113,7 @@ mod tests {
         // assert_eq!(resp.status(), 400, "Invalid CSR must be rejected");
     }
 
+    #[ignore = "stub: requires full server wiring"]
     #[tokio::test]
     async fn simpleenroll_with_expired_otp_returns_401() {
         // let base_url = start_test_server().await;
@@ -135,6 +139,7 @@ mod tests {
         // assert_eq!(resp.status(), 401, "Expired OTP must be rejected");
     }
 
+    #[ignore = "stub: requires full server wiring"]
     #[tokio::test]
     async fn simpleenroll_otp_single_use_rejects_reuse() {
         // let base_url = start_test_server().await;
@@ -169,6 +174,7 @@ mod tests {
         // assert_eq!(resp2.status(), 401, "Reused OTP must be rejected");
     }
 
+    #[ignore = "stub: requires full server wiring"]
     #[tokio::test]
     async fn simpleenroll_wrong_content_type_returns_415() {
         // let base_url = start_test_server().await;
