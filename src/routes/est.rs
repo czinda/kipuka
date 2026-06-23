@@ -119,19 +119,20 @@ async fn enforce_est_content_type(req: Request<Body>, next: Next) -> Response {
     };
 
     if let Some(expected_prefix) = expected
-        && !content_type.starts_with(expected_prefix) {
-            tracing::debug!(
-                path = %path,
-                content_type = %content_type,
-                expected = %expected_prefix,
-                "rejecting request with wrong Content-Type"
-            );
-            return (
-                StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                format!("Content-Type must be {expected_prefix}"),
-            )
-                .into_response();
-        }
+        && !content_type.starts_with(expected_prefix)
+    {
+        tracing::debug!(
+            path = %path,
+            content_type = %content_type,
+            expected = %expected_prefix,
+            "rejecting request with wrong Content-Type"
+        );
+        return (
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            format!("Content-Type must be {expected_prefix}"),
+        )
+            .into_response();
+    }
 
     next.run(req).await
 }
@@ -204,9 +205,10 @@ pub fn est_error_response(status: StatusCode, detail: &str) -> Response {
 
     // RFC 7030 §4.2.3: 503 responses include Retry-After.
     if status == StatusCode::SERVICE_UNAVAILABLE
-        && let Ok(hv) = HeaderValue::from_str("120") {
-            resp.headers_mut().insert(header::RETRY_AFTER, hv);
-        }
+        && let Ok(hv) = HeaderValue::from_str("120")
+    {
+        resp.headers_mut().insert(header::RETRY_AFTER, hv);
+    }
 
     resp
 }

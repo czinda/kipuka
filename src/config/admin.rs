@@ -20,7 +20,6 @@ pub enum AdminAuthMethod {
     Gssapi,
 }
 
-
 /// `[admin]` section — administrative API configuration.
 ///
 /// When this section is absent, admin endpoints return 404.

@@ -240,9 +240,8 @@ impl CaPool {
     pub fn should_reprobe(&self, id: &CaId) -> bool {
         let statuses = self.statuses.read();
         statuses.get(id).is_some_and(|s| {
-            s.circuit_open_since.is_some_and(|opened| {
-                opened.elapsed() >= self.config.circuit_breaker.cooldown
-            })
+            s.circuit_open_since
+                .is_some_and(|opened| opened.elapsed() >= self.config.circuit_breaker.cooldown)
         })
     }
 

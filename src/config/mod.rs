@@ -198,12 +198,13 @@ impl Config {
 
         for label in &self.est.labels {
             if let Some(ref ca_id) = label.ca_id
-                && !known_ca_ids.contains(ca_id.as_str()) {
-                    return Err(format!(
-                        "EST label {:?} references unknown CA id {ca_id:?}",
-                        label.name
-                    ));
-                }
+                && !known_ca_ids.contains(ca_id.as_str())
+            {
+                return Err(format!(
+                    "EST label {:?} references unknown CA id {ca_id:?}",
+                    label.name
+                ));
+            }
         }
 
         // ── OTP ──────────────────────────────────────────────────────────────

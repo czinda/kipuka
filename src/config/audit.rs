@@ -29,7 +29,6 @@ pub enum RotationPolicy {
     Never,
 }
 
-
 /// What to do when audit storage is exhausted (FAU_STG.4).
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -45,7 +44,6 @@ pub enum OverflowPolicy {
     /// audit trail is full."
     Halt,
 }
-
 
 /// `[audit]` section — audit trail configuration.
 ///

@@ -25,7 +25,6 @@ pub enum OtpStorageBackend {
     Ldap,
 }
 
-
 /// `[otp]` section — OTP enrollment authentication configuration.
 ///
 /// ```toml

@@ -143,9 +143,10 @@ impl HsmSlot {
         for slot_id in slots {
             let slot = Self::new(context.clone(), slot_id);
             if let Ok(token_label) = slot.token_label()
-                && token_label == label {
-                    return Ok(slot);
-                }
+                && token_label == label
+            {
+                return Ok(slot);
+            }
         }
 
         Err(HsmError::SlotAccess(format!(

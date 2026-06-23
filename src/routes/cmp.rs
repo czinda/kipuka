@@ -364,14 +364,15 @@ pub fn build_cmp_response(
 
     // Verify the response type is appropriate for the request.
     if let Some(expected) = req.message_type.expected_response()
-        && expected != response_type {
-            tracing::warn!(
-                request_type = %req.message_type,
-                response_type = %response_type,
-                expected = %expected,
-                "CMP response type mismatch"
-            );
-        }
+        && expected != response_type
+    {
+        tracing::warn!(
+            request_type = %req.message_type,
+            response_type = %response_type,
+            expected = %expected,
+            "CMP response type mismatch"
+        );
+    }
 
     // TODO: Implement CMP PKIMessage response construction.
     //

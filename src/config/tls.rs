@@ -32,7 +32,6 @@ pub enum ClientAuthMode {
     None,
 }
 
-
 /// `[tls]` section — TLS configuration for the EST listener.
 ///
 /// # NIAP CA PP FTP_TRP.1 compliance

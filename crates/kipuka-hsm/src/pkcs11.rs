@@ -58,18 +58,18 @@ impl Pkcs11Context {
         F: FnOnce(&Pkcs11) -> HsmResult<R>,
     {
         let guard = self.inner.lock().expect("Pkcs11Context mutex poisoned");
-        let pkcs11 = guard
-            .as_ref()
-            .ok_or_else(|| HsmError::LibraryLoad("HSM not initialized (placeholder context)".into()))?;
+        let pkcs11 = guard.as_ref().ok_or_else(|| {
+            HsmError::LibraryLoad("HSM not initialized (placeholder context)".into())
+        })?;
         f(pkcs11)
     }
 
     /// Get library information.
     pub fn library_info(&self) -> HsmResult<String> {
         self.with_pkcs11(|pkcs11| {
-            let info = pkcs11.get_library_info().map_err(|e| {
-                HsmError::LibraryLoad(format!("Failed to get library info: {e}"))
-            })?;
+            let info = pkcs11
+                .get_library_info()
+                .map_err(|e| HsmError::LibraryLoad(format!("Failed to get library info: {e}")))?;
             Ok(format!(
                 "Library: {} v{}.{}",
                 info.library_description(),

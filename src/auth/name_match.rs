@@ -125,13 +125,10 @@ pub fn matches_email(pattern: &str, email: &str) -> bool {
         (Some((pat_local, pat_domain)), Some((email_local, email_domain))) => {
             // Local-part: case-sensitive per RFC 5321.
             // Domain-part: case-insensitive.
-            pat_local == email_local
-                && pat_domain.eq_ignore_ascii_case(email_domain)
+            pat_local == email_local && pat_domain.eq_ignore_ascii_case(email_domain)
         }
         // Pattern is bare domain: matches any address at that domain.
-        (None, Some((_email_local, email_domain))) => {
-            pattern.eq_ignore_ascii_case(email_domain)
-        }
+        (None, Some((_email_local, email_domain))) => pattern.eq_ignore_ascii_case(email_domain),
         // No '@' in the email — malformed.
         _ => false,
     }

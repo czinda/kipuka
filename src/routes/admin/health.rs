@@ -92,15 +92,14 @@ pub async fn get_health(_admin: AdminAuth, State(state): State<Arc<AppState>>) -
         .unwrap_or(ca_count);
 
     // Determine overall status.
-    let overall_status = if db_health.status == "unhealthy"
-        || (healthy_ca_count == 0 && ca_count > 0)
-    {
-        "unhealthy"
-    } else if db_health.status == "degraded" || healthy_ca_count < ca_count {
-        "degraded"
-    } else {
-        "healthy"
-    };
+    let overall_status =
+        if db_health.status == "unhealthy" || (healthy_ca_count == 0 && ca_count > 0) {
+            "unhealthy"
+        } else if db_health.status == "degraded" || healthy_ca_count < ca_count {
+            "degraded"
+        } else {
+            "healthy"
+        };
 
     let health = SystemHealth {
         status: overall_status.to_string(),
