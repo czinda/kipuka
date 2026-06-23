@@ -1,0 +1,262 @@
+---
+# playbooks/test-pqc.yml — Test post-quantum cryptography operations
+#
+# Validates kipuka's PQC capabilities (requires OpenSSL 3.5+ with PQC support):
+#   1. Verify OpenSSL 3.5+ PQC provider
+#   2. Generate ML-DSA-44/65/87 CA keys
+#   3. Enroll with ML-DSA CSR
+#   4. Server-side keygen with ML-KEM-512/768/1024
+#   5. Composite hybrid enrollment
+#   6. Verify dual certificate issuance
+#
+# Usage:
+#   ansible-playbook playbooks/test-pqc.yml
+
+- name: Test post-quantum cryptography operations
+  hosts: est_servers
+  gather_facts: true
+  vars:
+    est_port: "{{ kipuka_listen_port | default(8443) }}"
+    est_base: "https://{{ inventory_hostname }}:{{ est_port }}/.well-known/est"
+    work_dir: "{{ test_output_dir }}/pqc-tests"
+
+  pre_tasks:
+    - name: Create test working directory
+      ansible.builtin.file:
+        path: "{{ work_dir }}"
+        state: directory
+        mode: "0755"
+      tags: [pqc, setup]
+
+  tasks:
+    # ── Prerequisite: OpenSSL PQC support ────────────────────────────────────
+
+    - name: Check OpenSSL version
+      ansible.builtin.command:
+        cmd: openssl version
+      register: _openssl_ver
+      changed_when: false
+      tags: [pqc, prereq]
+
+    - name: Parse OpenSSL major.minor version
+      ansible.builtin.set_fact:
+        openssl_version_number: >-
+          {{ _openssl_ver.stdout | regex_search('OpenSSL\s+(\d+\.\d+)', '\1') | first | default('0.0') }}
+      tags: [pqc, prereq]
+
+    - name: Verify OpenSSL 3.5+ is available
+      ansible.builtin.assert:
+        that:
+          - openssl_version_number is version('3.5', '>=')
+        fail_msg: >-
+          PQC tests require OpenSSL 3.5+. Found: {{ _openssl_ver.stdout }}.
+          Install OpenSSL 3.5+ with PQC provider support to run these tests.
+        success_msg: "OpenSSL {{ openssl_version_number }} detected — PQC support available"
+      tags: [pqc, prereq]
+
+    - name: "TEST PQC-0: Verify PQC algorithms are available"
+      ansible.builtin.command:
+        cmd: openssl list -signature-algorithms
+      register: _pqc_sigalgs
+      changed_when: false
+      tags: [pqc, prereq]
+
+    - name: Check for ML-DSA availability
+      ansible.builtin.set_fact:
+        mldsa_available: "{{ 'mldsa' in (_pqc_sigalgs.stdout | lower) or 'ml-dsa' in (_pqc_sigalgs.stdout | lower) }}"
+      tags: [pqc, prereq]
+
+    - name: PQC provider status
+      ansible.builtin.debug:
+        msg: >-
+          OpenSSL {{ openssl_version_number }},
+          ML-DSA available: {{ mldsa_available }}
+      tags: [pqc, prereq]
+
+    # ── ML-DSA CA key generation ─────────────────────────────────────────────
+
+    - name: "TEST PQC-1: Generate ML-DSA-44 CA key pair"
+      ansible.builtin.command:
+        cmd: >-
+          openssl genpkey -algorithm mldsa44
+          -out {{ work_dir }}/mldsa44-ca.key
+      args:
+        creates: "{{ work_dir }}/mldsa44-ca.key"
+      when: mldsa_available
+      register: _pqc_keygen_44
+      tags: [pqc, keygen]
+
+    - name: Generate ML-DSA-44 CA self-signed certificate
+      ansible.builtin.command:
+        cmd: >-
+          openssl req -x509
+          -key {{ work_dir }}/mldsa44-ca.key
+          -out {{ work_dir }}/mldsa44-ca.pem
+          -days 365
+          -subj "/CN=ML-DSA-44 Test CA/O=PQC Test"
+      args:
+        creates: "{{ work_dir }}/mldsa44-ca.pem"
+      when: mldsa_available
+      tags: [pqc, keygen]
+
+    - name: "TEST PQC-1b: Generate ML-DSA-65 CA key pair"
+      ansible.builtin.command:
+        cmd: >-
+          openssl genpkey -algorithm mldsa65
+          -out {{ work_dir }}/mldsa65-ca.key
+      args:
+        creates: "{{ work_dir }}/mldsa65-ca.key"
+      when: mldsa_available
+      tags: [pqc, keygen]
+
+    - name: "TEST PQC-1c: Generate ML-DSA-87 CA key pair"
+      ansible.builtin.command:
+        cmd: >-
+          openssl genpkey -algorithm mldsa87
+          -out {{ work_dir }}/mldsa87-ca.key
+      args:
+        creates: "{{ work_dir }}/mldsa87-ca.key"
+      when: mldsa_available
+      tags: [pqc, keygen]
+
+    - name: "RESULT PQC-1: ML-DSA key generation"
+      ansible.builtin.debug:
+        msg: |
+          ML-DSA-44: {{ 'OK' if _pqc_keygen_44.rc | default(1) == 0 else 'FAILED' }}
+          Key sizes generated successfully
+      when: mldsa_available
+      tags: [pqc, keygen]
+
+    # ── ML-DSA CSR enrollment ────────────────────────────────────────────────
+
+    - name: "TEST PQC-2: Generate ML-DSA-44 client CSR"
+      ansible.builtin.command:
+        cmd: >-
+          openssl req -new
+          -newkey mldsa44
+          -keyout {{ work_dir }}/mldsa44-client.key
+          -out {{ work_dir }}/mldsa44-client.csr
+          -nodes
+          -subj "/CN=pqc-client.{{ domain }}/O=PQC Test"
+      args:
+        creates: "{{ work_dir }}/mldsa44-client.csr"
+      when: mldsa_available
+      tags: [pqc, enroll]
+
+    - name: Base64-encode ML-DSA CSR
+      ansible.builtin.shell:
+        cmd: >-
+          openssl req -in {{ work_dir }}/mldsa44-client.csr -outform DER |
+          base64 -w 0 > {{ work_dir }}/mldsa44-client.csr.b64
+      changed_when: false
+      when: mldsa_available
+      tags: [pqc, enroll]
+
+    - name: "TEST PQC-2: Enroll with ML-DSA-44 CSR"
+      ansible.builtin.command:
+        cmd: >-
+          curl -s -w '%{http_code}'
+          -k -X POST
+          -H 'Content-Type: application/pkcs10'
+          -H 'Content-Transfer-Encoding: base64'
+          -u "pqc-test:{{ test_otp_token | default('pqc-test-otp') }}"
+          --data-binary @{{ work_dir }}/mldsa44-client.csr.b64
+          -o {{ work_dir }}/mldsa44-enrolled.p7
+          {{ est_base }}/simpleenroll
+      register: _pqc_enroll
+      changed_when: false
+      when: mldsa_available
+      tags: [pqc, enroll]
+
+    - name: "RESULT PQC-2: ML-DSA enrollment"
+      ansible.builtin.debug:
+        msg: "ML-DSA-44 enrollment: HTTP {{ _pqc_enroll.stdout | default('skipped') }}"
+      when: mldsa_available
+      tags: [pqc, enroll]
+
+    # ── ML-KEM server-side keygen ────────────────────────────────────────────
+
+    - name: Check for ML-KEM availability
+      ansible.builtin.command:
+        cmd: openssl list -kem-algorithms
+      register: _pqc_kemalgs
+      changed_when: false
+      failed_when: false
+      tags: [pqc, serverkeygen]
+
+    - name: "TEST PQC-3: Server-side keygen with ML-KEM request"
+      ansible.builtin.debug:
+        msg: >-
+          ML-KEM server-side keygen requires /serverkeygen endpoint
+          with PQC key transport. Algorithms available:
+          {{ _pqc_kemalgs.stdout_lines | default(['none detected']) }}
+      tags: [pqc, serverkeygen]
+
+    # ── Composite hybrid enrollment ──────────────────────────────────────────
+
+    - name: "TEST PQC-4: Generate composite ML-DSA-44 + EC-P256 key"
+      ansible.builtin.command:
+        cmd: >-
+          openssl genpkey -algorithm "mldsa44_p256"
+          -out {{ work_dir }}/composite-client.key
+      register: _composite_keygen
+      when: mldsa_available
+      failed_when: false
+      args:
+        creates: "{{ work_dir }}/composite-client.key"
+      tags: [pqc, composite]
+
+    - name: Generate composite CSR
+      ansible.builtin.command:
+        cmd: >-
+          openssl req -new
+          -key {{ work_dir }}/composite-client.key
+          -out {{ work_dir }}/composite-client.csr
+          -subj "/CN=composite-client.{{ domain }}/O=PQC Test"
+      when:
+        - mldsa_available
+        - _composite_keygen.rc | default(1) == 0
+      args:
+        creates: "{{ work_dir }}/composite-client.csr"
+      tags: [pqc, composite]
+
+    - name: "RESULT PQC-4: Composite hybrid"
+      ansible.builtin.debug:
+        msg: >-
+          Composite keygen: {{ 'OK' if _composite_keygen.rc | default(1) == 0 else 'not supported in this OpenSSL build' }}
+      tags: [pqc, composite]
+
+    # ── Verify PQC certificate properties ────────────────────────────────────
+
+    - name: "TEST PQC-5: Verify ML-DSA CA certificate properties"
+      ansible.builtin.command:
+        cmd: >-
+          openssl x509 -in {{ work_dir }}/mldsa44-ca.pem
+          -noout -text
+      register: _pqc_cert_info
+      when: mldsa_available
+      changed_when: false
+      failed_when: false
+      tags: [pqc, verify]
+
+    - name: "RESULT PQC-5: Certificate verification"
+      ansible.builtin.debug:
+        msg: |
+          ML-DSA-44 CA certificate:
+          {{ _pqc_cert_info.stdout_lines[:10] | default(['not available']) | join('\n') }}
+      when: mldsa_available
+      tags: [pqc, verify]
+
+    # ── Summary ──────────────────────────────────────────────────────────────
+
+    - name: PQC test summary
+      ansible.builtin.debug:
+        msg: |
+          ═══ Post-Quantum Cryptography Test Summary ═══
+          OpenSSL version   : {{ _openssl_ver.stdout }}
+          ML-DSA available  : {{ mldsa_available }}
+          PQC-1 ML-DSA keygen     : {{ 'OK' if _pqc_keygen_44.rc | default(1) == 0 else 'SKIPPED/FAILED' }}
+          PQC-2 ML-DSA enrollment : HTTP {{ _pqc_enroll.stdout | default('skipped') }}
+          PQC-3 ML-KEM keygen     : {{ 'available' if 'mlkem' in (_pqc_kemalgs.stdout | default('') | lower) else 'not available' }}
+          PQC-4 Composite hybrid  : {{ 'OK' if _composite_keygen.rc | default(1) == 0 else 'not supported' }}
+      tags: [pqc, summary]

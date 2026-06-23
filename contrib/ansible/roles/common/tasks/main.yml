@@ -1,0 +1,97 @@
+---
+# roles/common/tasks/main.yml — Common RHEL 10 setup
+#
+# Prepares a host with base packages, firewall, and SELinux configuration
+# required by all kipuka stack components.
+
+- name: Ensure RHEL subscription is attached
+  ansible.builtin.command:
+    cmd: subscription-manager identity
+  register: _sub_identity
+  changed_when: false
+  failed_when: false
+  tags: [common, repos]
+
+- name: Enable required RHEL repositories
+  community.general.rhsm_repository:
+    name: "{{ item }}"
+    state: enabled
+  loop:
+    - rhel-10-for-x86_64-baseos-rpms
+    - rhel-10-for-x86_64-appstream-rpms
+  when: _sub_identity.rc == 0
+  tags: [common, repos]
+
+- name: Install base packages
+  ansible.builtin.dnf:
+    name:
+      - curl
+      - wget
+      - git
+      - openssl
+      - openssl-devel
+      - gcc
+      - gcc-c++
+      - make
+      - cmake
+      - pkg-config
+      - python3-pip
+      - policycoreutils-python-utils
+      - firewalld
+      - jq
+      - tar
+      - unzip
+    state: present
+  tags: [common, packages]
+
+- name: Install PQC-capable OpenSSL if enabled
+  ansible.builtin.dnf:
+    name:
+      - openssl >= 3.5
+      - openssl-devel >= 3.5
+    state: present
+  when: pqc_enabled | default(false)
+  tags: [common, packages, pqc]
+
+- name: Start and enable firewalld
+  ansible.builtin.systemd:
+    name: firewalld
+    state: started
+    enabled: true
+  tags: [common, firewall]
+
+- name: Set SELinux to enforcing
+  ansible.posix.selinux:
+    policy: targeted
+    state: enforcing
+  tags: [common, selinux]
+
+- name: Install SELinux policy utilities
+  ansible.builtin.dnf:
+    name:
+      - selinux-policy-targeted
+      - policycoreutils
+    state: present
+  tags: [common, selinux]
+
+- name: Set hostname
+  ansible.builtin.hostname:
+    name: "{{ inventory_hostname }}"
+  tags: [common]
+
+- name: Ensure /etc/hosts has all stack hosts
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: ".*{{ item }}$"
+    line: "{{ hostvars[item].ansible_host | default(hostvars[item].inventory_hostname) }} {{ item }}"
+    state: present
+  loop: "{{ groups['all'] }}"
+  when: hostvars[item].ansible_host is defined
+  tags: [common]
+
+- name: Ensure chronyd is running (time synchronization)
+  ansible.builtin.systemd:
+    name: chronyd
+    state: started
+    enabled: true
+  tags: [common]

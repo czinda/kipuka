@@ -1,0 +1,296 @@
+---
+# playbooks/test-est-operations.yml — Test all 6 EST operations (RFC 7030)
+#
+# Exercises each EST endpoint with real certificate operations:
+#   1. GET  /cacerts      — retrieve CA chain
+#   2. POST /simpleenroll — initial enrollment with OTP
+#   3. POST /simplereenroll — certificate renewal with mTLS
+#   4. POST /fullcmc      — CMC passthrough
+#   5. POST /serverkeygen — server-side key generation
+#   6. GET  /csrattrs     — CSR attribute hints
+#
+# Usage:
+#   ansible-playbook playbooks/test-est-operations.yml
+#   ansible-playbook playbooks/test-est-operations.yml --tags cacerts,enroll
+
+- name: Test EST operations
+  hosts: clients
+  gather_facts: true
+  vars:
+    est_server: "{{ groups['est_servers'][0] }}"
+    est_port: "{{ hostvars[groups['est_servers'][0]].kipuka_listen_port | default(8443) }}"
+    est_base: "https://{{ est_server }}:{{ est_port }}/.well-known/est"
+    work_dir: "{{ test_output_dir }}/est-ops"
+
+  pre_tasks:
+    - name: Create test working directory
+      ansible.builtin.file:
+        path: "{{ work_dir }}"
+        state: directory
+        mode: "0755"
+      tags: [setup]
+
+    - name: Install test dependencies
+      ansible.builtin.dnf:
+        name:
+          - openssl
+          - curl
+          - jq
+        state: present
+      tags: [setup]
+
+  tasks:
+    # ── 1. GET /cacerts ──────────────────────────────────────────────────────
+
+    - name: "TEST 1: GET /cacerts — retrieve CA certificate chain"
+      ansible.builtin.command:
+        cmd: >-
+          curl -s -o {{ work_dir }}/cacerts.p7
+          --cacert {{ work_dir }}/ca-bundle.pem
+          -w '%{http_code}'
+          -k
+          {{ est_base }}/cacerts
+      register: _test_cacerts
+      changed_when: false
+      tags: [cacerts]
+
+    - name: Decode PKCS#7 CA certificates
+      ansible.builtin.command:
+        cmd: >-
+          openssl pkcs7 -in {{ work_dir }}/cacerts.p7
+          -inform DER -print_certs
+          -out {{ work_dir }}/ca-chain.pem
+      when: _test_cacerts.stdout == "200"
+      changed_when: false
+      tags: [cacerts]
+
+    - name: Verify CA certificate chain
+      ansible.builtin.command:
+        cmd: openssl x509 -in {{ work_dir }}/ca-chain.pem -noout -subject -issuer -dates
+      register: _cacerts_info
+      changed_when: false
+      tags: [cacerts]
+
+    - name: "RESULT 1: /cacerts"
+      ansible.builtin.debug:
+        msg: "HTTP {{ _test_cacerts.stdout }} — {{ _cacerts_info.stdout_lines | default(['decode failed']) }}"
+      tags: [cacerts]
+
+    # ── 2. POST /simpleenroll with OTP ───────────────────────────────────────
+
+    - name: Generate client private key
+      ansible.builtin.command:
+        cmd: openssl ecparam -genkey -name prime256v1 -out {{ work_dir }}/client.key
+        creates: "{{ work_dir }}/client.key"
+      tags: [enroll]
+
+    - name: Generate CSR for enrollment
+      ansible.builtin.command:
+        cmd: >-
+          openssl req -new
+          -key {{ work_dir }}/client.key
+          -out {{ work_dir }}/client.csr
+          -subj "/CN={{ test_client_cn }}/O=Test Lab"
+      args:
+        creates: "{{ work_dir }}/client.csr"
+      tags: [enroll]
+
+    - name: Base64-encode CSR (PKCS#10 DER)
+      ansible.builtin.shell:
+        cmd: >-
+          openssl req -in {{ work_dir }}/client.csr -outform DER |
+          base64 -w 0 > {{ work_dir }}/client.csr.b64
+      changed_when: false
+      tags: [enroll]
+
+    - name: "TEST 2: POST /simpleenroll with OTP authentication"
+      ansible.builtin.command:
+        cmd: >-
+          curl -s -o {{ work_dir }}/enrolled.p7
+          -w '%{http_code}'
+          -k
+          -X POST
+          -H 'Content-Type: application/pkcs10'
+          -H 'Content-Transfer-Encoding: base64'
+          -u "est-client:{{ test_otp_token | default('test-otp-token-value') }}"
+          --data-binary @{{ work_dir }}/client.csr.b64
+          {{ est_base }}/simpleenroll
+      register: _test_enroll
+      changed_when: false
+      tags: [enroll]
+
+    - name: Decode enrolled certificate
+      ansible.builtin.command:
+        cmd: >-
+          openssl pkcs7 -in {{ work_dir }}/enrolled.p7
+          -inform DER -print_certs
+          -out {{ work_dir }}/client.pem
+      when: _test_enroll.stdout == "200"
+      changed_when: false
+      tags: [enroll]
+
+    - name: "RESULT 2: /simpleenroll"
+      ansible.builtin.debug:
+        msg: "HTTP {{ _test_enroll.stdout }}"
+      tags: [enroll]
+
+    # ── 3. POST /simplereenroll with mTLS ────────────────────────────────────
+
+    - name: "TEST 3: POST /simplereenroll with mTLS client certificate"
+      ansible.builtin.command:
+        cmd: >-
+          curl -s -o {{ work_dir }}/renewed.p7
+          -w '%{http_code}'
+          -k
+          -X POST
+          -H 'Content-Type: application/pkcs10'
+          -H 'Content-Transfer-Encoding: base64'
+          --cert {{ work_dir }}/client.pem
+          --key {{ work_dir }}/client.key
+          --data-binary @{{ work_dir }}/client.csr.b64
+          {{ est_base }}/simplereenroll
+      register: _test_reenroll
+      changed_when: false
+      when: _test_enroll.stdout == "200"
+      tags: [reenroll]
+
+    - name: "RESULT 3: /simplereenroll"
+      ansible.builtin.debug:
+        msg: "HTTP {{ _test_reenroll.stdout | default('skipped — no enrolled cert') }}"
+      tags: [reenroll]
+
+    # ── 4. POST /fullcmc ─────────────────────────────────────────────────────
+
+    - name: "TEST 4: POST /fullcmc — CMC passthrough (placeholder)"
+      ansible.builtin.debug:
+        msg: >-
+          Full CMC testing requires a CMC request generator.
+          This test verifies the endpoint exists and returns a valid HTTP status.
+      tags: [fullcmc]
+
+    - name: Check /fullcmc endpoint availability
+      ansible.builtin.uri:
+        url: "{{ est_base }}/fullcmc"
+        method: POST
+        validate_certs: false
+        body: ""
+        headers:
+          Content-Type: "application/pkcs7-mime"
+        status_code: [200, 400, 401, 404, 415]
+      register: _test_fullcmc
+      tags: [fullcmc]
+
+    - name: "RESULT 4: /fullcmc"
+      ansible.builtin.debug:
+        msg: "HTTP {{ _test_fullcmc.status }} (endpoint {{ 'exists' if _test_fullcmc.status != 404 else 'not found' }})"
+      tags: [fullcmc]
+
+    # ── 5. POST /serverkeygen ────────────────────────────────────────────────
+
+    - name: Generate CSR for server-side keygen
+      ansible.builtin.command:
+        cmd: >-
+          openssl req -new
+          -newkey ec -pkeyopt ec_paramgen_curve:prime256v1
+          -keyout {{ work_dir }}/serverkeygen-dummy.key
+          -out {{ work_dir }}/serverkeygen.csr
+          -nodes
+          -subj "/CN=serverkeygen-test.{{ domain }}/O=Test Lab"
+      args:
+        creates: "{{ work_dir }}/serverkeygen.csr"
+      tags: [serverkeygen]
+
+    - name: Base64-encode server keygen CSR
+      ansible.builtin.shell:
+        cmd: >-
+          openssl req -in {{ work_dir }}/serverkeygen.csr -outform DER |
+          base64 -w 0 > {{ work_dir }}/serverkeygen.csr.b64
+      changed_when: false
+      tags: [serverkeygen]
+
+    - name: "TEST 5: POST /serverkeygen — server-side key generation"
+      ansible.builtin.command:
+        cmd: >-
+          curl -s -o {{ work_dir }}/serverkeygen-response
+          -w '%{http_code}'
+          -k
+          -X POST
+          -H 'Content-Type: application/pkcs10'
+          -H 'Content-Transfer-Encoding: base64'
+          -u "est-client:{{ test_otp_token | default('test-otp-token-value') }}"
+          --data-binary @{{ work_dir }}/serverkeygen.csr.b64
+          {{ est_base }}/serverkeygen
+      register: _test_serverkeygen
+      changed_when: false
+      tags: [serverkeygen]
+
+    - name: "RESULT 5: /serverkeygen"
+      ansible.builtin.debug:
+        msg: "HTTP {{ _test_serverkeygen.stdout }}"
+      tags: [serverkeygen]
+
+    # ── 6. GET /csrattrs ─────────────────────────────────────────────────────
+
+    - name: "TEST 6: GET /csrattrs — CSR attribute hints"
+      ansible.builtin.command:
+        cmd: >-
+          curl -s -o {{ work_dir }}/csrattrs.der
+          -w '%{http_code}'
+          -k
+          {{ est_base }}/csrattrs
+      register: _test_csrattrs
+      changed_when: false
+      tags: [csrattrs]
+
+    - name: Decode CSR attributes
+      ansible.builtin.command:
+        cmd: openssl asn1parse -in {{ work_dir }}/csrattrs.der -inform DER
+      register: _csrattrs_decoded
+      changed_when: false
+      when: _test_csrattrs.stdout == "200"
+      failed_when: false
+      tags: [csrattrs]
+
+    - name: "RESULT 6: /csrattrs"
+      ansible.builtin.debug:
+        msg: "HTTP {{ _test_csrattrs.stdout }} — {{ _csrattrs_decoded.stdout_lines | default(['no attributes']) | first }}"
+      tags: [csrattrs]
+
+    # ── PQC operations (OpenSSL 3.5+) ────────────────────────────────────────
+
+    - name: Check OpenSSL version for PQC support
+      ansible.builtin.command:
+        cmd: openssl version
+      register: _openssl_version
+      changed_when: false
+      tags: [pqc]
+
+    - name: "TEST PQC: Verify PQC provider availability"
+      ansible.builtin.command:
+        cmd: openssl list -providers
+      register: _pqc_providers
+      changed_when: false
+      when: "'3.5' in _openssl_version.stdout or '3.6' in _openssl_version.stdout"
+      tags: [pqc]
+
+    - name: "RESULT PQC: Provider check"
+      ansible.builtin.debug:
+        msg: >-
+          OpenSSL: {{ _openssl_version.stdout }}.
+          PQC providers: {{ _pqc_providers.stdout_lines | default(['not available — OpenSSL 3.5+ required']) }}
+      tags: [pqc]
+
+    # ── Summary ──────────────────────────────────────────────────────────────
+
+    - name: Test summary
+      ansible.builtin.debug:
+        msg: |
+          ═══ EST Operations Test Summary ═══
+          1. /cacerts       : HTTP {{ _test_cacerts.stdout | default('N/A') }}
+          2. /simpleenroll  : HTTP {{ _test_enroll.stdout | default('N/A') }}
+          3. /simplereenroll: HTTP {{ _test_reenroll.stdout | default('N/A') }}
+          4. /fullcmc       : HTTP {{ _test_fullcmc.status | default('N/A') }}
+          5. /serverkeygen  : HTTP {{ _test_serverkeygen.stdout | default('N/A') }}
+          6. /csrattrs      : HTTP {{ _test_csrattrs.stdout | default('N/A') }}
+          OpenSSL: {{ _openssl_version.stdout }}
+      tags: [summary]

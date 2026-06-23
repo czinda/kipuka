@@ -1,0 +1,48 @@
+# =============================================================================
+# Stage: build — compile debug, release, and documentation
+# =============================================================================
+
+.build-base:
+  stage: build
+  image: ${RUST_IMAGE}
+  cache:
+    key: build-${CI_COMMIT_REF_SLUG}
+    paths:
+      - target/
+      - ${CARGO_HOME}/registry/
+      - ${CARGO_HOME}/git/
+    policy: pull-push
+
+build-debug:
+  extends: .build-base
+  script:
+    - cargo build --all-features
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+build-release:
+  extends: .build-base
+  script:
+    - cargo build --release --all-features
+  artifacts:
+    paths:
+      - target/release/kipuka
+    expire_in: 7 days
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+build-docs:
+  extends: .build-base
+  script:
+    - cargo doc --all-features --no-deps
+    - echo '<meta http-equiv="refresh" content="0; url=kipuka/index.html">' > target/doc/index.html
+  artifacts:
+    paths:
+      - target/doc/
+    expire_in: 7 days
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

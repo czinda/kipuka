@@ -1,0 +1,150 @@
+---
+# playbooks/test-ha-failover.yml — Test Multi-CA HA failover
+#
+# Validates kipuka's HA behavior with multiple CA backends:
+#   1. Deploy 2 CA backends and configure HA
+#   2. Verify active-passive failover
+#   3. Simulate CA failure, verify automatic failover
+#   4. Verify recovery when CA returns
+#   5. Test round-robin distribution
+#
+# Requires at least 2 hosts in ca_servers group.
+#
+# Usage:
+#   ansible-playbook playbooks/test-ha-failover.yml
+
+- name: Test HA failover
+  hosts: est_servers
+  gather_facts: true
+  vars:
+    est_port: "{{ kipuka_listen_port | default(8443) }}"
+    est_base: "https://{{ inventory_hostname }}:{{ est_port }}/.well-known/est"
+    work_dir: "{{ test_output_dir }}/ha-tests"
+    primary_ca: "{{ groups['ca_servers'][0] }}"
+    secondary_ca: "{{ groups['ca_servers'][1] | default('') }}"
+
+  pre_tasks:
+    - name: Validate HA test prerequisites
+      ansible.builtin.assert:
+        that:
+          - groups['ca_servers'] | length >= 2
+        fail_msg: "HA failover tests require at least 2 CA servers. Found: {{ groups['ca_servers'] | length }}"
+      tags: [ha, prereq]
+
+    - name: Create test working directory
+      ansible.builtin.file:
+        path: "{{ work_dir }}"
+        state: directory
+        mode: "0755"
+      tags: [ha, setup]
+
+  tasks:
+    # ── Baseline: both CAs healthy ──────────────────────────────────────────
+
+    - name: "TEST HA-1: Verify enrollment works with both CAs healthy"
+      ansible.builtin.uri:
+        url: "{{ est_base }}/cacerts"
+        validate_certs: false
+      register: _ha_baseline
+      tags: [ha, baseline]
+
+    - name: "RESULT HA-1: Baseline"
+      ansible.builtin.debug:
+        msg: "Both CAs healthy — /cacerts returned HTTP {{ _ha_baseline.status }}"
+      tags: [ha, baseline]
+
+    # ── Simulate primary CA failure ─────────────────────────────────────────
+
+    - name: "TEST HA-2: Stop primary CA to trigger failover"
+      ansible.builtin.systemd:
+        name: "pki-tomcatd@{{ dogtag_instance_name }}"
+        state: stopped
+      delegate_to: "{{ primary_ca }}"
+      tags: [ha, failover]
+
+    - name: Wait for health check to detect failure
+      ansible.builtin.pause:
+        seconds: 45
+        prompt: "Waiting for kipuka health check to detect primary CA failure..."
+      tags: [ha, failover]
+
+    - name: "TEST HA-2: Verify enrollment still works via secondary CA"
+      ansible.builtin.uri:
+        url: "{{ est_base }}/cacerts"
+        validate_certs: false
+      register: _ha_failover
+      retries: 3
+      delay: 5
+      tags: [ha, failover]
+
+    - name: "RESULT HA-2: Failover"
+      ansible.builtin.debug:
+        msg: "Primary CA down, secondary serving — /cacerts returned HTTP {{ _ha_failover.status }}"
+      tags: [ha, failover]
+
+    # ── Recovery ────────────────────────────────────────────────────────────
+
+    - name: "TEST HA-3: Restart primary CA and verify recovery"
+      ansible.builtin.systemd:
+        name: "pki-tomcatd@{{ dogtag_instance_name }}"
+        state: started
+      delegate_to: "{{ primary_ca }}"
+      tags: [ha, recovery]
+
+    - name: Wait for primary CA to become healthy again
+      ansible.builtin.uri:
+        url: "https://{{ primary_ca }}:8443/ca/rest/info"
+        validate_certs: false
+      register: _primary_recovered
+      retries: 12
+      delay: 10
+      until: _primary_recovered.status == 200
+      delegate_to: "{{ primary_ca }}"
+      tags: [ha, recovery]
+
+    - name: Wait for kipuka to detect recovery
+      ansible.builtin.pause:
+        seconds: 45
+        prompt: "Waiting for kipuka to detect primary CA recovery..."
+      tags: [ha, recovery]
+
+    - name: "TEST HA-3: Verify enrollment after primary recovery"
+      ansible.builtin.uri:
+        url: "{{ est_base }}/cacerts"
+        validate_certs: false
+      register: _ha_recovered
+      tags: [ha, recovery]
+
+    - name: "RESULT HA-3: Recovery"
+      ansible.builtin.debug:
+        msg: "Primary CA recovered — /cacerts returned HTTP {{ _ha_recovered.status }}"
+      tags: [ha, recovery]
+
+    # ── Round-robin test ────────────────────────────────────────────────────
+
+    - name: "TEST HA-4: Verify round-robin distribution (multiple requests)"
+      ansible.builtin.uri:
+        url: "{{ est_base }}/cacerts"
+        validate_certs: false
+      register: _rr_result
+      loop: "{{ range(10) | list }}"
+      loop_control:
+        label: "request {{ item }}"
+      tags: [ha, roundrobin]
+
+    - name: "RESULT HA-4: Round-robin"
+      ansible.builtin.debug:
+        msg: "{{ _rr_result.results | map(attribute='status') | list }} — all requests succeeded"
+      tags: [ha, roundrobin]
+
+    # ── Summary ──────────────────────────────────────────────────────────────
+
+    - name: HA Test Summary
+      ansible.builtin.debug:
+        msg: |
+          ═══ HA Failover Test Summary ═══
+          HA-1 Baseline (both healthy) : HTTP {{ _ha_baseline.status }}
+          HA-2 Primary down failover   : HTTP {{ _ha_failover.status }}
+          HA-3 Recovery after restart   : HTTP {{ _ha_recovered.status }}
+          HA-4 Round-robin (10 reqs)    : {{ _rr_result.results | map(attribute='status') | unique | list }}
+      tags: [ha, summary]

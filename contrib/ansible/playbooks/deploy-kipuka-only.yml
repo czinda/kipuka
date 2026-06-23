@@ -1,0 +1,40 @@
+---
+# playbooks/deploy-kipuka-only.yml — Deploy just kipuka against existing infrastructure
+#
+# Use when Dogtag CA and DS are already deployed (or using an external CA).
+# Only runs the common setup and kipuka role on est_servers hosts.
+#
+# Usage:
+#   ansible-playbook playbooks/deploy-kipuka-only.yml
+
+- name: Common setup on EST server hosts
+  hosts: est_servers
+  tags: [common]
+  roles:
+    - common
+
+- name: Deploy kipuka EST server
+  hosts: est_servers
+  tags: [kipuka]
+  roles:
+    - kipuka
+
+  post_tasks:
+    - name: Verify all EST endpoints respond
+      ansible.builtin.uri:
+        url: "https://{{ inventory_hostname }}:{{ kipuka_listen_port }}/.well-known/est/{{ item }}"
+        validate_certs: false
+        status_code: [200, 204]
+      loop:
+        - cacerts
+        - csrattrs
+      register: _endpoint_checks
+      tags: [kipuka, verify]
+
+    - name: Report endpoint status
+      ansible.builtin.debug:
+        msg: "{{ item.item }}: HTTP {{ item.status }}"
+      loop: "{{ _endpoint_checks.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      tags: [kipuka, verify]

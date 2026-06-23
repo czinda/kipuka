@@ -1,0 +1,91 @@
+# =============================================================================
+# Stage: test — unit tests, protocol tests, crate-specific tests
+# =============================================================================
+
+.test-base:
+  stage: test
+  image: ${RUST_IMAGE}
+  cache:
+    key: test-${CI_COMMIT_REF_SLUG}
+    paths:
+      - target/
+      - ${CARGO_HOME}/registry/
+      - ${CARGO_HOME}/git/
+    policy: pull
+  before_script:
+    - cargo install --locked cargo2junit 2>/dev/null || true
+  artifacts:
+    when: always
+    reports:
+      junit: results.xml
+    expire_in: 30 days
+
+unit-tests:
+  extends: .test-base
+  timeout: 30 minutes
+  script:
+    - cargo test --all-features -- -Z unstable-options --format json
+        | cargo2junit > results.xml || TESTS_FAILED=1
+    - test -z "${TESTS_FAILED:-}" || exit 1
+  retry:
+    max: 1
+    when: runner_system_failure
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+est-protocol-tests:
+  extends: .test-base
+  timeout: 30 minutes
+  script:
+    - cargo test --test est_cacerts --test est_enroll -- -Z unstable-options --format json
+        | cargo2junit > results.xml || TESTS_FAILED=1
+    - test -z "${TESTS_FAILED:-}" || exit 1
+  needs:
+    - job: build-debug
+      optional: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+otp-tests:
+  extends: .test-base
+  timeout: 30 minutes
+  script:
+    - cargo test --test otp_auth -- -Z unstable-options --format json
+        | cargo2junit > results.xml || TESTS_FAILED=1
+    - test -z "${TESTS_FAILED:-}" || exit 1
+  needs:
+    - job: build-debug
+      optional: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+ha-tests:
+  extends: .test-base
+  timeout: 30 minutes
+  script:
+    - cargo test --test ha_failover -- -Z unstable-options --format json
+        | cargo2junit > results.xml || TESTS_FAILED=1
+    - test -z "${TESTS_FAILED:-}" || exit 1
+  needs:
+    - job: build-debug
+      optional: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+coap-tests:
+  extends: .test-base
+  timeout: 30 minutes
+  script:
+    - cargo test -p kipuka-coap -- -Z unstable-options --format json
+        | cargo2junit > results.xml || TESTS_FAILED=1
+    - test -z "${TESTS_FAILED:-}" || exit 1
+  needs:
+    - job: build-debug
+      optional: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

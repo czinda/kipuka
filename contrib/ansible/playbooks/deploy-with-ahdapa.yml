@@ -1,0 +1,78 @@
+---
+# playbooks/deploy-with-ahdapa.yml — Deploy kipuka with ahdapa as CA backend
+#
+# ahdapa (https://codeberg.org/freeipa/ahdapa) is a Rust-based IPA/CA server
+# written by Alexander Bokovoy that provides a lighter-weight alternative to
+# Dogtag PKI. This playbook deploys ahdapa on the CA servers and configures
+# kipuka to use it as the certificate authority backend.
+#
+# Usage:
+#   ansible-playbook playbooks/deploy-with-ahdapa.yml
+
+- name: Common setup on all hosts
+  hosts: all
+  tags: [common]
+  roles:
+    - common
+
+- name: Deploy ahdapa CA server
+  hosts: ca_servers
+  tags: [ahdapa, ca]
+  roles:
+    - ahdapa
+
+  post_tasks:
+    - name: Verify ahdapa CA certificate was generated
+      ansible.builtin.stat:
+        path: "{{ ahdapa_config_dir }}/ca/ca.pem"
+      register: _ahdapa_ca_cert
+      tags: [ahdapa, verify]
+
+    - name: Fail if ahdapa CA certificate missing
+      ansible.builtin.fail:
+        msg: "ahdapa CA certificate not found at {{ ahdapa_config_dir }}/ca/ca.pem"
+      when: not _ahdapa_ca_cert.stat.exists
+      tags: [ahdapa, verify]
+
+- name: Deploy kipuka EST server (ahdapa backend)
+  hosts: est_servers
+  tags: [kipuka]
+  vars:
+    # Override CA settings for ahdapa backend
+    kipuka_ca_common_name: "ahdapa CA"
+  roles:
+    - kipuka
+
+  pre_tasks:
+    - name: Fetch ahdapa CA certificate from CA server
+      ansible.builtin.fetch:
+        src: "{{ ahdapa_config_dir }}/ca/ca.pem"
+        dest: "/tmp/ahdapa-ca.pem"
+        flat: true
+      delegate_to: "{{ groups['ca_servers'][0] }}"
+      tags: [kipuka, tls]
+
+    - name: Install ahdapa CA certificate on EST server
+      ansible.builtin.copy:
+        src: "/tmp/ahdapa-ca.pem"
+        dest: "{{ kipuka_config_dir }}/ca/ca.pem"
+        owner: "{{ kipuka_user }}"
+        group: "{{ kipuka_group }}"
+        mode: "0644"
+      tags: [kipuka, tls]
+
+  post_tasks:
+    - name: Verify kipuka with ahdapa backend
+      ansible.builtin.uri:
+        url: "https://{{ inventory_hostname }}:{{ kipuka_listen_port }}/.well-known/est/cacerts"
+        validate_certs: false
+        return_content: true
+      register: _ahdapa_smoke
+      tags: [kipuka, verify]
+
+    - name: Report deployment result
+      ansible.builtin.debug:
+        msg: >-
+          kipuka deployed with ahdapa CA backend.
+          EST /cacerts: HTTP {{ _ahdapa_smoke.status }}
+      tags: [kipuka, verify]

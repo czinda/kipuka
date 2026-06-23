@@ -1,0 +1,61 @@
+# =============================================================================
+# Stage: lint — code quality gates
+# =============================================================================
+
+rustfmt:
+  stage: lint
+  image: ${RUST_IMAGE}
+  script:
+    - rustup component add rustfmt 2>/dev/null || true
+    - cargo fmt --all -- --check
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+clippy:
+  stage: lint
+  image: ${RUST_IMAGE}
+  script:
+    - rustup component add clippy 2>/dev/null || true
+    - cargo clippy --all-features --all-targets -- -D warnings
+  cache:
+    key: clippy-${CI_COMMIT_REF_SLUG}
+    paths:
+      - target/
+      - ${CARGO_HOME}/registry/
+      - ${CARGO_HOME}/git/
+    policy: pull-push
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+deny:
+  stage: lint
+  image: ${RUST_IMAGE}
+  before_script:
+    - cargo install --locked cargo-deny 2>/dev/null || true
+  script:
+    - cargo deny check
+  cache:
+    key: deny-${CI_COMMIT_REF_SLUG}
+    paths:
+      - ${CARGO_HOME}/registry/
+      - ${CARGO_HOME}/bin/cargo-deny
+    policy: pull-push
+  allow_failure: false
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+shellcheck:
+  stage: lint
+  image: koalaman/shellcheck-alpine:stable
+  script:
+    - find contrib/ -name '*.sh' -type f -print0 | xargs -0 shellcheck --severity=warning
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - "contrib/**/*.sh"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - "contrib/**/*.sh"

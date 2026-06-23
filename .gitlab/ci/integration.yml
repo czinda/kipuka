@@ -1,0 +1,114 @@
+# =============================================================================
+# Stage: integration — end-to-end tests with Dogtag PKI, interop tests
+# =============================================================================
+
+dogtag-integration:
+  stage: integration
+  image: registry.access.redhat.com/ubi9/ubi:latest
+  timeout: 60 minutes
+  tags:
+    - privileged
+  variables:
+    KIPUKA_PORT: "9443"
+    ADMIN_PORT: "9444"
+  before_script:
+    # Install build dependencies and PKI packages
+    - dnf install -y
+        pki-ca pki-kra 389-ds-base
+        openssl openssl-devel
+        gcc gcc-c++ make pkg-config
+        git curl jq
+        2>&1 | tail -5
+    # Install Rust toolchain
+    - dnf install -y rust cargo 2>/dev/null
+        || curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs
+           | sh -s -- -y --default-toolchain 1.85.0
+    - export PATH="$HOME/.cargo/bin:$PATH"
+    - rustc --version && cargo --version
+  script:
+    # Run the Beaker setup script (provisions 389-ds, Dogtag, builds kipuka)
+    - bash contrib/beaker/setup.sh --no-test
+    # Run the smoke tests
+    - bash contrib/beaker/smoke-test.sh
+  artifacts:
+    when: always
+    paths:
+      - /var/log/kipuka/
+    expire_in: 7 days
+  retry:
+    max: 1
+    when: runner_system_failure
+  needs:
+    - job: unit-tests
+      optional: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: manual
+      allow_failure: true
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+      allow_failure: true
+
+ahdapa-integration:
+  stage: integration
+  image: registry.access.redhat.com/ubi9/ubi:latest
+  timeout: 60 minutes
+  tags:
+    - privileged
+  script:
+    - echo "--- ahdapa cross-product integration tests ---"
+    - echo "TODO -- deploy ahdapa + kipuka side-by-side and run cross-product tests"
+    - echo "Placeholder until ahdapa CI artifacts are available"
+    - exit 0
+  needs:
+    - job: unit-tests
+      optional: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: manual
+      allow_failure: true
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+      allow_failure: true
+
+est-interop:
+  stage: integration
+  image: ${RUST_IMAGE}
+  timeout: 30 minutes
+  script:
+    - echo "--- EST interoperability tests ---"
+    - echo "Validates EST protocol compliance using standard clients"
+    # Build the server
+    - cargo build --release --all-features
+    # Generate self-signed test CA and server cert
+    - mkdir -p /tmp/kipuka-interop
+    - openssl req -x509 -new -nodes -newkey rsa:3072
+        -keyout /tmp/kipuka-interop/ca.key
+        -out /tmp/kipuka-interop/ca.pem
+        -days 1 -subj "/CN=Interop Test CA"
+        -addext "basicConstraints=critical,CA:TRUE"
+    - openssl req -new -nodes -newkey rsa:2048
+        -keyout /tmp/kipuka-interop/server.key
+        -out /tmp/kipuka-interop/server.csr
+        -subj "/CN=localhost"
+    - openssl x509 -req -in /tmp/kipuka-interop/server.csr
+        -CA /tmp/kipuka-interop/ca.pem
+        -CAkey /tmp/kipuka-interop/ca.key
+        -CAcreateserial
+        -out /tmp/kipuka-interop/server.pem
+        -days 1
+        -extfile <(echo "subjectAltName=DNS:localhost,IP:127.0.0.1")
+    # TODO -- start kipuka in background with test config, then run:
+    # curl -sk https://localhost:9443/.well-known/est/cacerts
+    # openssl s_client -connect localhost:9443 -CAfile /tmp/kipuka-interop/ca.pem
+    - echo "Interop smoke framework ready -- wire up once kipuka can start without a full CA backend"
+  needs:
+    - job: unit-tests
+      optional: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: manual
+      allow_failure: true
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+      allow_failure: true

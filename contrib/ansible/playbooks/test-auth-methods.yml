@@ -1,0 +1,227 @@
+---
+# playbooks/test-auth-methods.yml — Test all authentication methods
+#
+# Validates kipuka's authentication mechanisms:
+#   1. OTP: generate, use, expire, revoke
+#   2. mTLS: valid cert, revoked cert, untrusted cert
+#   3. GSSAPI: Kerberos auth with channel binding (requires IPA/KDC)
+#
+# Usage:
+#   ansible-playbook playbooks/test-auth-methods.yml
+#   ansible-playbook playbooks/test-auth-methods.yml --tags otp
+
+- name: Test authentication methods
+  hosts: clients
+  gather_facts: true
+  vars:
+    est_server: "{{ groups['est_servers'][0] }}"
+    est_port: "{{ hostvars[groups['est_servers'][0]].kipuka_listen_port | default(8443) }}"
+    est_base: "https://{{ est_server }}:{{ est_port }}/.well-known/est"
+    admin_base: "https://{{ est_server }}:{{ hostvars[groups['est_servers'][0]].kipuka_admin_port | default(9443) }}"
+    work_dir: "{{ test_output_dir }}/auth-tests"
+
+  pre_tasks:
+    - name: Create test working directory
+      ansible.builtin.file:
+        path: "{{ work_dir }}"
+        state: directory
+        mode: "0755"
+      tags: [setup]
+
+  tasks:
+    # ── OTP Authentication Tests ─────────────────────────────────────────────
+
+    - name: Generate test client key and CSR
+      ansible.builtin.command:
+        cmd: >-
+          openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:prime256v1
+          -keyout {{ work_dir }}/otp-client.key
+          -out {{ work_dir }}/otp-client.csr
+          -nodes
+          -subj "/CN=otp-test-client.{{ domain }}"
+      args:
+        creates: "{{ work_dir }}/otp-client.csr"
+      tags: [otp]
+
+    - name: Base64-encode CSR for OTP tests
+      ansible.builtin.shell:
+        cmd: >-
+          openssl req -in {{ work_dir }}/otp-client.csr -outform DER |
+          base64 -w 0 > {{ work_dir }}/otp-client.csr.b64
+      changed_when: false
+      tags: [otp]
+
+    - name: "TEST OTP-1: Enrollment with valid OTP"
+      ansible.builtin.command:
+        cmd: >-
+          curl -s -w '%{http_code}'
+          -k -X POST
+          -H 'Content-Type: application/pkcs10'
+          -H 'Content-Transfer-Encoding: base64'
+          -u "otp-test:{{ test_otp_token | default('valid-test-otp') }}"
+          --data-binary @{{ work_dir }}/otp-client.csr.b64
+          -o {{ work_dir }}/otp-enrolled.p7
+          {{ est_base }}/simpleenroll
+      register: _otp_valid
+      changed_when: false
+      tags: [otp]
+
+    - name: "TEST OTP-2: Enrollment with expired/reused OTP (should fail)"
+      ansible.builtin.command:
+        cmd: >-
+          curl -s -w '%{http_code}'
+          -k -X POST
+          -H 'Content-Type: application/pkcs10'
+          -H 'Content-Transfer-Encoding: base64'
+          -u "otp-test:{{ test_otp_token | default('valid-test-otp') }}"
+          --data-binary @{{ work_dir }}/otp-client.csr.b64
+          -o /dev/null
+          {{ est_base }}/simpleenroll
+      register: _otp_reuse
+      changed_when: false
+      tags: [otp]
+
+    - name: "TEST OTP-3: Enrollment with invalid OTP (should fail 401)"
+      ansible.builtin.command:
+        cmd: >-
+          curl -s -w '%{http_code}'
+          -k -X POST
+          -H 'Content-Type: application/pkcs10'
+          -H 'Content-Transfer-Encoding: base64'
+          -u "otp-test:INVALID_TOKEN_VALUE"
+          --data-binary @{{ work_dir }}/otp-client.csr.b64
+          -o /dev/null
+          {{ est_base }}/simpleenroll
+      register: _otp_invalid
+      changed_when: false
+      tags: [otp]
+
+    - name: OTP test results
+      ansible.builtin.debug:
+        msg: |
+          OTP-1 Valid OTP   : HTTP {{ _otp_valid.stdout }} (expect 200)
+          OTP-2 Reused OTP  : HTTP {{ _otp_reuse.stdout }} (expect 401/403)
+          OTP-3 Invalid OTP : HTTP {{ _otp_invalid.stdout }} (expect 401)
+      tags: [otp]
+
+    # ── mTLS Authentication Tests ────────────────────────────────────────────
+
+    - name: Generate untrusted CA for negative mTLS test
+      ansible.builtin.command:
+        cmd: >-
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1
+          -keyout {{ work_dir }}/untrusted-ca.key
+          -out {{ work_dir }}/untrusted-ca.pem
+          -days 30 -nodes
+          -subj "/CN=Untrusted CA/O=Evil Corp"
+      args:
+        creates: "{{ work_dir }}/untrusted-ca.pem"
+      tags: [mtls]
+
+    - name: Generate client cert signed by untrusted CA
+      ansible.builtin.shell:
+        cmd: |
+          openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+            -keyout {{ work_dir }}/untrusted-client.key \
+            -out {{ work_dir }}/untrusted-client.csr \
+            -nodes -subj "/CN=untrusted-client"
+          openssl x509 -req -in {{ work_dir }}/untrusted-client.csr \
+            -CA {{ work_dir }}/untrusted-ca.pem \
+            -CAkey {{ work_dir }}/untrusted-ca.key \
+            -CAcreateserial \
+            -out {{ work_dir }}/untrusted-client.pem \
+            -days 30
+      args:
+        creates: "{{ work_dir }}/untrusted-client.pem"
+      tags: [mtls]
+
+    - name: "TEST mTLS-1: Reenrollment with valid client certificate"
+      ansible.builtin.command:
+        cmd: >-
+          curl -s -w '%{http_code}'
+          -k -X POST
+          -H 'Content-Type: application/pkcs10'
+          -H 'Content-Transfer-Encoding: base64'
+          --cert {{ work_dir }}/otp-enrolled-cert.pem
+          --key {{ work_dir }}/otp-client.key
+          --data-binary @{{ work_dir }}/otp-client.csr.b64
+          -o /dev/null
+          {{ est_base }}/simplereenroll
+      register: _mtls_valid
+      changed_when: false
+      failed_when: false
+      tags: [mtls]
+
+    - name: "TEST mTLS-2: Reenrollment with untrusted client certificate (should fail)"
+      ansible.builtin.command:
+        cmd: >-
+          curl -s -w '%{http_code}'
+          -k -X POST
+          -H 'Content-Type: application/pkcs10'
+          -H 'Content-Transfer-Encoding: base64'
+          --cert {{ work_dir }}/untrusted-client.pem
+          --key {{ work_dir }}/untrusted-client.key
+          --data-binary @{{ work_dir }}/otp-client.csr.b64
+          -o /dev/null
+          {{ est_base }}/simplereenroll
+      register: _mtls_untrusted
+      changed_when: false
+      failed_when: false
+      tags: [mtls]
+
+    - name: mTLS test results
+      ansible.builtin.debug:
+        msg: |
+          mTLS-1 Valid cert     : HTTP {{ _mtls_valid.stdout | default('N/A') }} (expect 200)
+          mTLS-2 Untrusted cert : HTTP {{ _mtls_untrusted.stdout | default('N/A') }} (expect 401/403)
+      tags: [mtls]
+
+    # ── GSSAPI (Kerberos) Tests ──────────────────────────────────────────────
+
+    - name: Check if Kerberos is available
+      ansible.builtin.command:
+        cmd: klist
+      register: _krb_check
+      changed_when: false
+      failed_when: false
+      tags: [gssapi]
+
+    - name: "TEST GSSAPI-1: EST enrollment with Kerberos authentication"
+      ansible.builtin.command:
+        cmd: >-
+          curl -s -w '%{http_code}'
+          -k -X POST
+          --negotiate -u :
+          -H 'Content-Type: application/pkcs10'
+          -H 'Content-Transfer-Encoding: base64'
+          --data-binary @{{ work_dir }}/otp-client.csr.b64
+          -o /dev/null
+          {{ est_base }}/simpleenroll
+      register: _gssapi_enroll
+      changed_when: false
+      when: _krb_check.rc == 0
+      tags: [gssapi]
+
+    - name: GSSAPI test results
+      ansible.builtin.debug:
+        msg: >-
+          {% if _krb_check.rc == 0 %}
+          GSSAPI-1 Kerberos enroll: HTTP {{ _gssapi_enroll.stdout | default('N/A') }}
+          {% else %}
+          GSSAPI tests skipped — no Kerberos credentials (run kinit first)
+          {% endif %}
+      tags: [gssapi]
+
+    # ── Summary ──────────────────────────────────────────────────────────────
+
+    - name: Authentication test summary
+      ansible.builtin.debug:
+        msg: |
+          ═══ Authentication Test Summary ═══
+          OTP-1 Valid token      : HTTP {{ _otp_valid.stdout | default('N/A') }}
+          OTP-2 Reused token     : HTTP {{ _otp_reuse.stdout | default('N/A') }}
+          OTP-3 Invalid token    : HTTP {{ _otp_invalid.stdout | default('N/A') }}
+          mTLS-1 Valid cert      : HTTP {{ _mtls_valid.stdout | default('N/A') }}
+          mTLS-2 Untrusted cert  : HTTP {{ _mtls_untrusted.stdout | default('N/A') }}
+          GSSAPI-1 Kerberos      : {{ _gssapi_enroll.stdout | default('skipped') }}
+      tags: [summary]

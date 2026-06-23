@@ -1,0 +1,229 @@
+---
+# roles/kipuka/tasks/main.yml — Build and deploy kipuka EST server
+#
+# Builds kipuka from source using the Rust toolchain, creates the service
+# user, generates TLS certificates, templates the configuration, and
+# installs a systemd service unit.
+
+# ── Rust toolchain ───────────────────────────────────────────────────────────
+
+- name: Install Rust via system packages
+  ansible.builtin.dnf:
+    name:
+      - rust
+      - cargo
+    state: present
+  when: rust_install_method == "system"
+  tags: [kipuka, rust]
+
+- name: Check if rustup is installed
+  ansible.builtin.command:
+    cmd: rustup --version
+  register: _rustup_check
+  changed_when: false
+  failed_when: false
+  when: rust_install_method == "rustup"
+  tags: [kipuka, rust]
+
+- name: Install rustup
+  ansible.builtin.shell:
+    cmd: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain {{ rust_toolchain }}
+  when:
+    - rust_install_method == "rustup"
+    - _rustup_check.rc != 0
+  tags: [kipuka, rust]
+
+- name: Set Rust toolchain
+  ansible.builtin.command:
+    cmd: "{{ ansible_env.HOME }}/.cargo/bin/rustup default {{ rust_toolchain }}"
+  when: rust_install_method == "rustup"
+  changed_when: false
+  tags: [kipuka, rust]
+
+# ── Build kipuka ─────────────────────────────────────────────────────────────
+
+- name: Install build dependencies
+  ansible.builtin.dnf:
+    name:
+      - openssl-devel
+      - pkgconf-pkg-config
+      - gcc
+      - clang
+    state: present
+  tags: [kipuka, build]
+
+- name: Clone kipuka repository
+  ansible.builtin.git:
+    repo: "{{ kipuka_repo }}"
+    dest: "{{ kipuka_build_dir }}"
+    version: "{{ kipuka_branch }}"
+    force: true
+  tags: [kipuka, build]
+
+- name: Build kipuka release binary
+  ansible.builtin.command:
+    cmd: cargo build --release
+    chdir: "{{ kipuka_build_dir }}"
+  environment:
+    PATH: "{{ ansible_env.HOME }}/.cargo/bin:{{ ansible_env.PATH }}"
+  register: _cargo_build
+  changed_when: "'Compiling' in _cargo_build.stderr"
+  tags: [kipuka, build]
+
+- name: Install kipuka binary
+  ansible.builtin.copy:
+    src: "{{ kipuka_build_dir }}/target/release/kipuka"
+    dest: "{{ kipuka_install_dir }}/kipuka"
+    mode: "0755"
+    remote_src: true
+  notify: Restart kipuka
+  tags: [kipuka, install]
+
+# ── Service user and directories ────────────────────────────────────────────
+
+- name: Create kipuka group
+  ansible.builtin.group:
+    name: "{{ kipuka_group }}"
+    system: true
+  tags: [kipuka, user]
+
+- name: Create kipuka user
+  ansible.builtin.user:
+    name: "{{ kipuka_user }}"
+    group: "{{ kipuka_group }}"
+    system: true
+    shell: /sbin/nologin
+    home: "{{ kipuka_data_dir }}"
+    create_home: false
+  tags: [kipuka, user]
+
+- name: Create kipuka directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ kipuka_user }}"
+    group: "{{ kipuka_group }}"
+    mode: "0750"
+  loop:
+    - "{{ kipuka_config_dir }}"
+    - "{{ kipuka_config_dir }}/tls"
+    - "{{ kipuka_config_dir }}/ca"
+    - "{{ kipuka_data_dir }}"
+    - "{{ kipuka_log_dir }}"
+  tags: [kipuka, dirs]
+
+# ── TLS certificates ────────────────────────────────────────────────────────
+
+- name: Generate self-signed server TLS certificate
+  ansible.builtin.command:
+    cmd: >-
+      openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1
+      -keyout {{ kipuka_tls_key }}
+      -out {{ kipuka_tls_cert }}
+      -days 365 -nodes
+      -subj "/CN={{ inventory_hostname }}/O=Kipuka EST"
+      -addext "subjectAltName=DNS:{{ inventory_hostname }},IP:{{ ansible_host | default(ansible_default_ipv4.address) }}"
+      -addext "extendedKeyUsage=serverAuth,1.3.6.1.5.5.7.3.28"
+    creates: "{{ kipuka_tls_cert }}"
+  when: kipuka_tls_self_signed
+  tags: [kipuka, tls]
+  # Note: OID 1.3.6.1.5.5.7.3.28 = id-kp-cmcRA (RFC 7030 S3.3.2)
+
+- name: Set TLS key permissions
+  ansible.builtin.file:
+    path: "{{ kipuka_tls_key }}"
+    owner: "{{ kipuka_user }}"
+    group: "{{ kipuka_group }}"
+    mode: "0400"
+  tags: [kipuka, tls]
+
+- name: Copy CA certificate for client trust anchors
+  ansible.builtin.copy:
+    src: "{{ kipuka_tls_cert }}"
+    dest: "{{ kipuka_tls_ca_file }}"
+    remote_src: true
+    owner: "{{ kipuka_user }}"
+    group: "{{ kipuka_group }}"
+    mode: "0644"
+  when: kipuka_tls_self_signed
+  tags: [kipuka, tls]
+
+# ── Configuration ────────────────────────────────────────────────────────────
+
+- name: Template kipuka.toml configuration
+  ansible.builtin.template:
+    src: kipuka.toml.j2
+    dest: "{{ kipuka_config_dir }}/kipuka.toml"
+    owner: "{{ kipuka_user }}"
+    group: "{{ kipuka_group }}"
+    mode: "0640"
+    validate: "{{ kipuka_install_dir }}/kipuka --check-config %s || true"
+  notify: Restart kipuka
+  tags: [kipuka, config]
+
+# ── Systemd service ──────────────────────────────────────────────────────────
+
+- name: Install kipuka systemd service
+  ansible.builtin.template:
+    src: kipuka.service.j2
+    dest: /etc/systemd/system/kipuka.service
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart kipuka
+  tags: [kipuka, service]
+
+- name: Start and enable kipuka service
+  ansible.builtin.systemd:
+    name: kipuka
+    state: started
+    enabled: true
+    daemon_reload: true
+  tags: [kipuka, service]
+
+# ── Firewall ─────────────────────────────────────────────────────────────────
+
+- name: Open kipuka EST port in firewall
+  ansible.posix.firewalld:
+    port: "{{ kipuka_listen_port }}/tcp"
+    permanent: true
+    immediate: true
+    state: enabled
+  tags: [kipuka, firewall]
+
+- name: Open kipuka admin port in firewall
+  ansible.posix.firewalld:
+    port: "{{ kipuka_admin_port }}/tcp"
+    permanent: true
+    immediate: true
+    state: enabled
+  when: kipuka_admin_enabled
+  tags: [kipuka, firewall]
+
+# ── Verification ─────────────────────────────────────────────────────────────
+
+- name: Wait for kipuka to start accepting connections
+  ansible.builtin.wait_for:
+    host: "{{ kipuka_listen_addr }}"
+    port: "{{ kipuka_listen_port }}"
+    timeout: 30
+  tags: [kipuka, verify]
+
+- name: Verify EST /cacerts endpoint
+  ansible.builtin.uri:
+    url: "https://{{ inventory_hostname }}:{{ kipuka_listen_port }}/.well-known/est/cacerts"
+    validate_certs: false
+    return_content: true
+    status_code: 200
+  register: _cacerts_check
+  retries: 5
+  delay: 3
+  until: _cacerts_check.status == 200
+  tags: [kipuka, verify]
+
+- name: Report kipuka deployment status
+  ansible.builtin.debug:
+    msg: >-
+      kipuka EST server deployed successfully on {{ inventory_hostname }}:{{ kipuka_listen_port }}.
+      /cacerts endpoint returned HTTP {{ _cacerts_check.status }}.
+  tags: [kipuka, verify]

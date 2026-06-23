@@ -1,0 +1,191 @@
+---
+# playbooks/test-hsm.yml — Test HSM integration
+#
+# Tests PKCS#11 HSM integration using Kryoptic software token for CI/CD,
+# or a real HSM when available. Validates:
+#   1. Initialize Kryoptic PKCS#11 token
+#   2. Generate CA key in token
+#   3. Sign certificate via PKCS#11
+#   4. Verify key non-extractability
+#
+# Usage:
+#   ansible-playbook playbooks/test-hsm.yml
+#   ansible-playbook playbooks/test-hsm.yml -e kipuka_hsm_provider=entrust
+
+- name: Test HSM integration
+  hosts: est_servers
+  gather_facts: true
+  vars:
+    work_dir: "{{ test_output_dir }}/hsm-tests"
+    kryoptic_token_dir: "{{ work_dir }}/kryoptic-token"
+    pkcs11_tool: "pkcs11-tool"
+    # Use Kryoptic as default for CI; override for real HSM
+    hsm_library: "{{ kipuka_hsm_library_path | default('/usr/lib64/libkryoptic_pkcs11.so') }}"
+    hsm_pin: "12345678"
+    hsm_token_label: "kipuka-test-hsm"
+
+  pre_tasks:
+    - name: Create test directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - "{{ work_dir }}"
+        - "{{ kryoptic_token_dir }}"
+      tags: [hsm, setup]
+
+    - name: Install PKCS#11 tools
+      ansible.builtin.dnf:
+        name:
+          - opensc
+          - p11-kit
+          - p11-kit-trust
+        state: present
+      tags: [hsm, setup]
+
+  tasks:
+    # ── Kryoptic token setup ────────────────────────────────────────────────
+
+    - name: Check if Kryoptic library exists
+      ansible.builtin.stat:
+        path: "{{ hsm_library }}"
+      register: _kryoptic_lib
+      tags: [hsm, kryoptic]
+
+    - name: Skip HSM tests if PKCS#11 library not found
+      ansible.builtin.debug:
+        msg: >-
+          PKCS#11 library {{ hsm_library }} not found.
+          Install Kryoptic or configure kipuka_hsm_library_path.
+      when: not _kryoptic_lib.stat.exists
+      tags: [hsm, kryoptic]
+
+    - name: "TEST HSM-1: Initialize PKCS#11 token"
+      ansible.builtin.command:
+        cmd: >-
+          {{ pkcs11_tool }} --module {{ hsm_library }}
+          --init-token --label {{ hsm_token_label }}
+          --so-pin {{ hsm_pin }}
+      register: _hsm_init
+      when: _kryoptic_lib.stat.exists
+      changed_when: "'initialized' in _hsm_init.stdout | default('')"
+      failed_when: false
+      environment:
+        KRYOPTIC_CONF: "{{ kryoptic_token_dir }}"
+      tags: [hsm, init]
+
+    - name: Set user PIN on token
+      ansible.builtin.command:
+        cmd: >-
+          {{ pkcs11_tool }} --module {{ hsm_library }}
+          --init-pin --login
+          --so-pin {{ hsm_pin }}
+          --new-pin {{ hsm_pin }}
+      when: _kryoptic_lib.stat.exists
+      changed_when: false
+      failed_when: false
+      environment:
+        KRYOPTIC_CONF: "{{ kryoptic_token_dir }}"
+      tags: [hsm, init]
+
+    - name: "RESULT HSM-1: Token initialization"
+      ansible.builtin.debug:
+        msg: "Token init: {{ _hsm_init.stdout | default('skipped') }}"
+      tags: [hsm, init]
+
+    # ── Generate CA key in HSM ──────────────────────────────────────────────
+
+    - name: "TEST HSM-2: Generate EC P-256 CA key in HSM"
+      ansible.builtin.command:
+        cmd: >-
+          {{ pkcs11_tool }} --module {{ hsm_library }}
+          --login --pin {{ hsm_pin }}
+          --keypairgen --key-type EC:prime256v1
+          --id 01 --label ca-key
+      register: _hsm_keygen
+      when: _kryoptic_lib.stat.exists
+      changed_when: "'Key pair generated' in _hsm_keygen.stdout | default('')"
+      failed_when: false
+      environment:
+        KRYOPTIC_CONF: "{{ kryoptic_token_dir }}"
+      tags: [hsm, keygen]
+
+    - name: "RESULT HSM-2: Key generation"
+      ansible.builtin.debug:
+        msg: "Key generation: {{ _hsm_keygen.stdout | default('skipped') }}"
+      tags: [hsm, keygen]
+
+    # ── Sign certificate via PKCS#11 ────────────────────────────────────────
+
+    - name: Generate CSR for HSM signing test
+      ansible.builtin.command:
+        cmd: >-
+          openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:prime256v1
+          -keyout {{ work_dir }}/hsm-test.key
+          -out {{ work_dir }}/hsm-test.csr
+          -nodes
+          -subj "/CN=hsm-test.{{ domain }}"
+      args:
+        creates: "{{ work_dir }}/hsm-test.csr"
+      when: _kryoptic_lib.stat.exists
+      tags: [hsm, sign]
+
+    - name: "TEST HSM-3: Sign certificate using HSM-backed CA key"
+      ansible.builtin.command:
+        cmd: >-
+          openssl x509 -req -in {{ work_dir }}/hsm-test.csr
+          -engine pkcs11 -keyform engine
+          -CAkey "pkcs11:token={{ hsm_token_label }};object=ca-key;type=private;pin-value={{ hsm_pin }}"
+          -out {{ work_dir }}/hsm-test.pem
+          -days 30 -sha256
+      register: _hsm_sign
+      when: _kryoptic_lib.stat.exists
+      failed_when: false
+      environment:
+        KRYOPTIC_CONF: "{{ kryoptic_token_dir }}"
+      tags: [hsm, sign]
+
+    - name: "RESULT HSM-3: Certificate signing"
+      ansible.builtin.debug:
+        msg: "HSM signing: {{ 'SUCCESS' if _hsm_sign.rc | default(1) == 0 else 'FAILED — ' + (_hsm_sign.stderr | default('skipped')) }}"
+      tags: [hsm, sign]
+
+    # ── Verify key non-extractability ───────────────────────────────────────
+
+    - name: "TEST HSM-4: Verify private key is not extractable"
+      ansible.builtin.command:
+        cmd: >-
+          {{ pkcs11_tool }} --module {{ hsm_library }}
+          --login --pin {{ hsm_pin }}
+          --read-object --type privkey --id 01
+      register: _hsm_extract
+      when: _kryoptic_lib.stat.exists
+      failed_when: false
+      environment:
+        KRYOPTIC_CONF: "{{ kryoptic_token_dir }}"
+      tags: [hsm, extract]
+
+    - name: "RESULT HSM-4: Non-extractability check"
+      ansible.builtin.debug:
+        msg: >-
+          {% if _hsm_extract.rc | default(0) != 0 %}
+          PASS — private key is not extractable (expected behavior)
+          {% else %}
+          WARNING — private key was extractable (check token configuration)
+          {% endif %}
+      tags: [hsm, extract]
+
+    # ── Summary ──────────────────────────────────────────────────────────────
+
+    - name: HSM test summary
+      ansible.builtin.debug:
+        msg: |
+          ═══ HSM Test Summary ═══
+          PKCS#11 library : {{ hsm_library }}
+          Library found   : {{ _kryoptic_lib.stat.exists }}
+          HSM-1 Init token      : {{ 'OK' if _hsm_init.rc | default(1) == 0 else 'SKIPPED/FAILED' }}
+          HSM-2 Generate key    : {{ 'OK' if _hsm_keygen.rc | default(1) == 0 else 'SKIPPED/FAILED' }}
+          HSM-3 Sign cert       : {{ 'OK' if _hsm_sign.rc | default(1) == 0 else 'SKIPPED/FAILED' }}
+          HSM-4 Non-extractable : {{ 'PASS' if _hsm_extract.rc | default(0) != 0 else 'CHECK' }}
+      tags: [hsm, summary]

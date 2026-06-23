@@ -1,0 +1,97 @@
+# =============================================================================
+# Stage: package + deploy — RPM, container, Beaker, GitLab Pages
+# =============================================================================
+
+# ── Package ─────────────────────────────────────────────────────────────────
+
+rpm-build:
+  stage: package
+  image: registry.access.redhat.com/ubi9/ubi:latest
+  script:
+    - echo "--- RPM build placeholder ---"
+    - echo "TODO -- create kipuka.spec and build SRPM/RPM via mock or rpmbuild"
+    - echo "Blocked on upstream packaging review"
+  needs:
+    - job: build-release
+  rules:
+    - if: $CI_COMMIT_TAG
+      when: manual
+      allow_failure: true
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+      allow_failure: true
+
+container:
+  stage: package
+  image:
+    name: quay.io/buildah/stable:latest
+    entrypoint: [""]
+  variables:
+    STORAGE_DRIVER: vfs
+    BUILDAH_FORMAT: oci
+    CONTAINER_REGISTRY: ${CI_REGISTRY}
+    CONTAINER_IMAGE: ${CI_REGISTRY_IMAGE}
+  script:
+    - buildah bud
+        --tag "${CONTAINER_IMAGE}:${CI_COMMIT_SHORT_SHA}"
+        --tag "${CONTAINER_IMAGE}:latest"
+        -f Containerfile .
+    # Push only on default branch or tags
+    - |
+      if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ] || [ -n "$CI_COMMIT_TAG" ]; then
+        buildah login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+        buildah push "${CONTAINER_IMAGE}:${CI_COMMIT_SHORT_SHA}"
+        buildah push "${CONTAINER_IMAGE}:latest"
+      fi
+  needs:
+    - job: unit-tests
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - Containerfile
+        - Cargo.toml
+        - Cargo.lock
+        - "src/**/*"
+        - "crates/**/*"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+# ── Deploy ──────────────────────────────────────────────────────────────────
+
+beaker-submit:
+  stage: deploy
+  image: registry.access.redhat.com/ubi9/ubi:latest
+  before_script:
+    - dnf install -y beaker-client 2>/dev/null || true
+  script:
+    - echo "--- Beaker hardware test submission ---"
+    - echo "Submitting contrib/beaker/kipuka-beaker.xml to Beaker"
+    # The Beaker XML references setup.sh and smoke-test.sh from the repo
+    - |
+      if command -v bkr &>/dev/null; then
+        bkr job-submit contrib/beaker/kipuka-beaker.xml
+      else
+        echo "SKIP -- beaker-client not available in this environment"
+        echo "Install with: dnf install beaker-client"
+      fi
+  needs:
+    - job: build-release
+    - job: unit-tests
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+      allow_failure: true
+
+pages:
+  stage: deploy
+  image: alpine:latest
+  script:
+    - mv target/doc/ public/
+  artifacts:
+    paths:
+      - public
+    expire_in: 30 days
+  needs:
+    - job: build-docs
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

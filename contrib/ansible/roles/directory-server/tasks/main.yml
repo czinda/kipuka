@@ -1,0 +1,71 @@
+---
+# roles/directory-server/tasks/main.yml — Install and configure 389 Directory Server
+#
+# Creates a DS instance for Dogtag PKI and/or kipuka to use as a backend
+# certificate and OTP store.
+
+- name: Install 389 Directory Server packages
+  ansible.builtin.dnf:
+    name:
+      - 389-ds-base
+      - 389-ds-base-libs
+      - python3-lib389
+    state: present
+  tags: [ds, packages]
+
+- name: Check if DS instance already exists
+  ansible.builtin.stat:
+    path: "/etc/dirsrv/slapd-{{ ds_instance_name }}"
+  register: _ds_instance
+  tags: [ds]
+
+- name: Create DS instance INF file
+  ansible.builtin.template:
+    src: ds-instance.inf.j2
+    dest: "/tmp/ds-{{ ds_instance_name }}.inf"
+    mode: "0600"
+  when: not _ds_instance.stat.exists
+  tags: [ds]
+
+- name: Create DS instance via dscreate
+  ansible.builtin.command:
+    cmd: "dscreate from-file /tmp/ds-{{ ds_instance_name }}.inf"
+  when: not _ds_instance.stat.exists
+  tags: [ds]
+
+- name: Remove INF file (contains password)
+  ansible.builtin.file:
+    path: "/tmp/ds-{{ ds_instance_name }}.inf"
+    state: absent
+  tags: [ds]
+
+- name: Start and enable DS instance
+  ansible.builtin.systemd:
+    name: "dirsrv@{{ ds_instance_name }}"
+    state: started
+    enabled: true
+  tags: [ds]
+
+- name: Open LDAP port in firewall
+  ansible.posix.firewalld:
+    port: "{{ item }}/tcp"
+    permanent: true
+    immediate: true
+    state: enabled
+  loop:
+    - "{{ ds_port }}"
+    - "{{ ds_secure_port }}"
+  tags: [ds, firewall]
+
+- name: Verify DS instance is accepting connections
+  ansible.builtin.command:
+    cmd: >-
+      ldapsearch -x -H ldap://localhost:{{ ds_port }}
+      -D "{{ ds_root_dn }}" -w "{{ ds_root_password }}"
+      -b "" -s base "(objectClass=*)" namingContexts
+  register: _ds_verify
+  changed_when: false
+  retries: 5
+  delay: 3
+  until: _ds_verify.rc == 0
+  tags: [ds, verify]

@@ -1,0 +1,191 @@
+---
+# roles/ahdapa/tasks/main.yml — Install and configure ahdapa
+#
+# ahdapa is a Rust-based IPA/CA server (https://codeberg.org/freeipa/ahdapa)
+# written by Alexander Bokovoy. It provides a lighter-weight CA backend
+# alternative to Dogtag PKI, with a modern API and built-in certificate
+# enrollment support.
+
+# ── Rust toolchain ───────────────────────────────────────────────────────────
+
+- name: Check if Rust toolchain is available
+  ansible.builtin.command:
+    cmd: cargo --version
+  register: _cargo_check
+  changed_when: false
+  failed_when: false
+  environment:
+    PATH: "{{ ansible_env.HOME }}/.cargo/bin:{{ ansible_env.PATH }}"
+  tags: [ahdapa, rust]
+
+- name: Install rustup for ahdapa build
+  ansible.builtin.shell:
+    cmd: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+  when: _cargo_check.rc != 0
+  tags: [ahdapa, rust]
+
+# ── Build dependencies ──────────────────────────────────────────────────────
+
+- name: Install ahdapa build dependencies
+  ansible.builtin.dnf:
+    name:
+      - openssl-devel
+      - pkgconf-pkg-config
+      - gcc
+      - clang
+      - krb5-devel
+      - 389-ds-base-devel
+      - cyrus-sasl-devel
+    state: present
+  tags: [ahdapa, packages]
+
+# ── Service user ─────────────────────────────────────────────────────────────
+
+- name: Create ahdapa group
+  ansible.builtin.group:
+    name: "{{ ahdapa_group }}"
+    system: true
+  tags: [ahdapa, user]
+
+- name: Create ahdapa user
+  ansible.builtin.user:
+    name: "{{ ahdapa_user }}"
+    group: "{{ ahdapa_group }}"
+    system: true
+    shell: /sbin/nologin
+    home: "{{ ahdapa_data_dir }}"
+    create_home: false
+  tags: [ahdapa, user]
+
+# ── Build ahdapa ─────────────────────────────────────────────────────────────
+
+- name: Clone ahdapa repository
+  ansible.builtin.git:
+    repo: "{{ ahdapa_repo }}"
+    dest: "{{ ahdapa_build_dir }}"
+    version: "{{ ahdapa_branch }}"
+    force: true
+  tags: [ahdapa, build]
+
+- name: Build ahdapa release binary
+  ansible.builtin.command:
+    cmd: cargo build --release
+    chdir: "{{ ahdapa_build_dir }}"
+  environment:
+    PATH: "{{ ansible_env.HOME }}/.cargo/bin:{{ ansible_env.PATH }}"
+  register: _ahdapa_build
+  changed_when: "'Compiling' in _ahdapa_build.stderr"
+  tags: [ahdapa, build]
+
+- name: Install ahdapa binary
+  ansible.builtin.copy:
+    src: "{{ ahdapa_build_dir }}/target/release/ahdapa"
+    dest: "{{ ahdapa_install_dir }}/ahdapa"
+    mode: "0755"
+    remote_src: true
+  notify: Restart ahdapa
+  tags: [ahdapa, install]
+
+# ── Directories ──────────────────────────────────────────────────────────────
+
+- name: Create ahdapa directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ ahdapa_user }}"
+    group: "{{ ahdapa_group }}"
+    mode: "0750"
+  loop:
+    - "{{ ahdapa_config_dir }}"
+    - "{{ ahdapa_config_dir }}/tls"
+    - "{{ ahdapa_config_dir }}/ca"
+    - "{{ ahdapa_data_dir }}"
+  tags: [ahdapa, dirs]
+
+# ── Generate CA key pair ─────────────────────────────────────────────────────
+
+- name: Generate ahdapa CA key and self-signed certificate
+  ansible.builtin.command:
+    cmd: >-
+      openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1
+      -keyout {{ ahdapa_config_dir }}/ca/ca.key
+      -out {{ ahdapa_config_dir }}/ca/ca.pem
+      -days 3650 -nodes
+      -subj "/CN=ahdapa CA/O={{ kipuka_ca_organization }}"
+    creates: "{{ ahdapa_config_dir }}/ca/ca.pem"
+  tags: [ahdapa, tls]
+
+- name: Set CA key permissions
+  ansible.builtin.file:
+    path: "{{ ahdapa_config_dir }}/ca/ca.key"
+    owner: "{{ ahdapa_user }}"
+    group: "{{ ahdapa_group }}"
+    mode: "0400"
+  tags: [ahdapa, tls]
+
+# ── Generate server TLS certificate ─────────────────────────────────────────
+
+- name: Generate ahdapa server TLS certificate
+  ansible.builtin.command:
+    cmd: >-
+      openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1
+      -keyout {{ ahdapa_config_dir }}/tls/server.key
+      -out {{ ahdapa_config_dir }}/tls/server.pem
+      -days 365 -nodes
+      -subj "/CN={{ inventory_hostname }}/O=ahdapa"
+      -addext "subjectAltName=DNS:{{ inventory_hostname }}"
+    creates: "{{ ahdapa_config_dir }}/tls/server.pem"
+  tags: [ahdapa, tls]
+
+# ── Systemd service ──────────────────────────────────────────────────────────
+
+- name: Install ahdapa systemd service
+  ansible.builtin.template:
+    src: ahdapa.service.j2
+    dest: /etc/systemd/system/ahdapa.service
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart ahdapa
+  tags: [ahdapa, service]
+
+- name: Start and enable ahdapa service
+  ansible.builtin.systemd:
+    name: ahdapa
+    state: started
+    enabled: true
+    daemon_reload: true
+  tags: [ahdapa, service]
+
+# ── Firewall ─────────────────────────────────────────────────────────────────
+
+- name: Open ahdapa port in firewall
+  ansible.posix.firewalld:
+    port: "{{ ahdapa_listen_port }}/tcp"
+    permanent: true
+    immediate: true
+    state: enabled
+  tags: [ahdapa, firewall]
+
+# ── Export CA cert for kipuka ────────────────────────────────────────────────
+
+- name: Copy ahdapa CA certificate to kipuka CA directory
+  ansible.builtin.copy:
+    src: "{{ ahdapa_config_dir }}/ca/ca.pem"
+    dest: /etc/kipuka/ca/ahdapa-ca.pem
+    remote_src: true
+    mode: "0644"
+  tags: [ahdapa, export]
+
+# ── Verification ─────────────────────────────────────────────────────────────
+
+- name: Wait for ahdapa to start
+  ansible.builtin.wait_for:
+    port: "{{ ahdapa_listen_port }}"
+    timeout: 30
+  tags: [ahdapa, verify]
+
+- name: Report ahdapa deployment status
+  ansible.builtin.debug:
+    msg: "ahdapa CA server deployed on {{ inventory_hostname }}:{{ ahdapa_listen_port }}"
+  tags: [ahdapa, verify]

@@ -1,0 +1,55 @@
+---
+# Kipuka EST Server — Test Lab Inventory
+#
+# Groups:
+#   est_servers  — hosts running the kipuka EST server
+#   ca_servers   — hosts running Dogtag CA (or ahdapa)
+#   kra_servers  — hosts running Dogtag KRA (server-side keygen)
+#   ds_servers   — hosts running 389 Directory Server
+#   clients      — hosts used for EST enrollment testing
+#
+# Adjust hostnames and IPs for your environment.
+
+all:
+  vars:
+    # Common domain settings
+    domain: example.test
+    realm: EXAMPLE.TEST
+
+  children:
+    # 389 Directory Server instances backing Dogtag/ahdapa
+    ds_servers:
+      hosts:
+        ds1.example.test:
+          ansible_host: 192.168.122.10
+          ds_instance_name: kipuka-ds
+          ds_suffix: "dc=example,dc=test"
+
+    # Dogtag CA subsystems (or ahdapa hosts)
+    ca_servers:
+      hosts:
+        ca1.example.test:
+          ansible_host: 192.168.122.20
+          ca_role: primary
+        ca2.example.test:
+          ansible_host: 192.168.122.21
+          ca_role: secondary
+
+    # Dogtag KRA subsystems (for /serverkeygen)
+    kra_servers:
+      hosts:
+        ca1.example.test:
+          # KRA colocated with primary CA
+
+    # Kipuka EST server instances
+    est_servers:
+      hosts:
+        est1.example.test:
+          ansible_host: 192.168.122.30
+          kipuka_listen_port: 8443
+
+    # Client hosts for enrollment testing
+    clients:
+      hosts:
+        client1.example.test:
+          ansible_host: 192.168.122.40

@@ -1,0 +1,64 @@
+# =============================================================================
+# kipuka CI/CD pipeline
+# =============================================================================
+# Multi-stage pipeline for the kipuka EST enrollment server.
+# Targets RHEL 10 with OpenSSL 3.5+ for PQC support.
+#
+# Pipeline stages:
+#   lint        -> code formatting, lints, license audit, shell scripts
+#   build       -> debug build, release build, documentation
+#   test        -> unit tests, protocol-specific tests
+#   security    -> vulnerability audit, license compliance, FIPS validation
+#   integration -> Dogtag PKI end-to-end, EST interop, cross-product
+#   package     -> RPM (placeholder), OCI container
+#   deploy      -> Beaker hardware tests, GitLab Pages
+# =============================================================================
+
+stages:
+  - lint
+  - build
+  - test
+  - security
+  - integration
+  - package
+  - deploy
+
+# ── Global variables ────────────────────────────────────────────────────────
+
+variables:
+  # Rust toolchain
+  RUST_IMAGE: "rust:1.85-bookworm"
+  CARGO_HOME: "${CI_PROJECT_DIR}/.cargo"
+  CARGO_TERM_COLOR: "always"
+  RUSTFLAGS: "-D warnings"
+  RUST_BACKTRACE: "1"
+
+  # Project settings
+  KIPUKA_FEATURES: "--all-features"
+  RHEL_VERSION: "10"
+
+# ── Global cache ────────────────────────────────────────────────────────────
+
+default:
+  cache:
+    key: "${CI_COMMIT_REF_SLUG}"
+    paths:
+      - .cargo/registry/
+      - .cargo/git/
+      - target/
+    policy: pull
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
+
+# ── Includes ────────────────────────────────────────────────────────────────
+
+include:
+  - local: '.gitlab/ci/lint.yml'
+  - local: '.gitlab/ci/build.yml'
+  - local: '.gitlab/ci/test.yml'
+  - local: '.gitlab/ci/security.yml'
+  - local: '.gitlab/ci/integration.yml'
+  - local: '.gitlab/ci/deploy.yml'

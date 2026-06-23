@@ -1,0 +1,23 @@
+# =============================================================================
+# clippy configuration for kipuka
+# =============================================================================
+# Run: cargo clippy --all-features --all-targets -- -D warnings
+#
+# Project-level clippy thresholds. Lint groups are configured via
+# #![warn(...)] / #![deny(...)] in lib.rs / main.rs; this file holds
+# numeric knobs that clippy reads from the filesystem.
+
+# Functions longer than this trigger cognitive_complexity warnings.
+cognitive-complexity-threshold = 30
+
+# Structs with more fields than this trigger too_many_arguments.
+too-many-arguments-threshold = 8
+
+# Enum variants above this count trigger the large_enum_variant lint.
+enum-variant-size-threshold = 200
+
+# Type complexity threshold before type_complexity fires.
+type-complexity-threshold = 300
+
+# MSRV for compatibility lints -- matches workspace rust-version.
+msrv = "1.85"

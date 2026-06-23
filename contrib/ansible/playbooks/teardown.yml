@@ -1,0 +1,192 @@
+---
+# playbooks/teardown.yml — Clean teardown of all kipuka stack components
+#
+# Removes all components in reverse order: kipuka -> KRA -> CA -> DS
+# Use with caution — this destroys all data.
+#
+# Usage:
+#   ansible-playbook playbooks/teardown.yml
+#   ansible-playbook playbooks/teardown.yml --tags kipuka    # kipuka only
+#   ansible-playbook playbooks/teardown.yml --tags ca,kra    # CA and KRA only
+
+- name: Teardown kipuka EST server
+  hosts: est_servers
+  tags: [kipuka, teardown]
+  tasks:
+    - name: Stop kipuka service
+      ansible.builtin.systemd:
+        name: kipuka
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    - name: Remove kipuka systemd unit
+      ansible.builtin.file:
+        path: /etc/systemd/system/kipuka.service
+        state: absent
+      notify: Reload systemd
+
+    - name: Remove kipuka binary
+      ansible.builtin.file:
+        path: "{{ kipuka_install_dir }}/kipuka"
+        state: absent
+
+    - name: Remove kipuka configuration
+      ansible.builtin.file:
+        path: "{{ kipuka_config_dir }}"
+        state: absent
+
+    - name: Remove kipuka data
+      ansible.builtin.file:
+        path: "{{ kipuka_data_dir }}"
+        state: absent
+
+    - name: Remove kipuka logs
+      ansible.builtin.file:
+        path: "{{ kipuka_log_dir }}"
+        state: absent
+
+    - name: Remove kipuka user
+      ansible.builtin.user:
+        name: "{{ kipuka_user }}"
+        state: absent
+        remove: true
+
+    - name: Remove kipuka group
+      ansible.builtin.group:
+        name: "{{ kipuka_group }}"
+        state: absent
+
+    - name: Remove kipuka build directory
+      ansible.builtin.file:
+        path: "{{ kipuka_build_dir }}"
+        state: absent
+
+    - name: Close kipuka firewall ports
+      ansible.posix.firewalld:
+        port: "{{ item }}/tcp"
+        permanent: true
+        immediate: true
+        state: disabled
+      loop:
+        - "{{ kipuka_listen_port }}"
+        - "{{ kipuka_admin_port }}"
+      failed_when: false
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+- name: Teardown ahdapa (if deployed)
+  hosts: ca_servers
+  tags: [ahdapa, teardown]
+  tasks:
+    - name: Stop ahdapa service
+      ansible.builtin.systemd:
+        name: ahdapa
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    - name: Remove ahdapa systemd unit
+      ansible.builtin.file:
+        path: /etc/systemd/system/ahdapa.service
+        state: absent
+
+    - name: Remove ahdapa directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ ahdapa_install_dir }}/ahdapa"
+        - "{{ ahdapa_config_dir }}"
+        - "{{ ahdapa_data_dir }}"
+        - "{{ ahdapa_build_dir }}"
+
+    - name: Remove ahdapa user
+      ansible.builtin.user:
+        name: "{{ ahdapa_user }}"
+        state: absent
+        remove: true
+
+    - name: Remove ahdapa group
+      ansible.builtin.group:
+        name: "{{ ahdapa_group }}"
+        state: absent
+
+- name: Teardown Dogtag KRA
+  hosts: kra_servers
+  tags: [kra, teardown]
+  tasks:
+    - name: Remove KRA subsystem
+      ansible.builtin.command:
+        cmd: pkidestroy -s KRA -i {{ dogtag_instance_name }}
+      failed_when: false
+
+- name: Teardown Dogtag CA
+  hosts: ca_servers
+  tags: [ca, teardown]
+  tasks:
+    - name: Stop Dogtag instance
+      ansible.builtin.systemd:
+        name: "pki-tomcatd@{{ dogtag_instance_name }}"
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    - name: Remove Dogtag instance
+      ansible.builtin.command:
+        cmd: pkidestroy -s CA -i {{ dogtag_instance_name }}
+      failed_when: false
+
+    - name: Close Dogtag firewall ports
+      ansible.posix.firewalld:
+        port: "{{ item }}/tcp"
+        permanent: true
+        immediate: true
+        state: disabled
+      loop:
+        - "8443"
+        - "8080"
+      failed_when: false
+
+- name: Teardown 389 Directory Server
+  hosts: ds_servers
+  tags: [ds, teardown]
+  tasks:
+    - name: Stop DS instance
+      ansible.builtin.systemd:
+        name: "dirsrv@{{ ds_instance_name }}"
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    - name: Remove DS instance
+      ansible.builtin.command:
+        cmd: dsctl {{ ds_instance_name }} remove --do-it
+      failed_when: false
+
+    - name: Close LDAP firewall ports
+      ansible.posix.firewalld:
+        port: "{{ item }}/tcp"
+        permanent: true
+        immediate: true
+        state: disabled
+      loop:
+        - "{{ ds_port }}"
+        - "{{ ds_secure_port }}"
+      failed_when: false
+
+- name: Clean up test artifacts
+  hosts: all
+  tags: [cleanup, teardown]
+  tasks:
+    - name: Remove test output directory
+      ansible.builtin.file:
+        path: "{{ test_output_dir }}"
+        state: absent
+
+    - name: Report teardown complete
+      ansible.builtin.debug:
+        msg: "Teardown complete on {{ inventory_hostname }}"

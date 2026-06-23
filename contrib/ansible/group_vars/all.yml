@@ -1,0 +1,126 @@
+---
+# Kipuka EST Server — Default Variables for All Playbooks
+# ========================================================
+#
+# Override per-group or per-host as needed.
+
+# ── Kipuka build settings ────────────────────────────────────────────────────
+kipuka_repo: "https://codeberg.org/czinda/kipuka.git"
+kipuka_branch: "main"
+kipuka_version: "0.1.0"
+kipuka_build_dir: "/opt/kipuka-build"
+kipuka_install_dir: "/usr/local/bin"
+
+# Rust toolchain — "system" uses distro packages, "rustup" installs via rustup.rs
+rust_install_method: "rustup"
+rust_toolchain: "stable"
+
+# ── Kipuka runtime settings ─────────────────────────────────────────────────
+kipuka_user: "kipuka"
+kipuka_group: "kipuka"
+kipuka_config_dir: "/etc/kipuka"
+kipuka_data_dir: "/var/lib/kipuka"
+kipuka_log_dir: "/var/log/kipuka"
+kipuka_listen_addr: "0.0.0.0"
+kipuka_listen_port: 8443
+kipuka_admin_port: 9443
+kipuka_admin_enabled: false
+
+# Database backend — sqlite, postgres, or mariadb
+kipuka_db_backend: "sqlite"
+kipuka_db_url: "sqlite:///var/lib/kipuka/kipuka.db"
+
+# ── TLS settings ─────────────────────────────────────────────────────────────
+kipuka_tls_cert: "/etc/kipuka/tls/server.pem"
+kipuka_tls_key: "/etc/kipuka/tls/server.key"
+kipuka_tls_ca_file: "/etc/kipuka/tls/client-ca-bundle.pem"
+kipuka_tls_min_version: "1.2"
+
+# Self-signed TLS — set to false to use externally provisioned certs
+kipuka_tls_self_signed: true
+
+# ── CA settings ──────────────────────────────────────────────────────────────
+# Default CA key type for auto-generated CA keys.
+# Classical:  "rsa:2048", "rsa:4096", "ec:P-256", "ec:P-384", "ed25519"
+# PQC:        "ml-dsa-44", "ml-dsa-65", "ml-dsa-87"
+# Composite:  "ml-dsa-44-with-ec-P-256", "ml-dsa-65-with-ec-P-384", etc.
+kipuka_ca_key_type: "ec:P-256"
+kipuka_ca_validity_days: 365
+kipuka_ca_common_name: "Kipuka EST CA"
+kipuka_ca_organization: "Test Lab"
+
+# ── OTP settings ─────────────────────────────────────────────────────────────
+kipuka_otp_enabled: true
+kipuka_otp_token_length: 24
+kipuka_otp_default_ttl: "24h"
+kipuka_otp_hash_algorithm: "argon2id"
+
+# ── EST protocol settings ───────────────────────────────────────────────────
+kipuka_est_simpleenroll: true
+kipuka_est_simplereenroll: true
+kipuka_est_fullcmc: false
+kipuka_est_serverkeygen: false
+kipuka_est_csrattrs: true
+
+# ── HA settings ──────────────────────────────────────────────────────────────
+kipuka_ha_enabled: false
+kipuka_ha_strategy: "active-passive"
+kipuka_ha_check_interval: "30s"
+kipuka_ha_failure_threshold: 3
+
+# ── HSM / PKCS#11 settings ──────────────────────────────────────────────────
+kipuka_hsm_enabled: false
+# Provider: entrust, utimaco, kryoptic, thales_csp, thales_tct
+kipuka_hsm_provider: "kryoptic"
+kipuka_hsm_library_path: "/usr/lib64/libkryoptic_pkcs11.so"
+kipuka_hsm_pin: "env:KIPUKA_HSM_PIN"
+kipuka_hsm_slot_id: 0
+kipuka_hsm_token_label: "kipuka-hsm"
+kipuka_hsm_max_sessions: 8
+
+# ── PQC settings ─────────────────────────────────────────────────────────────
+pqc_enabled: false
+# Requires OpenSSL 3.5+ with oqs-provider or native PQC support
+openssl_pqc_provider: "oqsprovider"
+
+# ── 389 Directory Server settings ────────────────────────────────────────────
+ds_instance_name: "kipuka-ds"
+ds_suffix: "dc=example,dc=test"
+ds_root_dn: "cn=Directory Manager"
+# Vault this in production
+ds_root_password: "DirectoryManagerPassword"
+ds_port: 389
+ds_secure_port: 636
+
+# ── Dogtag PKI settings ─────────────────────────────────────────────────────
+# Install source: "rhcs" for RHCS RPMs, "upstream" for upstream Dogtag
+dogtag_install_source: "upstream"
+dogtag_version: "11.6"
+dogtag_instance_name: "pki-kipuka"
+# Vault this in production
+dogtag_admin_password: "DogtagAdminPassword"
+dogtag_security_domain: "Kipuka Security Domain"
+dogtag_ca_signing_algorithm: "SHA256withRSA"
+dogtag_ca_key_size: 3072
+dogtag_ca_key_type: "rsa"
+# Supported: rsa, ec, ml-dsa (PQC — requires patched Dogtag)
+dogtag_ca_subject_dn: "CN=Kipuka Dogtag CA,O=Test Lab"
+dogtag_ca_validity_months: 120
+
+# ── ahdapa settings ──────────────────────────────────────────────────────────
+ahdapa_repo: "https://codeberg.org/freeipa/ahdapa.git"
+ahdapa_branch: "main"
+ahdapa_build_dir: "/opt/ahdapa-build"
+ahdapa_install_dir: "/usr/local/bin"
+ahdapa_config_dir: "/etc/ahdapa"
+ahdapa_data_dir: "/var/lib/ahdapa"
+ahdapa_user: "ahdapa"
+ahdapa_group: "ahdapa"
+ahdapa_listen_port: 8080
+
+# ── Firewall ─────────────────────────────────────────────────────────────────
+firewall_backend: "firewalld"
+
+# ── Test settings ────────────────────────────────────────────────────────────
+test_output_dir: "/tmp/kipuka-test-results"
+test_client_cn: "test-client.example.test"

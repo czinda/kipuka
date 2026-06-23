@@ -1,0 +1,68 @@
+---
+# roles/dogtag-kra/tasks/main.yml — Install and configure Dogtag KRA
+#
+# The KRA (Key Recovery Authority) subsystem handles server-side key generation
+# for the EST /serverkeygen endpoint. It joins the existing CA security domain.
+
+- name: Install Dogtag KRA packages (RHCS)
+  ansible.builtin.dnf:
+    name:
+      - pki-kra
+    state: present
+  when: dogtag_install_source == "rhcs"
+  tags: [kra, packages]
+
+- name: Install Dogtag KRA packages (upstream)
+  ansible.builtin.dnf:
+    name:
+      - dogtag-pki-kra
+    state: present
+  when: dogtag_install_source == "upstream"
+  tags: [kra, packages]
+
+- name: Check if KRA subsystem already exists
+  ansible.builtin.stat:
+    path: "/var/lib/pki/{{ dogtag_instance_name }}/kra"
+  register: _kra_instance
+  tags: [kra]
+
+- name: Create KRA pkispawn configuration
+  ansible.builtin.template:
+    src: kra-pkispawn.cfg.j2
+    dest: "/tmp/kra-{{ dogtag_instance_name }}.cfg"
+    mode: "0600"
+  when: not _kra_instance.stat.exists
+  tags: [kra]
+
+- name: Run pkispawn to create KRA subsystem
+  ansible.builtin.command:
+    cmd: >-
+      pkispawn
+      -s KRA
+      -f /tmp/kra-{{ dogtag_instance_name }}.cfg
+  when: not _kra_instance.stat.exists
+  tags: [kra]
+
+- name: Remove KRA pkispawn config (contains passwords)
+  ansible.builtin.file:
+    path: "/tmp/kra-{{ dogtag_instance_name }}.cfg"
+    state: absent
+  tags: [kra]
+
+- name: Restart Dogtag instance to activate KRA
+  ansible.builtin.systemd:
+    name: "pki-tomcatd@{{ dogtag_instance_name }}"
+    state: restarted
+  when: not _kra_instance.stat.exists
+  tags: [kra]
+
+- name: Verify KRA is responding
+  ansible.builtin.uri:
+    url: "https://localhost:8443/kra/rest/info"
+    validate_certs: false
+    return_content: true
+  register: _kra_info
+  retries: 10
+  delay: 5
+  until: _kra_info.status == 200
+  tags: [kra, verify]

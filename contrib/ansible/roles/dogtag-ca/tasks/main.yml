@@ -1,0 +1,149 @@
+---
+# roles/dogtag-ca/tasks/main.yml — Install and configure Dogtag PKI CA
+#
+# Supports both RHCS (RPM) and upstream Dogtag installations.
+# Configurable key type including PQC (ML-DSA) when available.
+
+- name: Install Dogtag CA packages (RHCS)
+  ansible.builtin.dnf:
+    name:
+      - pki-ca
+      - pki-tools
+      - pki-server
+    state: present
+  when: dogtag_install_source == "rhcs"
+  tags: [ca, packages]
+
+- name: Install Dogtag CA packages (upstream)
+  ansible.builtin.dnf:
+    name:
+      - dogtag-pki-ca
+      - dogtag-pki-tools
+      - dogtag-pki-server
+    state: present
+  when: dogtag_install_source == "upstream"
+  tags: [ca, packages]
+
+- name: Check if Dogtag instance already exists
+  ansible.builtin.stat:
+    path: "/var/lib/pki/{{ dogtag_instance_name }}"
+  register: _dogtag_instance
+  tags: [ca]
+
+- name: Create pkispawn configuration
+  ansible.builtin.template:
+    src: ca-pkispawn.cfg.j2
+    dest: "/tmp/ca-{{ dogtag_instance_name }}.cfg"
+    mode: "0600"
+  when: not _dogtag_instance.stat.exists
+  tags: [ca]
+
+- name: Run pkispawn to create CA subsystem
+  ansible.builtin.command:
+    cmd: >-
+      pkispawn
+      -s CA
+      -f /tmp/ca-{{ dogtag_instance_name }}.cfg
+  when: not _dogtag_instance.stat.exists
+  tags: [ca]
+
+- name: Remove pkispawn config (contains passwords)
+  ansible.builtin.file:
+    path: "/tmp/ca-{{ dogtag_instance_name }}.cfg"
+    state: absent
+  tags: [ca]
+
+- name: Start and enable Dogtag CA instance
+  ansible.builtin.systemd:
+    name: "pki-tomcatd@{{ dogtag_instance_name }}"
+    state: started
+    enabled: true
+  tags: [ca]
+
+- name: Open CA HTTPS port in firewall
+  ansible.posix.firewalld:
+    port: "8443/tcp"
+    permanent: true
+    immediate: true
+    state: enabled
+  tags: [ca, firewall]
+
+- name: Open CA HTTP port in firewall
+  ansible.posix.firewalld:
+    port: "8080/tcp"
+    permanent: true
+    immediate: true
+    state: enabled
+  tags: [ca, firewall]
+
+# -- Export CA certificate for kipuka to consume --
+
+- name: Create CA export directory
+  ansible.builtin.file:
+    path: /etc/kipuka/ca
+    state: directory
+    mode: "0755"
+  tags: [ca]
+
+- name: Export CA signing certificate
+  ansible.builtin.command:
+    cmd: >-
+      pki-server cert-export ca_signing
+      --cert-file /etc/kipuka/ca/dogtag-ca.pem
+      -i {{ dogtag_instance_name }}
+  args:
+    creates: /etc/kipuka/ca/dogtag-ca.pem
+  tags: [ca]
+
+# -- Create EST enrollment profile if not present --
+
+- name: Check if EST enrollment profile exists
+  ansible.builtin.command:
+    cmd: >-
+      pki -d /root/.dogtag/{{ dogtag_instance_name }}/ca/alias
+      -n "PKI Administrator"
+      -U https://localhost:8443
+      ca-profile-show estServerCert
+  register: _est_profile
+  changed_when: false
+  failed_when: false
+  tags: [ca, profile]
+
+- name: Create EST enrollment profile template
+  ansible.builtin.template:
+    src: est-profile.xml.j2
+    dest: "/tmp/est-profile.xml"
+    mode: "0644"
+  when: _est_profile.rc != 0
+  tags: [ca, profile]
+
+- name: Import EST enrollment profile
+  ansible.builtin.command:
+    cmd: >-
+      pki -d /root/.dogtag/{{ dogtag_instance_name }}/ca/alias
+      -n "PKI Administrator"
+      -U https://localhost:8443
+      ca-profile-add /tmp/est-profile.xml
+  when: _est_profile.rc != 0
+  tags: [ca, profile]
+
+- name: Enable EST enrollment profile
+  ansible.builtin.command:
+    cmd: >-
+      pki -d /root/.dogtag/{{ dogtag_instance_name }}/ca/alias
+      -n "PKI Administrator"
+      -U https://localhost:8443
+      ca-profile-enable estServerCert
+  when: _est_profile.rc != 0
+  tags: [ca, profile]
+
+- name: Verify CA is responding to requests
+  ansible.builtin.uri:
+    url: "https://localhost:8443/ca/rest/info"
+    validate_certs: false
+    return_content: true
+  register: _ca_info
+  retries: 10
+  delay: 5
+  until: _ca_info.status == 200
+  tags: [ca, verify]

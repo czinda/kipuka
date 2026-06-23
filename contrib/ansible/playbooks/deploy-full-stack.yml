@@ -1,0 +1,82 @@
+---
+# playbooks/deploy-full-stack.yml — Full kipuka stack deployment
+#
+# Deploys the complete stack in order:
+#   1. Common setup (all hosts)
+#   2. 389 Directory Server
+#   3. Dogtag CA
+#   4. Dogtag KRA (optional, for /serverkeygen)
+#   5. kipuka EST server
+#
+# Usage:
+#   ansible-playbook playbooks/deploy-full-stack.yml
+#   ansible-playbook playbooks/deploy-full-stack.yml --tags ca,kipuka
+#   ansible-playbook playbooks/deploy-full-stack.yml --skip-tags kra
+
+- name: Common setup on all hosts
+  hosts: all
+  tags: [common]
+  roles:
+    - common
+
+- name: Deploy 389 Directory Server
+  hosts: ds_servers
+  tags: [ds]
+  roles:
+    - directory-server
+
+  post_tasks:
+    - name: Verify DS is healthy
+      ansible.builtin.command:
+        cmd: dsctl {{ ds_instance_name }} healthcheck
+      register: _ds_health
+      changed_when: false
+      failed_when: false
+      tags: [ds, verify]
+
+- name: Deploy Dogtag CA
+  hosts: ca_servers
+  tags: [ca]
+  roles:
+    - dogtag-ca
+
+  post_tasks:
+    - name: Verify CA signing certificate is valid
+      ansible.builtin.command:
+        cmd: openssl x509 -in /etc/kipuka/ca/dogtag-ca.pem -noout -dates
+      register: _ca_cert_dates
+      changed_when: false
+      tags: [ca, verify]
+
+    - name: Display CA certificate validity
+      ansible.builtin.debug:
+        msg: "{{ _ca_cert_dates.stdout }}"
+      tags: [ca, verify]
+
+- name: Deploy Dogtag KRA
+  hosts: kra_servers
+  tags: [kra]
+  roles:
+    - dogtag-kra
+
+- name: Deploy kipuka EST server
+  hosts: est_servers
+  tags: [kipuka]
+  roles:
+    - kipuka
+
+  post_tasks:
+    - name: Smoke test — retrieve CA certificates
+      ansible.builtin.uri:
+        url: "https://{{ inventory_hostname }}:{{ kipuka_listen_port }}/.well-known/est/cacerts"
+        validate_certs: false
+        return_content: true
+      register: _smoke_cacerts
+      tags: [kipuka, verify]
+
+    - name: Smoke test result
+      ansible.builtin.debug:
+        msg: >-
+          EST /cacerts returned HTTP {{ _smoke_cacerts.status }},
+          content length: {{ _smoke_cacerts.content | length }} bytes
+      tags: [kipuka, verify]
