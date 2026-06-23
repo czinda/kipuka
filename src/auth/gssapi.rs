@@ -168,6 +168,7 @@ struct NegotiateSuccess {
     out_token: Vec<u8>,
 }
 
+#[allow(dead_code)]
 enum NegotiateError {
     /// Multi-leg exchange: needs another round-trip with this output token.
     Continue(Vec<u8>),

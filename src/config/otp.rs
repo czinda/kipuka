@@ -16,18 +16,15 @@ use serde::Deserialize;
 /// OTP storage backend.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum OtpStorageBackend {
     /// Store OTPs in the Kipuka database.
+    #[default]
     Db,
     /// Store OTPs in an LDAP directory.
     Ldap,
 }
 
-impl Default for OtpStorageBackend {
-    fn default() -> Self {
-        OtpStorageBackend::Db
-    }
-}
 
 /// `[otp]` section — OTP enrollment authentication configuration.
 ///

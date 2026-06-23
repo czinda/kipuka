@@ -126,11 +126,11 @@ pub fn matches_email(pattern: &str, email: &str) -> bool {
             // Local-part: case-sensitive per RFC 5321.
             // Domain-part: case-insensitive.
             pat_local == email_local
-                && pat_domain.to_ascii_lowercase() == email_domain.to_ascii_lowercase()
+                && pat_domain.eq_ignore_ascii_case(email_domain)
         }
         // Pattern is bare domain: matches any address at that domain.
         (None, Some((_email_local, email_domain))) => {
-            pattern.to_ascii_lowercase() == email_domain.to_ascii_lowercase()
+            pattern.eq_ignore_ascii_case(email_domain)
         }
         // No '@' in the email — malformed.
         _ => false,
@@ -197,6 +197,7 @@ pub fn validate_identity(cert_der: &[u8], expected: &str) -> Result<bool, String
 
 /// SAN entry types extracted from a certificate.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum SanEntry {
     /// dNSName (tag 2) — a DNS hostname or wildcard pattern.
     Dns(String),

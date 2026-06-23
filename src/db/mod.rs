@@ -54,6 +54,7 @@ static IS_POSTGRES: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 /// The rewritten string is cached permanently (via `Box::leak`) keyed by the
 /// pointer identity of the static string literal, so each unique query string
 /// is rewritten at most once.
+#[allow(dead_code)]
 pub(crate) fn pg_sql(s: &'static str) -> &'static str {
     if !IS_POSTGRES.get().copied().unwrap_or(false) {
         return s;
@@ -88,7 +89,7 @@ pub(crate) fn pg_sql(s: &'static str) -> &'static str {
 
 /// Initialize the primary (read-write) database connection pool.
 pub async fn init_pool(config: &DbConfig) -> Result<(Db, DbKind), KipukaError> {
-    let url = config.resolve_url().map_err(|e| KipukaError::Config(e))?;
+    let url = config.resolve_url().map_err(KipukaError::Config)?;
 
     let kind = DbKind::from_url(&url);
     let _ = IS_POSTGRES.set(kind == DbKind::Postgres);
@@ -135,7 +136,7 @@ pub async fn init_pool(config: &DbConfig) -> Result<(Db, DbKind), KipukaError> {
 /// (WAL concurrency benefit).  For `:memory:` and non-SQLite backends,
 /// returns a clone of the primary pool.
 pub async fn init_ro_pool(config: &DbConfig, kind: DbKind) -> Result<Db, KipukaError> {
-    let url = config.resolve_url().map_err(|e| KipukaError::Config(e))?;
+    let url = config.resolve_url().map_err(KipukaError::Config)?;
 
     // Only SQLite file-backed databases benefit from a separate RO pool
     if kind != DbKind::Sqlite || url.contains(":memory:") {
@@ -175,7 +176,7 @@ pub async fn begin_write(
     if kind == DbKind::Sqlite {
         // SQLite: BEGIN IMMEDIATE prevents SQLITE_BUSY_SNAPSHOT
         sqlx::query("BEGIN IMMEDIATE")
-            .execute(&*pool)
+            .execute(pool)
             .await
             .map_err(|e| KipukaError::Db(format!("BEGIN IMMEDIATE failed: {e}")))?;
     }

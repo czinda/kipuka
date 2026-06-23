@@ -20,21 +20,18 @@ use serde::Deserialize;
 /// requests and/or requires a client certificate.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum ClientAuthMode {
     /// TLS handshake requires a valid client certificate.
     Required,
     /// TLS handshake requests but does not require a client certificate.
     /// Authentication falls through to HTTP-layer methods (OTP, etc.).
+    #[default]
     Optional,
     /// No client certificate is requested.
     None,
 }
 
-impl Default for ClientAuthMode {
-    fn default() -> Self {
-        ClientAuthMode::Optional
-    }
-}
 
 /// `[tls]` section — TLS configuration for the EST listener.
 ///

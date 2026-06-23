@@ -186,20 +186,17 @@ fn validate_ca_certificate(chain: &[Vec<u8>]) -> Result<(), CaInitError> {
 
 /// Check if a key file path contains a PKCS#11 URI.
 fn is_pkcs11_uri(path: &Path) -> Result<bool, CaInitError> {
-    if let Some(s) = path.to_str() {
-        if s.starts_with("pkcs11:") {
+    if let Some(s) = path.to_str()
+        && s.starts_with("pkcs11:") {
             return Ok(true);
         }
-    }
 
     // Also check file contents for a PKCS#11 URI.
-    if path.exists() {
-        if let Ok(contents) = std::fs::read_to_string(path) {
-            if contents.trim().starts_with("pkcs11:") {
+    if path.exists()
+        && let Ok(contents) = std::fs::read_to_string(path)
+            && contents.trim().starts_with("pkcs11:") {
                 return Ok(true);
             }
-        }
-    }
 
     Ok(false)
 }

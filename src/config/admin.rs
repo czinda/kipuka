@@ -9,8 +9,10 @@ use serde::Deserialize;
 /// Admin authentication method.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum AdminAuthMethod {
     /// mTLS client certificate authentication.
+    #[default]
     Mtls,
     /// HTTP Basic authentication.
     Basic,
@@ -18,11 +20,6 @@ pub enum AdminAuthMethod {
     Gssapi,
 }
 
-impl Default for AdminAuthMethod {
-    fn default() -> Self {
-        AdminAuthMethod::Mtls
-    }
-}
 
 /// `[admin]` section — administrative API configuration.
 ///

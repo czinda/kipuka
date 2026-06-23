@@ -61,7 +61,7 @@ impl StrategySelector {
     ///
     /// `candidates` must be non-empty; the caller filters out unhealthy CAs
     /// before invoking this method.
-    pub fn select<'a>(&self, candidates: &[(&'a CaConnection, &CaStatus)]) -> Option<CaConnection> {
+    pub fn select(&self, candidates: &[(&CaConnection, &CaStatus)]) -> Option<CaConnection> {
         if candidates.is_empty() {
             return None;
         }

@@ -16,10 +16,12 @@ use serde::Deserialize;
 /// Audit log rotation policy.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum RotationPolicy {
     /// Rotate based on file size.
     Size,
     /// Rotate daily.
+    #[default]
     Daily,
     /// Rotate weekly.
     Weekly,
@@ -27,17 +29,14 @@ pub enum RotationPolicy {
     Never,
 }
 
-impl Default for RotationPolicy {
-    fn default() -> Self {
-        RotationPolicy::Daily
-    }
-}
 
 /// What to do when audit storage is exhausted (FAU_STG.4).
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum OverflowPolicy {
     /// Drop the oldest audit records to make room.
+    #[default]
     DropOldest,
     /// Halt EST operations until audit storage is cleared.
     ///
@@ -47,11 +46,6 @@ pub enum OverflowPolicy {
     Halt,
 }
 
-impl Default for OverflowPolicy {
-    fn default() -> Self {
-        OverflowPolicy::DropOldest
-    }
-}
 
 /// `[audit]` section — audit trail configuration.
 ///

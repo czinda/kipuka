@@ -118,8 +118,8 @@ async fn enforce_est_content_type(req: Request<Body>, next: Next) -> Response {
         None
     };
 
-    if let Some(expected_prefix) = expected {
-        if !content_type.starts_with(expected_prefix) {
+    if let Some(expected_prefix) = expected
+        && !content_type.starts_with(expected_prefix) {
             tracing::debug!(
                 path = %path,
                 content_type = %content_type,
@@ -132,7 +132,6 @@ async fn enforce_est_content_type(req: Request<Body>, next: Next) -> Response {
             )
                 .into_response();
         }
-    }
 
     next.run(req).await
 }
@@ -204,11 +203,10 @@ pub fn est_error_response(status: StatusCode, detail: &str) -> Response {
     }
 
     // RFC 7030 §4.2.3: 503 responses include Retry-After.
-    if status == StatusCode::SERVICE_UNAVAILABLE {
-        if let Ok(hv) = HeaderValue::from_str("120") {
+    if status == StatusCode::SERVICE_UNAVAILABLE
+        && let Ok(hv) = HeaderValue::from_str("120") {
             resp.headers_mut().insert(header::RETRY_AFTER, hv);
         }
-    }
 
     resp
 }

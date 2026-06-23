@@ -239,8 +239,8 @@ impl CaPool {
     /// Check whether a tripped circuit breaker should allow a re-probe.
     pub fn should_reprobe(&self, id: &CaId) -> bool {
         let statuses = self.statuses.read();
-        statuses.get(id).map_or(false, |s| {
-            s.circuit_open_since.map_or(false, |opened| {
+        statuses.get(id).is_some_and(|s| {
+            s.circuit_open_since.is_some_and(|opened| {
                 opened.elapsed() >= self.config.circuit_breaker.cooldown
             })
         })

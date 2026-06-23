@@ -190,12 +190,11 @@ impl IntoResponse for KipukaError {
         }
 
         // RFC 7030 §4.2.3: 503 responses SHOULD include Retry-After.
-        if status == StatusCode::SERVICE_UNAVAILABLE {
-            if let Ok(hv) = HeaderValue::from_str("120") {
+        if status == StatusCode::SERVICE_UNAVAILABLE
+            && let Ok(hv) = HeaderValue::from_str("120") {
                 resp.headers_mut()
                     .insert(axum::http::header::RETRY_AFTER, hv);
             }
-        }
 
         resp
     }

@@ -97,8 +97,7 @@ where
             .headers
             .get(axum::http::header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
-        {
-            if let Some(token) = auth_header.strip_prefix("Bearer ") {
+            && let Some(token) = auth_header.strip_prefix("Bearer ") {
                 // TODO: Validate admin bearer token against a configured
                 // admin token or session store.
                 //
@@ -109,18 +108,16 @@ where
                     });
                 }
             }
-        }
 
         // Check for admin mTLS client certificate.
-        if let Some(cert) = parts.extensions.get::<crate::auth::mtls::PeerCertificate>() {
-            if !cert.0.is_empty() {
+        if let Some(cert) = parts.extensions.get::<crate::auth::mtls::PeerCertificate>()
+            && !cert.0.is_empty() {
                 // TODO: Validate the cert against the admin truststore
                 // (separate from the EST truststore per RHELBU-3536 R18).
                 return Ok(AdminAuth {
                     identity: "admin-cert".to_string(),
                 });
             }
-        }
 
         Err((
             StatusCode::UNAUTHORIZED,

@@ -226,12 +226,11 @@ impl OcspClient {
         let cert_id = self.build_cert_id(cert_der, issuer_der)?;
 
         // Check cache first.
-        if let Some(cached) = self.cache.get(&cert_id) {
-            if !cached.is_expired() {
+        if let Some(cached) = self.cache.get(&cert_id)
+            && !cached.is_expired() {
                 debug!("OCSP cache hit for certificate");
                 return Ok(cached.status.clone());
             }
-        }
 
         // Determine responder URL: config override or AIA extension.
         let responder_url = self.resolve_responder_url(cert_der)?;
