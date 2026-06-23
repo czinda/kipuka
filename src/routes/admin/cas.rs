@@ -5,10 +5,10 @@
 
 use std::sync::Arc;
 
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde::Serialize;
 
 use super::AdminAuth;
@@ -52,10 +52,7 @@ pub struct CaDetail {
 ///
 /// Returns an array of CA summaries including health status from the
 /// HA subsystem.
-pub async fn list_cas(
-    _admin: AdminAuth,
-    State(state): State<Arc<AppState>>,
-) -> Response {
+pub async fn list_cas(_admin: AdminAuth, State(state): State<Arc<AppState>>) -> Response {
     let mut cas = Vec::new();
 
     for ca_config in &state.config.cas {

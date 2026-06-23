@@ -69,11 +69,7 @@ pub struct DtlsSession {
 
 impl DtlsSession {
     /// Creates a new DTLS session record.
-    pub fn new(
-        session_id: Vec<u8>,
-        peer_addr: SocketAddr,
-        protocol_version: DtlsVersion,
-    ) -> Self {
+    pub fn new(session_id: Vec<u8>, peer_addr: SocketAddr, protocol_version: DtlsVersion) -> Self {
         Self {
             session_id,
             peer_addr,
@@ -311,12 +307,8 @@ mod tests {
     fn test_session_with_client_cert() {
         let addr = test_addr(5683);
         let cert_der = vec![0x30, 0x82, 0x01, 0x00];
-        let session = DtlsSession::with_client_cert(
-            vec![1, 2, 3],
-            addr,
-            DtlsVersion::V1_2,
-            cert_der.clone(),
-        );
+        let session =
+            DtlsSession::with_client_cert(vec![1, 2, 3], addr, DtlsVersion::V1_2, cert_der.clone());
 
         assert_eq!(session.client_cert(), Some(cert_der.as_slice()));
         assert!(session.client_cert_info().is_some());

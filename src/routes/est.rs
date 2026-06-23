@@ -9,12 +9,12 @@
 
 use std::sync::Arc;
 
+use axum::Router;
 use axum::body::Body;
-use axum::http::{header, HeaderValue, Method, Request, StatusCode};
+use axum::http::{HeaderValue, Method, Request, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::Router;
 
 use crate::state::AppState;
 
@@ -92,10 +92,7 @@ pub mod content_types {
 /// | /fullcmc         | application/pkcs7-mime; smime-type=CMC-request        |
 ///
 /// GET requests are passed through without Content-Type validation.
-async fn enforce_est_content_type(
-    req: Request<Body>,
-    next: Next,
-) -> Response {
+async fn enforce_est_content_type(req: Request<Body>, next: Next) -> Response {
     // Only enforce on POST/PUT methods.
     if req.method() != Method::POST && req.method() != Method::PUT {
         return next.run(req).await;
@@ -209,8 +206,7 @@ pub fn est_error_response(status: StatusCode, detail: &str) -> Response {
     // RFC 7030 §4.2.3: 503 responses include Retry-After.
     if status == StatusCode::SERVICE_UNAVAILABLE {
         if let Ok(hv) = HeaderValue::from_str("120") {
-            resp.headers_mut()
-                .insert(header::RETRY_AFTER, hv);
+            resp.headers_mut().insert(header::RETRY_AFTER, hv);
         }
     }
 

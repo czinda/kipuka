@@ -74,12 +74,13 @@ impl Listener {
     pub async fn bind(config: &ListenConfig) -> Result<Self, ListenError> {
         match config {
             ListenConfig::Tcp { address, tls } => {
-                let listener = TcpListener::bind(address)
-                    .await
-                    .map_err(|e| ListenError::TcpBind {
-                        addr: address.clone(),
-                        source: e,
-                    })?;
+                let listener =
+                    TcpListener::bind(address)
+                        .await
+                        .map_err(|e| ListenError::TcpBind {
+                            addr: address.clone(),
+                            source: e,
+                        })?;
                 info!(
                     address = %address,
                     tls = %tls,
@@ -158,8 +159,7 @@ fn activate_systemd_socket() -> Result<TcpListener, ListenError> {
     #[cfg(unix)]
     {
         use std::os::unix::io::FromRawFd;
-        let std_listener =
-            unsafe { std::net::TcpListener::from_raw_fd(SD_LISTEN_FDS_START) };
+        let std_listener = unsafe { std::net::TcpListener::from_raw_fd(SD_LISTEN_FDS_START) };
         std_listener.set_nonblocking(true).map_err(|e| {
             ListenError::SystemdActivation(format!("failed to set nonblocking: {e}"))
         })?;

@@ -11,13 +11,13 @@ use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::extract::State;
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
 use crate::auth::EstAuth;
 use crate::error::KipukaError;
-use crate::routes::est::{content_types, decode_est_base64, encode_est_base64};
 use crate::routes::LabelExtractor;
+use crate::routes::est::{content_types, decode_est_base64, encode_est_base64};
 use crate::state::AppState;
 
 /// `POST /.well-known/est/simpleenroll`
@@ -78,9 +78,7 @@ pub async fn post_simpleenroll(
     validate_csr(&csr_der, &auth.0, &label)?;
 
     // Check if disconnected mode is active for this label.
-    let disconnected = label
-        .disconnected
-        .unwrap_or(state.config.est.disconnected);
+    let disconnected = label.disconnected.unwrap_or(state.config.est.disconnected);
 
     if disconnected {
         // RHELBU-3536 R7-Disconnected: queue CSR for deferred signing.
@@ -97,8 +95,7 @@ pub async fn post_simpleenroll(
 
         let mut resp = StatusCode::ACCEPTED.into_response();
         if let Ok(hv) = HeaderValue::from_str(&retry_after.to_string()) {
-            resp.headers_mut()
-                .insert(header::RETRY_AFTER, hv);
+            resp.headers_mut().insert(header::RETRY_AFTER, hv);
         }
 
         state
@@ -129,7 +126,9 @@ pub async fn post_simpleenroll(
     let cert_der: Vec<u8> = Vec::new(); // Placeholder
 
     if cert_der.is_empty() {
-        return Err(KipukaError::Ca("certificate issuance not yet implemented".into()));
+        return Err(KipukaError::Ca(
+            "certificate issuance not yet implemented".into(),
+        ));
     }
 
     // Wrap the certificate in a PKCS#7 certs-only response.
@@ -212,7 +211,9 @@ fn validate_csr(
 
     // Minimal size check — a valid PKCS#10 CSR is at least ~60 bytes.
     if csr_der.len() < 60 {
-        return Err(KipukaError::BadRequest("CSR is too short to be valid".into()));
+        return Err(KipukaError::BadRequest(
+            "CSR is too short to be valid".into(),
+        ));
     }
 
     Ok(())

@@ -7,10 +7,10 @@
 
 use std::sync::Arc;
 
+use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde::Serialize;
 
 use super::AdminAuth;
@@ -64,10 +64,7 @@ pub struct SubsystemHealth {
 ///
 /// - `200 OK` — all subsystems healthy
 /// - `503 Service Unavailable` — one or more critical subsystems unhealthy
-pub async fn get_health(
-    _admin: AdminAuth,
-    State(state): State<Arc<AppState>>,
-) -> Response {
+pub async fn get_health(_admin: AdminAuth, State(state): State<Arc<AppState>>) -> Response {
     let uptime = state.startup_time.elapsed().as_secs();
 
     // Check database health.
@@ -127,10 +124,7 @@ pub async fn get_health(
 /// `GET /admin/health/db` — Database connectivity check.
 ///
 /// Performs a lightweight query to verify database connectivity.
-pub async fn get_health_db(
-    _admin: AdminAuth,
-    State(state): State<Arc<AppState>>,
-) -> Response {
+pub async fn get_health_db(_admin: AdminAuth, State(state): State<Arc<AppState>>) -> Response {
     let health = check_database_health(&state).await;
 
     let status = if health.status == "healthy" {
@@ -146,10 +140,7 @@ pub async fn get_health_db(
 ///
 /// Verifies that the configured HSM is reachable and the PKCS#11
 /// session is active.
-pub async fn get_health_hsm(
-    _admin: AdminAuth,
-    State(state): State<Arc<AppState>>,
-) -> Response {
+pub async fn get_health_hsm(_admin: AdminAuth, State(state): State<Arc<AppState>>) -> Response {
     if state.config.hsm.is_none() {
         return (
             StatusCode::OK,
@@ -177,10 +168,7 @@ pub async fn get_health_hsm(
 ///
 /// Returns the health status of each configured CA backend from the
 /// HA subsystem.
-pub async fn get_health_ca(
-    _admin: AdminAuth,
-    State(state): State<Arc<AppState>>,
-) -> Response {
+pub async fn get_health_ca(_admin: AdminAuth, State(state): State<Arc<AppState>>) -> Response {
     let mut ca_health: Vec<serde_json::Value> = Vec::new();
 
     for ca_config in &state.config.cas {
@@ -189,14 +177,11 @@ pub async fn get_health_ca(
             .as_ref()
             .and_then(|ha| {
                 let ca_id_key = crate::ha::CaId(ca_config.id.clone());
-                ha.pool()
-                    .status_snapshot()
-                    .get(&ca_id_key)
-                    .map(|s| {
-                        let h = format!("{:?}", s.health);
-                        let l = Some(s.latency_ema_ms as u64);
-                        (h, l)
-                    })
+                ha.pool().status_snapshot().get(&ca_id_key).map(|s| {
+                    let h = format!("{:?}", s.health);
+                    let l = Some(s.latency_ema_ms as u64);
+                    (h, l)
+                })
             })
             .unwrap_or(("unknown".to_string(), None));
 

@@ -23,7 +23,6 @@ use axum::{
 #[derive(Debug, thiserror::Error)]
 pub enum KipukaError {
     // ── Startup / configuration ──────────────────────────────────────────────
-
     /// Configuration file parse or validation error.
     #[error("configuration error: {0}")]
     Config(String),
@@ -41,7 +40,6 @@ pub enum KipukaError {
     Hsm(String),
 
     // ── Request-level errors ─────────────────────────────────────────────────
-
     /// Authentication or authorization failure.
     ///
     /// RFC 7030 §3.2.3: EST server MUST respond with 401 when the client
@@ -72,7 +70,6 @@ pub enum KipukaError {
     Io(String),
 
     // ── HTTP-level errors ────────────────────────────────────────────────────
-
     /// Resource not found (unknown EST label, unknown CA, etc.).
     #[error("not found")]
     NotFound,

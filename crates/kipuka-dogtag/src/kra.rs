@@ -120,10 +120,9 @@ impl KraClient {
     /// to the KRA subsystem URL. Returns an error if `kra_url` is not
     /// configured.
     pub fn new(config: &DogtagConfig) -> DogtagResult<Self> {
-        let kra_url = config
-            .kra_url
-            .as_ref()
-            .ok_or_else(|| DogtagError::ConfigError("kra_url is required for KRA operations".into()))?;
+        let kra_url = config.kra_url.as_ref().ok_or_else(|| {
+            DogtagError::ConfigError("kra_url is required for KRA operations".into())
+        })?;
 
         let cert_pem = std::fs::read(&config.agent_cert_file)?;
         let key_pem = std::fs::read(&config.agent_key_file)?;
@@ -166,11 +165,7 @@ impl KraClient {
     /// - RSA: `key_type = "RSA"`, `key_size = 2048 | 3072 | 4096`
     /// - ECDSA: `key_type = "EC"`, `key_size = 256 | 384 | 521`
     /// - ML-KEM: `key_type = "ML-KEM-512" | "ML-KEM-768" | "ML-KEM-1024"`, `key_size = 0`
-    pub async fn generate_key(
-        &self,
-        key_type: &str,
-        key_size: u32,
-    ) -> DogtagResult<KeyGenResult> {
+    pub async fn generate_key(&self, key_type: &str, key_size: u32) -> DogtagResult<KeyGenResult> {
         debug!(key_type, key_size, "Generating key on KRA");
 
         let request = KeyGenRequest {
@@ -225,11 +220,7 @@ impl KraClient {
     ///
     /// Sends `POST /kra/rest/agent/keys/archive` to store a wrapped
     /// private key for later recovery. Returns the KRA key identifier.
-    pub async fn archive_key(
-        &self,
-        key_id: &str,
-        wrapped_key: &[u8],
-    ) -> DogtagResult<String> {
+    pub async fn archive_key(&self, key_id: &str, wrapped_key: &[u8]) -> DogtagResult<String> {
         debug!(key_id, size = wrapped_key.len(), "Archiving key in KRA");
 
         use base64::Engine;
@@ -264,10 +255,7 @@ impl KraClient {
         };
 
         let resp = self
-            .post_json(
-                &format!("/kra/rest/agent/keys/{key_id}/recover"),
-                &request,
-            )
+            .post_json(&format!("/kra/rest/agent/keys/{key_id}/recover"), &request)
             .await?;
 
         let recover: RecoverResponse = json_response(resp).await?;
@@ -315,16 +303,12 @@ impl KraClient {
             }
         }
 
-        Err(last_error.unwrap_or(DogtagError::KraError(
-            "All retry attempts exhausted".into(),
-        )))
+        Err(last_error.unwrap_or(DogtagError::KraError("All retry attempts exhausted".into())))
     }
 }
 
 /// Extract a successful JSON response or return an API error.
-async fn json_response<T: serde::de::DeserializeOwned>(
-    resp: reqwest::Response,
-) -> DogtagResult<T> {
+async fn json_response<T: serde::de::DeserializeOwned>(resp: reqwest::Response) -> DogtagResult<T> {
     let status = resp.status();
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();

@@ -21,12 +21,12 @@
 
 use std::sync::Arc;
 
+use axum::Router;
 use axum::body::Bytes;
 use axum::extract::State;
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
-use axum::Router;
 
 use crate::auth::cms_auth;
 use crate::error::KipukaError;
@@ -54,9 +54,7 @@ pub fn cms_est_router() -> Router<Arc<AppState>> {
 ///
 /// Returns the configuration reference if CMS-EST is enabled, or an
 /// `KipukaError::Est` error if it is disabled or absent.
-fn get_cms_est_config(
-    state: &AppState,
-) -> Result<&crate::config::CmsEstConfig, KipukaError> {
+fn get_cms_est_config(state: &AppState) -> Result<&crate::config::CmsEstConfig, KipukaError> {
     match state.config.cms_est {
         Some(ref cfg) if cfg.enabled => Ok(cfg),
         _ => Err(KipukaError::Est("CMS-EST is not enabled".into())),
@@ -169,11 +167,7 @@ pub async fn post_cms_simpleenroll(
             .map(|s| s.as_str())
             .unwrap_or("AES-256-GCM");
 
-        cms_auth::build_cms_enveloped_data(
-            &cert_der,
-            &cms_result.signer_cert_der,
-            enc_alg,
-        )?
+        cms_auth::build_cms_enveloped_data(&cert_der, &cms_result.signer_cert_der, enc_alg)?
     } else {
         cert_der
     };
@@ -265,11 +259,7 @@ pub async fn post_cms_simplereenroll(
             .map(|s| s.as_str())
             .unwrap_or("AES-256-GCM");
 
-        cms_auth::build_cms_enveloped_data(
-            &cert_der,
-            &cms_result.signer_cert_der,
-            enc_alg,
-        )?
+        cms_auth::build_cms_enveloped_data(&cert_der, &cms_result.signer_cert_der, enc_alg)?
     } else {
         cert_der
     };
@@ -357,11 +347,8 @@ pub async fn post_cms_serverkeygen(
         .map(|s| s.as_str())
         .unwrap_or("AES-256-GCM");
 
-    let response_body = cms_auth::build_cms_enveloped_data(
-        &combined,
-        &cms_result.signer_cert_der,
-        enc_alg,
-    )?;
+    let response_body =
+        cms_auth::build_cms_enveloped_data(&combined, &cms_result.signer_cert_der, enc_alg)?;
 
     state
         .record_audit_event(
@@ -446,11 +433,7 @@ pub async fn post_cms_fullcmc(
             .map(|s| s.as_str())
             .unwrap_or("AES-256-GCM");
 
-        cms_auth::build_cms_enveloped_data(
-            &cmc_response_der,
-            &cms_result.signer_cert_der,
-            enc_alg,
-        )?
+        cms_auth::build_cms_enveloped_data(&cmc_response_der, &cms_result.signer_cert_der, enc_alg)?
     } else {
         cmc_response_der
     };
@@ -470,10 +453,7 @@ pub async fn post_cms_fullcmc(
 /// Sets Content-Type to `application/pkcs7-mime` per RFC 8295 §4.
 /// The body is raw DER — no base64 transfer encoding is used for
 /// CMS-wrapped payloads.
-fn build_cms_response(
-    status: StatusCode,
-    body: &[u8],
-) -> Result<Response, KipukaError> {
+fn build_cms_response(status: StatusCode, body: &[u8]) -> Result<Response, KipukaError> {
     let mut resp = (status, body.to_vec()).into_response();
     resp.headers_mut().insert(
         header::CONTENT_TYPE,

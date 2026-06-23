@@ -34,8 +34,8 @@
 //!
 //! All mechanisms are hardware-accelerated.
 
-use crate::providers::HsmProviderConfig;
 use crate::HsmProvider;
+use crate::providers::HsmProviderConfig;
 use cryptoki::mechanism::MechanismType;
 
 /// Default PKCS#11 library path for Luna CSP.

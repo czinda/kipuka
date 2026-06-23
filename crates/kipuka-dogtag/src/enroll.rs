@@ -135,9 +135,11 @@ impl DogtagClient {
         let resp = self.post_json("/ca/rest/certrequests", &request).await?;
         let enrollment: EnrollmentResponse = Self::json_response(resp).await?;
 
-        let entry = enrollment.entries.into_iter().next().ok_or_else(|| {
-            DogtagError::ParseError("Empty enrollment response".into())
-        })?;
+        let entry = enrollment
+            .entries
+            .into_iter()
+            .next()
+            .ok_or_else(|| DogtagError::ParseError("Empty enrollment response".into()))?;
 
         let request_id = entry
             .request_id
@@ -184,10 +186,7 @@ impl DogtagClient {
     /// a pending enrollment has been approved or rejected. Used for
     /// EST Disconnected mode (RFC 7030 S4.4.2) where the CA requires
     /// out-of-band approval before issuing the certificate.
-    pub async fn get_enrollment_status(
-        &self,
-        request_id: &str,
-    ) -> DogtagResult<EnrollResult> {
+    pub async fn get_enrollment_status(&self, request_id: &str) -> DogtagResult<EnrollResult> {
         debug!(request_id, "Checking enrollment status");
 
         let resp = self

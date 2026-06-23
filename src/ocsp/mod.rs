@@ -240,9 +240,7 @@ impl OcspClient {
         let request_der = self.build_ocsp_request(&cert_id)?;
 
         // Send request via HTTP POST.
-        let response_der = self
-            .send_ocsp_request(&responder_url, &request_der)
-            .await?;
+        let response_der = self.send_ocsp_request(&responder_url, &request_der).await?;
 
         // Parse response and extract status.
         let status = self.parse_ocsp_response(&response_der, &cert_id)?;
@@ -307,17 +305,11 @@ impl OcspClient {
     ///
     /// Per RFC 6960 §4.1.1, the CertID uses SHA-256 hashes of the issuer
     /// name and key, plus the certificate serial number.
-    fn build_cert_id(
-        &self,
-        cert_der: &[u8],
-        issuer_der: &[u8],
-    ) -> OcspResult<CertId> {
+    fn build_cert_id(&self, cert_der: &[u8], issuer_der: &[u8]) -> OcspResult<CertId> {
         use sha2::{Digest, Sha256};
 
         if cert_der.is_empty() {
-            return Err(OcspError::RequestBuild(
-                "empty certificate DER".to_string(),
-            ));
+            return Err(OcspError::RequestBuild("empty certificate DER".to_string()));
         }
         if issuer_der.is_empty() {
             return Err(OcspError::RequestBuild(
@@ -332,10 +324,7 @@ impl OcspClient {
         let issuer_key_hash = Sha256::digest(issuer_der).to_vec();
 
         // Placeholder serial — real implementation extracts from TBSCertificate.
-        let serial_number = cert_der
-            .get(..8)
-            .unwrap_or(cert_der)
-            .to_vec();
+        let serial_number = cert_der.get(..8).unwrap_or(cert_der).to_vec();
 
         Ok(CertId {
             hash_algorithm: "2.16.840.1.101.3.4.2.1".to_string(), // SHA-256
@@ -354,8 +343,7 @@ impl OcspClient {
         // (OID 1.3.6.1.5.5.7.1.1) in the certificate. The id-ad-ocsp
         // access method (OID 1.3.6.1.5.5.7.48.1) provides the URL.
         Err(OcspError::RequestBuild(
-            "no OCSP responder URL configured and AIA extraction not yet implemented"
-                .to_string(),
+            "no OCSP responder URL configured and AIA extraction not yet implemented".to_string(),
         ))
     }
 

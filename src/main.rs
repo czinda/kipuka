@@ -178,8 +178,7 @@ async fn run() -> Result<(), String> {
 
     if config.tls.enabled {
         tracing::info!("TLS enabled — building acceptor");
-        let acceptor = kipuka::tls::build_tls_acceptor(&config.tls)
-            .map_err(|e| e.to_string())?;
+        let acceptor = kipuka::tls::build_tls_acceptor(&config.tls).map_err(|e| e.to_string())?;
 
         let listener = tokio::net::TcpListener::bind(&listen_addr)
             .await
@@ -276,10 +275,7 @@ async fn shutdown_signal(timeout_secs: u64) {
         }
     }
 
-    tracing::info!(
-        timeout_secs,
-        "waiting for in-flight requests to complete"
-    );
+    tracing::info!(timeout_secs, "waiting for in-flight requests to complete");
 }
 
 /// Spawn background tasks for CRL refresh, audit rotation, and OTP cleanup.

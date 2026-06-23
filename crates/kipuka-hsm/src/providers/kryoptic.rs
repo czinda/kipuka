@@ -28,8 +28,8 @@
 //! Do NOT use for production CA keys or environments requiring NIAP CA PP
 //! compliance with hardware security requirements.
 
-use crate::providers::HsmProviderConfig;
 use crate::HsmProvider;
+use crate::providers::HsmProviderConfig;
 use cryptoki::mechanism::MechanismType;
 
 /// Default PKCS#11 library path.

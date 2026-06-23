@@ -7,8 +7,8 @@
 //! - Negotiate (RFC 4559) -- GSSAPI/Kerberos SPNEGO tokens
 //! - Client certificate -- extracted from TLS connection info
 
-use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use thiserror::Error;
 use tracing::debug;
 
@@ -62,7 +62,9 @@ pub fn parse_authorization(header_value: &str) -> Result<AuthCredential, AuthErr
 
     let payload = payload.trim();
     if payload.is_empty() {
-        return Err(AuthError::Malformed("empty credentials after scheme".into()));
+        return Err(AuthError::Malformed(
+            "empty credentials after scheme".into(),
+        ));
     }
 
     match scheme.to_ascii_lowercase().as_str() {
@@ -102,9 +104,9 @@ fn parse_basic(payload: &str) -> Result<AuthCredential, AuthError> {
         .map_err(|e| AuthError::Malformed(format!("non-UTF-8 Basic credentials: {e}")))?;
 
     // RFC 7617 §2: the user-id and password are separated by the first colon.
-    let (username, password) = text
-        .split_once(':')
-        .ok_or_else(|| AuthError::Malformed("Basic credentials missing ':' separator (RFC 7617 §2)".into()))?;
+    let (username, password) = text.split_once(':').ok_or_else(|| {
+        AuthError::Malformed("Basic credentials missing ':' separator (RFC 7617 §2)".into())
+    })?;
 
     // RFC 7617 §2: the user-id MUST NOT be empty.
     if username.is_empty() {
@@ -132,10 +134,7 @@ fn parse_bearer(payload: &str) -> Result<AuthCredential, AuthError> {
 /// Parse Negotiate (GSSAPI/SPNEGO) token (RFC 4559).
 fn parse_negotiate(payload: &str) -> Result<AuthCredential, AuthError> {
     let token_bytes = STANDARD.decode(payload)?;
-    debug!(
-        token_len = token_bytes.len(),
-        "parsed Negotiate credential"
-    );
+    debug!(token_len = token_bytes.len(), "parsed Negotiate credential");
     Ok(AuthCredential::Negotiate { token_bytes })
 }
 
@@ -272,10 +271,7 @@ mod tests {
 
     #[test]
     fn rejects_missing_header() {
-        assert!(matches!(
-            parse_authorization(""),
-            Err(AuthError::Missing)
-        ));
+        assert!(matches!(parse_authorization(""), Err(AuthError::Missing)));
     }
 
     // ── RFC 7617 compliance tests ───────────────────────────────────────

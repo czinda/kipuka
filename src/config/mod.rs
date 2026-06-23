@@ -323,8 +323,7 @@ where
         }
 
         fn visit_map<M: MapAccess<'de>>(self, map: M) -> Result<Vec<CaConfig>, M::Error> {
-            let mut ca =
-                CaConfig::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+            let mut ca = CaConfig::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
             if ca.id.is_empty() {
                 ca.id = "default".to_owned();
             }

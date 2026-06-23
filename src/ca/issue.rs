@@ -86,7 +86,6 @@ pub struct EnrollmentProfile {
     pub ct_enabled: bool,
 
     // --- Post-Quantum Cryptography (FIPS 203/204) ---
-
     /// Allowed ML-DSA levels for signing key CSRs (FIPS 204).
     /// Empty means ML-DSA is not accepted for this profile.
     /// Values: "ml-dsa-44", "ml-dsa-65", "ml-dsa-87".
@@ -148,11 +147,7 @@ impl Default for EnrollmentProfile {
             min_ecdsa_curve: "P-256".into(),
             ct_enabled: false,
             // PQC defaults: accept all ML-DSA and ML-KEM levels
-            allowed_ml_dsa_levels: vec![
-                "ml-dsa-44".into(),
-                "ml-dsa-65".into(),
-                "ml-dsa-87".into(),
-            ],
+            allowed_ml_dsa_levels: vec!["ml-dsa-44".into(), "ml-dsa-65".into(), "ml-dsa-87".into()],
             allowed_ml_kem_levels: vec![
                 "ml-kem-512".into(),
                 "ml-kem-768".into(),

@@ -20,4 +20,4 @@ enum-variant-size-threshold = 200
 type-complexity-threshold = 300
 
 # MSRV for compatibility lints -- matches workspace rust-version.
-msrv = "1.85"
+msrv = "1.88"

@@ -27,7 +27,7 @@ stages:
 
 variables:
   # Rust toolchain
-  RUST_IMAGE: "rust:1.85-bookworm"
+  RUST_IMAGE: "rust:1.88-bookworm"
   CARGO_HOME: "${CI_PROJECT_DIR}/.cargo"
   CARGO_TERM_COLOR: "always"
   RUSTFLAGS: "-D warnings"

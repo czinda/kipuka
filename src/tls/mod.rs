@@ -121,9 +121,7 @@ fn load_private_key(path: &str) -> Result<PrivateKeyDer<'static>, KipukaError> {
 }
 
 /// Load CA certificates from a PEM file for client verification.
-fn load_trust_anchors(
-    ca_file: &str,
-) -> Result<rustls::RootCertStore, KipukaError> {
+fn load_trust_anchors(ca_file: &str) -> Result<rustls::RootCertStore, KipukaError> {
     let file = std::fs::File::open(ca_file)
         .map_err(|e| KipukaError::Tls(format!("cannot open CA file '{ca_file}': {e}")))?;
     let mut reader = BufReader::new(file);
@@ -165,11 +163,10 @@ fn build_optional_client_verifier(
     ca_file: &str,
 ) -> Result<Arc<dyn rustls::server::danger::ClientCertVerifier>, KipukaError> {
     let roots = load_trust_anchors(ca_file)?;
-    let verifier =
-        rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
-            .allow_unauthenticated()
-            .build()
-            .map_err(|e| KipukaError::Tls(format!("optional client verifier build: {e}")))?;
+    let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
+        .allow_unauthenticated()
+        .build()
+        .map_err(|e| KipukaError::Tls(format!("optional client verifier build: {e}")))?;
     Ok(verifier)
 }
 
@@ -437,7 +434,8 @@ impl OcspStapler {
 pub fn has_must_staple_extension(cert_der: &[u8]) -> bool {
     // The OID 1.3.6.1.5.5.7.1.24 encodes to:
     //   06 08 2b 06 01 05 05 07 01 18
-    const MUST_STAPLE_OID_DER: &[u8] = &[0x06, 0x08, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x01, 0x18];
+    const MUST_STAPLE_OID_DER: &[u8] =
+        &[0x06, 0x08, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x01, 0x18];
 
     // Simple byte-pattern search.  A full implementation would parse the
     // X.509 extensions properly via an ASN.1 library.

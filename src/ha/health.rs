@@ -130,7 +130,9 @@ impl HealthChecker {
             let elapsed = start.elapsed();
 
             let mut metrics = self.metrics.write();
-            let m = metrics.entry(conn.id.clone()).or_insert_with(ProbeMetrics::new);
+            let m = metrics
+                .entry(conn.id.clone())
+                .or_insert_with(ProbeMetrics::new);
             m.last_check = Some(Instant::now());
             m.last_latency = Some(elapsed);
 

@@ -16,13 +16,13 @@ use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::extract::State;
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
 use crate::auth::EstAuth;
 use crate::error::KipukaError;
-use crate::routes::est::{content_types, decode_est_base64, encode_est_base64};
 use crate::routes::LabelExtractor;
+use crate::routes::est::{content_types, decode_est_base64, encode_est_base64};
 use crate::state::AppState;
 
 /// MIME boundary for the multipart/mixed response.
@@ -93,7 +93,9 @@ pub async fn post_serverkeygen(
 
     // Check that serverkeygen is enabled.
     if !state.config.est.serverkeygen {
-        return Err(KipukaError::Est("server-side key generation is not enabled".into()));
+        return Err(KipukaError::Est(
+            "server-side key generation is not enabled".into(),
+        ));
     }
 
     tracing::info!(

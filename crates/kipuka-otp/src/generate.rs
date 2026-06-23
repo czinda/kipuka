@@ -4,11 +4,11 @@
 //! RNG (`OsRng`). Tokens are base64url-encoded for safe embedding in
 //! HTTP headers and URIs.
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Duration, Utc};
-use rand::rngs::OsRng;
 use rand::RngCore;
+use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::debug;
@@ -30,7 +30,7 @@ pub struct OtpGeneratorConfig {
 impl Default for OtpGeneratorConfig {
     fn default() -> Self {
         Self {
-            entropy_bytes: 32, // 256 bits, well above the 128-bit minimum
+            entropy_bytes: 32,         // 256 bits, well above the 128-bit minimum
             default_ttl_seconds: 3600, // 1 hour
             default_max_uses: 1,
         }
@@ -98,12 +98,7 @@ impl OtpGenerator {
     /// Returns a [`GeneratedOtp`] containing the plaintext token (for
     /// delivery to the enrollee) and the SHA-256 hash (for storage).
     /// The plaintext must not be persisted by the caller.
-    pub fn generate(
-        &self,
-        entity_id: &str,
-        label: &str,
-        profile: &str,
-    ) -> OtpResult<GeneratedOtp> {
+    pub fn generate(&self, entity_id: &str, label: &str, profile: &str) -> OtpResult<GeneratedOtp> {
         self.generate_with_options(
             entity_id,
             label,
@@ -173,10 +168,15 @@ mod tests {
     #[test]
     fn generated_token_meets_minimum_entropy() {
         let generator = OtpGenerator::new(OtpGeneratorConfig::default()).unwrap();
-        let otp = generator.generate("host.example.com", "test", "default").unwrap();
+        let otp = generator
+            .generate("host.example.com", "test", "default")
+            .unwrap();
 
         // base64url of 32 bytes = 43 characters
-        assert!(otp.plaintext_token.len() >= 22, "token too short for 128-bit entropy");
+        assert!(
+            otp.plaintext_token.len() >= 22,
+            "token too short for 128-bit entropy"
+        );
         assert_eq!(otp.token_hash.len(), 32, "SHA-256 hash should be 32 bytes");
     }
 

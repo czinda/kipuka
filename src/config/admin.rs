@@ -136,9 +136,7 @@ impl AdminConfig {
         }
 
         if self.auth_method == AdminAuthMethod::Mtls && self.admin_ca_file.is_none() {
-            return Err(
-                "[admin].admin_ca_file is required when auth_method = \"mtls\"".into(),
-            );
+            return Err("[admin].admin_ca_file is required when auth_method = \"mtls\"".into());
         }
 
         if self.auth_method == AdminAuthMethod::Gssapi {

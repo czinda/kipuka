@@ -79,9 +79,7 @@ impl CaCertsResponse {
     pub fn validate(&self) -> EstResult<()> {
         // Basic DER sanity: must start with SEQUENCE tag (0x30)
         if self.pkcs7_der.is_empty() {
-            return Err(EstError::InvalidPkcs7(
-                "Empty PKCS#7 structure".to_string(),
-            ));
+            return Err(EstError::InvalidPkcs7("Empty PKCS#7 structure".to_string()));
         }
 
         if self.pkcs7_der[0] != 0x30 {
@@ -149,18 +147,27 @@ mod tests {
     #[test]
     fn test_validate_empty() {
         let response = CaCertsResponse::new(vec![]);
-        assert!(matches!(response.validate(), Err(EstError::InvalidPkcs7(_))));
+        assert!(matches!(
+            response.validate(),
+            Err(EstError::InvalidPkcs7(_))
+        ));
     }
 
     #[test]
     fn test_validate_wrong_tag() {
         let response = CaCertsResponse::new(vec![0x04, 0x00]); // OCTET STRING instead of SEQUENCE
-        assert!(matches!(response.validate(), Err(EstError::InvalidPkcs7(_))));
+        assert!(matches!(
+            response.validate(),
+            Err(EstError::InvalidPkcs7(_))
+        ));
     }
 
     #[test]
     fn test_validate_too_small() {
         let response = CaCertsResponse::new(vec![0x30, 0x00]); // Valid SEQUENCE but too small
-        assert!(matches!(response.validate(), Err(EstError::InvalidPkcs7(_))));
+        assert!(matches!(
+            response.validate(),
+            Err(EstError::InvalidPkcs7(_))
+        ));
     }
 }

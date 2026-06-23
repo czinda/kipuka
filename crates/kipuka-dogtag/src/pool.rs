@@ -129,7 +129,11 @@ impl DogtagPool {
                             }
                         }
                     }
-                    Some((i, Arc::clone(&e.client), e.health == BackendHealth::Unhealthy))
+                    Some((
+                        i,
+                        Arc::clone(&e.client),
+                        e.health == BackendHealth::Unhealthy,
+                    ))
                 })
                 .collect()
         };
@@ -141,10 +145,7 @@ impl DogtagPool {
             if let Some(entry) = entries.get_mut(index) {
                 if healthy {
                     if was_unhealthy {
-                        info!(
-                            url = client.base_url(),
-                            "Dogtag CA backend recovered"
-                        );
+                        info!(url = client.base_url(), "Dogtag CA backend recovered");
                     }
                     entry.health = BackendHealth::Healthy;
                     entry.last_healthy = Some(Instant::now());

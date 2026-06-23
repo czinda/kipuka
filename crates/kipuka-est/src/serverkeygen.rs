@@ -50,10 +50,7 @@ impl MlKemLevel {
             512 => Ok(Self::Level512),
             768 => Ok(Self::Level768),
             1024 => Ok(Self::Level1024),
-            _ => Err(EstError::UnsupportedAlgorithm(format!(
-                "ML-KEM-{}",
-                level
-            ))),
+            _ => Err(EstError::UnsupportedAlgorithm(format!("ML-KEM-{}", level))),
         }
     }
 
@@ -110,10 +107,7 @@ impl MlKemKeyGenHint {
         if !supported_levels.contains(&self.level) {
             return Err(EstError::MlKemLevelMismatch {
                 requested: self.level.level(),
-                supported: supported_levels
-                    .first()
-                    .map(|l| l.level())
-                    .unwrap_or(0),
+                supported: supported_levels.first().map(|l| l.level()).unwrap_or(0),
             });
         }
         Ok(())
@@ -227,9 +221,7 @@ impl Pkcs8PrivateKey {
             ));
         }
         if self.algorithm_oid.is_empty() {
-            return Err(EstError::InvalidPkcs8(
-                "missing algorithm OID".to_string(),
-            ));
+            return Err(EstError::InvalidPkcs8("missing algorithm OID".to_string()));
         }
         Ok(())
     }
@@ -518,10 +510,7 @@ impl ServerKeygenResponse {
     }
 
     /// Extracts base64 content from a MIME part.
-    fn extract_base64_content<'a>(
-        part: &'a str,
-        expected_ct: &str,
-    ) -> EstResult<&'a str> {
+    fn extract_base64_content<'a>(part: &'a str, expected_ct: &str) -> EstResult<&'a str> {
         if !part.contains(expected_ct) {
             return Err(EstError::InvalidMultipart(format!(
                 "Expected Content-Type: {}",
@@ -606,18 +595,9 @@ mod tests {
 
     #[test]
     fn test_ml_kem_from_level() {
-        assert_eq!(
-            MlKemLevel::from_level(512).unwrap(),
-            MlKemLevel::Level512
-        );
-        assert_eq!(
-            MlKemLevel::from_level(768).unwrap(),
-            MlKemLevel::Level768
-        );
-        assert_eq!(
-            MlKemLevel::from_level(1024).unwrap(),
-            MlKemLevel::Level1024
-        );
+        assert_eq!(MlKemLevel::from_level(512).unwrap(), MlKemLevel::Level512);
+        assert_eq!(MlKemLevel::from_level(768).unwrap(), MlKemLevel::Level768);
+        assert_eq!(MlKemLevel::from_level(1024).unwrap(), MlKemLevel::Level1024);
         assert!(MlKemLevel::from_level(256).is_err());
     }
 
@@ -660,10 +640,7 @@ mod tests {
 
         let request = ServerKeygenRequest::with_ml_kem(der.clone(), MlKemLevel::Level1024);
         assert_eq!(request.csr_der(), &der);
-        assert_eq!(
-            request.ml_kem_hint().unwrap().level,
-            MlKemLevel::Level1024
-        );
+        assert_eq!(request.ml_kem_hint().unwrap().level, MlKemLevel::Level1024);
 
         assert!(request.validate().is_ok());
     }
@@ -676,7 +653,8 @@ mod tests {
         let mut key_der = vec![0x30, 0x82, 0x00, 0x80];
         key_der.extend(vec![0x00; 124]);
 
-        let response = ServerKeygenResponse::with_default_boundary(cert_der.clone(), key_der.clone());
+        let response =
+            ServerKeygenResponse::with_default_boundary(cert_der.clone(), key_der.clone());
 
         let multipart_body = response.to_multipart_body();
         assert!(multipart_body.contains("application/pkcs7-mime"));
@@ -706,14 +684,20 @@ mod tests {
     fn test_validate_empty_cert() {
         let key_der = vec![0x30, 0x00];
         let response = ServerKeygenResponse::with_default_boundary(vec![], key_der);
-        assert!(matches!(response.validate(), Err(EstError::InvalidPkcs7(_))));
+        assert!(matches!(
+            response.validate(),
+            Err(EstError::InvalidPkcs7(_))
+        ));
     }
 
     #[test]
     fn test_validate_empty_key() {
         let cert_der = vec![0x30, 0x00];
         let response = ServerKeygenResponse::with_default_boundary(cert_der, vec![]);
-        assert!(matches!(response.validate(), Err(EstError::InvalidPkcs8(_))));
+        assert!(matches!(
+            response.validate(),
+            Err(EstError::InvalidPkcs8(_))
+        ));
     }
 
     #[test]
@@ -756,7 +740,10 @@ mod tests {
         assert!(key.validate().is_ok());
 
         let empty_key = Pkcs8PrivateKey::v1(vec![], "2.16.840.1.101.3.4.4.1".to_string());
-        assert!(matches!(empty_key.validate(), Err(EstError::InvalidPkcs8(_))));
+        assert!(matches!(
+            empty_key.validate(),
+            Err(EstError::InvalidPkcs8(_))
+        ));
 
         let bad_tag = Pkcs8PrivateKey::v1(vec![0x31, 0x00], "2.16.840.1.101.3.4.4.1".to_string());
         assert!(matches!(bad_tag.validate(), Err(EstError::InvalidPkcs8(_))));

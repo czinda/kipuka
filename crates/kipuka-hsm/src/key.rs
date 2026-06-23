@@ -221,7 +221,7 @@ impl HsmKeyPair {
             Attribute::Label(label.as_bytes().to_vec()),
             Attribute::Id(id.to_vec()),
             Attribute::Private(true),
-            Attribute::Sensitive(true),   // NIAP CA PP FCS_CKM.1
+            Attribute::Sensitive(true),    // NIAP CA PP FCS_CKM.1
             Attribute::Extractable(false), // NIAP CA PP FCS_CKM.1
             Attribute::Decrypt(true),
             Attribute::Sign(true),
@@ -264,7 +264,7 @@ impl HsmKeyPair {
             Attribute::Label(label.as_bytes().to_vec()),
             Attribute::Id(id.to_vec()),
             Attribute::Private(true),
-            Attribute::Sensitive(true),   // NIAP CA PP FCS_CKM.1
+            Attribute::Sensitive(true),    // NIAP CA PP FCS_CKM.1
             Attribute::Extractable(false), // NIAP CA PP FCS_CKM.1
             Attribute::Sign(true),
         ];
@@ -327,11 +327,7 @@ impl HsmKeyPair {
     }
 
     /// Find a key pair by label.
-    pub fn find_by_label(
-        slot: &HsmSlot,
-        label: &str,
-        algorithm: KeyAlgorithm,
-    ) -> HsmResult<Self> {
+    pub fn find_by_label(slot: &HsmSlot, label: &str, algorithm: KeyAlgorithm) -> HsmResult<Self> {
         let session = slot.open_ro_session()?;
 
         let template = vec![

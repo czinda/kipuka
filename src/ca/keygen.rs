@@ -359,16 +359,16 @@ fn generate_hsm_key(key_type: &KeyType) -> Result<KeyGenResult, KeyGenError> {
 /// These sub-arcs are under id-composite-sig (2.16.840.1.114027.80.5.2).
 pub fn composite_sub_arc(ml_dsa: &MlDsaLevel, classical: &ClassicalSigningAlg) -> Option<u32> {
     match (ml_dsa, classical) {
-        (MlDsaLevel::MlDsa44, ClassicalSigningAlg::Rsa2048)  => Some(37),
-        (MlDsaLevel::MlDsa44, ClassicalSigningAlg::EcP256)   => Some(38),
-        (MlDsaLevel::MlDsa44, ClassicalSigningAlg::Rsa3072)  => Some(39),
-        (MlDsaLevel::MlDsa44, ClassicalSigningAlg::Ed25519)  => Some(40),
-        (MlDsaLevel::MlDsa65, ClassicalSigningAlg::Rsa3072)  => Some(41),
-        (MlDsaLevel::MlDsa65, ClassicalSigningAlg::EcP384)   => Some(42),
-        (MlDsaLevel::MlDsa65, ClassicalSigningAlg::Rsa4096)  => Some(43),
-        (MlDsaLevel::MlDsa65, ClassicalSigningAlg::Ed25519)  => Some(44),
-        (MlDsaLevel::MlDsa87, ClassicalSigningAlg::EcP384)   => Some(45),
-        (MlDsaLevel::MlDsa87, ClassicalSigningAlg::Ed448)    => Some(46),
+        (MlDsaLevel::MlDsa44, ClassicalSigningAlg::Rsa2048) => Some(37),
+        (MlDsaLevel::MlDsa44, ClassicalSigningAlg::EcP256) => Some(38),
+        (MlDsaLevel::MlDsa44, ClassicalSigningAlg::Rsa3072) => Some(39),
+        (MlDsaLevel::MlDsa44, ClassicalSigningAlg::Ed25519) => Some(40),
+        (MlDsaLevel::MlDsa65, ClassicalSigningAlg::Rsa3072) => Some(41),
+        (MlDsaLevel::MlDsa65, ClassicalSigningAlg::EcP384) => Some(42),
+        (MlDsaLevel::MlDsa65, ClassicalSigningAlg::Rsa4096) => Some(43),
+        (MlDsaLevel::MlDsa65, ClassicalSigningAlg::Ed25519) => Some(44),
+        (MlDsaLevel::MlDsa87, ClassicalSigningAlg::EcP384) => Some(45),
+        (MlDsaLevel::MlDsa87, ClassicalSigningAlg::Ed448) => Some(46),
         _ => None,
     }
 }

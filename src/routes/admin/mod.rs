@@ -16,12 +16,12 @@ pub mod otp;
 
 use std::sync::Arc;
 
+use axum::Router;
 use axum::extract::{FromRef, FromRequestParts};
-use axum::http::request::Parts;
 use axum::http::StatusCode;
+use axum::http::request::Parts;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
-use axum::Router;
 
 use crate::state::AppState;
 

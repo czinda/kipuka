@@ -61,10 +61,7 @@ impl StrategySelector {
     ///
     /// `candidates` must be non-empty; the caller filters out unhealthy CAs
     /// before invoking this method.
-    pub fn select<'a>(
-        &self,
-        candidates: &[(&'a CaConnection, &CaStatus)],
-    ) -> Option<CaConnection> {
+    pub fn select<'a>(&self, candidates: &[(&'a CaConnection, &CaStatus)]) -> Option<CaConnection> {
         if candidates.is_empty() {
             return None;
         }
@@ -103,10 +100,7 @@ impl StrategySelector {
     ///
     /// Uses a deterministic modular approach against the round-robin
     /// counter for reproducibility without requiring `rand` in this module.
-    fn select_weighted(
-        &self,
-        candidates: &[(&CaConnection, &CaStatus)],
-    ) -> Option<CaConnection> {
+    fn select_weighted(&self, candidates: &[(&CaConnection, &CaStatus)]) -> Option<CaConnection> {
         let total_weight: u32 = candidates.iter().map(|(c, _)| c.weight).sum();
         if total_weight == 0 {
             return self.select_round_robin(candidates);

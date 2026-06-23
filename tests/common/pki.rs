@@ -506,18 +506,13 @@ pub fn generate_mldsa_csr(subject: &str, level: &str) -> Result<(Vec<u8>, Vec<u8
 
 /// Check whether the system OpenSSL supports ML-DSA (version >= 3.5).
 pub fn openssl_supports_mldsa() -> bool {
-    let output = Command::new("openssl")
-        .args(["version"])
-        .output();
+    let output = Command::new("openssl").args(["version"]).output();
 
     match output {
         Ok(o) if o.status.success() => {
             let version_str = String::from_utf8_lossy(&o.stdout);
             // Parse "OpenSSL 3.5.0 ..." or similar
-            if let Some(ver) = version_str
-                .split_whitespace()
-                .nth(1)
-            {
+            if let Some(ver) = version_str.split_whitespace().nth(1) {
                 let parts: Vec<&str> = ver.split('.').collect();
                 if parts.len() >= 2 {
                     let major: u32 = parts[0].parse().unwrap_or(0);

@@ -128,9 +128,7 @@ pub fn verify_cms_signed_data(
 ) -> Result<CmsVerificationResult, KipukaError> {
     // Input validation.
     if signed_data_der.is_empty() {
-        return Err(KipukaError::BadRequest(
-            "CMS SignedData is empty".into(),
-        ));
+        return Err(KipukaError::BadRequest("CMS SignedData is empty".into()));
     }
 
     // A minimal CMS ContentInfo with SignedData is at least ~100 bytes:

@@ -7,8 +7,8 @@
 use serde::Deserialize;
 use tracing::debug;
 
-use crate::client::DogtagClient;
 use crate::DogtagResult;
+use crate::client::DogtagClient;
 
 /// Summary information about an enrollment profile.
 #[derive(Debug, Clone, Deserialize)]
@@ -167,10 +167,7 @@ impl DogtagClient {
     /// key usage extensions, and subject DN requirements. The returned
     /// [`ProfileConstraints`] can be translated into EST CSR attributes
     /// for the `/csrattrs` endpoint.
-    pub async fn get_profile_constraints(
-        &self,
-        id: &str,
-    ) -> DogtagResult<ProfileConstraints> {
+    pub async fn get_profile_constraints(&self, id: &str) -> DogtagResult<ProfileConstraints> {
         let detail = self.get_profile(id).await?;
         Ok(extract_constraints(&detail))
     }

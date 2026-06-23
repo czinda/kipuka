@@ -158,11 +158,9 @@ pub async fn run_migrations(pool: &sqlx::AnyPool) -> Result<(), KipukaError> {
 /// been applied (or the schema_version table does not exist).
 async fn current_version(pool: &sqlx::AnyPool) -> Result<i32, KipukaError> {
     // The table might not exist yet on a fresh database
-    let row = sqlx::query_as::<_, (i32,)>(
-        "SELECT COALESCE(MAX(version), 0) FROM schema_version",
-    )
-    .fetch_one(pool)
-    .await;
+    let row = sqlx::query_as::<_, (i32,)>("SELECT COALESCE(MAX(version), 0) FROM schema_version")
+        .fetch_one(pool)
+        .await;
 
     match row {
         Ok((version,)) => Ok(version),

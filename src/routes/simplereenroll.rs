@@ -15,13 +15,13 @@ use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::extract::State;
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
 use crate::auth::{AuthMethod, EstAuth};
 use crate::error::KipukaError;
-use crate::routes::est::{content_types, decode_est_base64, encode_est_base64};
 use crate::routes::LabelExtractor;
+use crate::routes::est::{content_types, decode_est_base64, encode_est_base64};
 use crate::state::AppState;
 
 /// `POST /.well-known/est/simplereenroll`
@@ -101,9 +101,7 @@ pub async fn post_simplereenroll(
         .map_err(|e| KipukaError::BadRequest(format!("CSR decoding failed: {e}")))?;
 
     if csr_der.is_empty() || csr_der.len() < 60 {
-        return Err(KipukaError::BadRequest(
-            "CSR is empty or too short".into(),
-        ));
+        return Err(KipukaError::BadRequest("CSR is empty or too short".into()));
     }
 
     // POP linking: verify the TLS client cert subject matches the CSR subject.

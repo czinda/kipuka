@@ -90,10 +90,9 @@ impl TlsConfigBuilder {
             source: e,
         })?;
 
-        let certs: Vec<CertificateDer<'static>> =
-            rustls_pemfile::certs(&mut &pem_data[..])
-                .filter_map(|r| r.ok())
-                .collect();
+        let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut &pem_data[..])
+            .filter_map(|r| r.ok())
+            .collect();
 
         if certs.is_empty() {
             return Err(TlsError::NoCertificates {
@@ -151,10 +150,9 @@ impl TlsConfigBuilder {
         })?;
 
         let mut root_store = rustls::RootCertStore::empty();
-        let ca_certs: Vec<CertificateDer<'static>> =
-            rustls_pemfile::certs(&mut &pem_data[..])
-                .filter_map(|r| r.ok())
-                .collect();
+        let ca_certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut &pem_data[..])
+            .filter_map(|r| r.ok())
+            .collect();
 
         if ca_certs.is_empty() {
             return Err(TlsError::NoCertificates {

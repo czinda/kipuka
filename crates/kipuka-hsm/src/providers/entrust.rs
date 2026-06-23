@@ -30,8 +30,8 @@
 //!
 //! Note: Some mechanisms may require specific firmware versions or nCore modules.
 
-use crate::providers::HsmProviderConfig;
 use crate::HsmProvider;
+use crate::providers::HsmProviderConfig;
 use cryptoki::mechanism::MechanismType;
 
 /// Default PKCS#11 library path for Linux.
@@ -91,7 +91,8 @@ pub fn provider_config() -> HsmProviderConfig {
         supported_mechanisms: supported_mechanisms(),
         notes: vec![
             "Requires Security World setup with OCS card sets".to_string(),
-            "CKM_AES_KEY_WRAP supported via nCore but may need explicit mechanism mapping".to_string(),
+            "CKM_AES_KEY_WRAP supported via nCore but may need explicit mechanism mapping"
+                .to_string(),
             "Softcard passphrase required for automated key access".to_string(),
             "Check firmware version for PSS and OAEP support".to_string(),
         ],

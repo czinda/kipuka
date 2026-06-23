@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::{generate_test_csr, TestClient, TestServer};
+use common::{TestClient, TestServer, generate_test_csr};
 
 // ── Authentication errors ───────────────────────────────────────────────────
 
@@ -42,7 +42,11 @@ async fn simpleenroll_expired_otp_returns_401() {
 
     // Use a fabricated OTP that does not exist in the store (simulates expired)
     let resp = client
-        .est_post_csr("simpleenroll", &csr_der, Some(("", "expired-fake-token-value")))
+        .est_post_csr(
+            "simpleenroll",
+            &csr_der,
+            Some(("", "expired-fake-token-value")),
+        )
         .await;
 
     assert_eq!(
@@ -78,11 +82,7 @@ async fn simpleenroll_invalid_csr_returns_400() {
     // Send garbage data that is not a valid PKCS#10 CSR
     let garbage = b"this is not a valid CSR at all";
     let resp = client
-        .est_post_csr(
-            "simpleenroll",
-            garbage,
-            auth.as_deref().map(|o| ("", o)),
-        )
+        .est_post_csr("simpleenroll", garbage, auth.as_deref().map(|o| ("", o)))
         .await;
 
     let status = resp.status().as_u16();
@@ -99,11 +99,7 @@ async fn simpleenroll_wrong_content_type_returns_415() {
     let client = TestClient::new(&server.base_url());
 
     let resp = client
-        .est_post_raw(
-            "simpleenroll",
-            "application/json",
-            b"{}".to_vec(),
-        )
+        .est_post_raw("simpleenroll", "application/json", b"{}".to_vec())
         .await;
 
     assert_eq!(
@@ -120,11 +116,7 @@ async fn simplereenroll_wrong_content_type_returns_415() {
     let client = TestClient::new(&server.base_url());
 
     let resp = client
-        .est_post_raw(
-            "simplereenroll",
-            "text/plain",
-            b"not a csr".to_vec(),
-        )
+        .est_post_raw("simplereenroll", "text/plain", b"not a csr".to_vec())
         .await;
 
     assert_eq!(
@@ -181,11 +173,7 @@ async fn cacerts_unknown_label_returns_404() {
     let client = TestClient::new(&server.base_url());
 
     let resp = client.est_get("nonexistent-label/cacerts").await;
-    assert_eq!(
-        resp.status(),
-        404,
-        "Unknown EST label must return 404"
-    );
+    assert_eq!(resp.status(), 404, "Unknown EST label must return 404");
 }
 
 /// POST /simpleenroll on an unknown label returns 404.
@@ -254,9 +242,7 @@ async fn simplereenroll_no_client_cert_returns_401() {
     let client = TestClient::new(&server.base_url());
 
     let (csr_der, _) = generate_test_csr("reenroll-no-cert.test", "rsa:2048");
-    let resp = client
-        .est_post_csr("simplereenroll", &csr_der, None)
-        .await;
+    let resp = client.est_post_csr("simplereenroll", &csr_der, None).await;
 
     let status = resp.status().as_u16();
     assert!(

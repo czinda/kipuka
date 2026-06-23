@@ -45,11 +45,7 @@ pub async fn try_extract_gssapi(
     parts: &mut Parts,
     app: &Arc<AppState>,
 ) -> Option<Result<AuthResult, Response>> {
-    let auth_header = parts
-        .headers
-        .get(AUTHORIZATION)?
-        .to_str()
-        .ok()?;
+    let auth_header = parts.headers.get(AUTHORIZATION)?.to_str().ok()?;
 
     // Only handle Negotiate tokens; Basic is handled by the OTP module.
     let token_b64 = auth_header.strip_prefix("Negotiate ")?;
@@ -59,10 +55,11 @@ pub async fn try_extract_gssapi(
         Some(cred) => Arc::clone(cred),
         None => {
             debug!("Negotiate header present but GSSAPI not configured");
-            return Some(Err(
-                (StatusCode::UNAUTHORIZED, "GSSAPI is not configured on this server")
-                    .into_response(),
-            ));
+            return Some(Err((
+                StatusCode::UNAUTHORIZED,
+                "GSSAPI is not configured on this server",
+            )
+                .into_response()));
         }
     };
 
@@ -70,18 +67,22 @@ pub async fn try_extract_gssapi(
     let token_bytes = match base64::engine::general_purpose::STANDARD.decode(token_b64) {
         Ok(t) => t,
         Err(_) => {
-            return Some(Err(
-                (StatusCode::BAD_REQUEST, "malformed Negotiate token encoding").into_response()
-            ));
+            return Some(Err((
+                StatusCode::BAD_REQUEST,
+                "malformed Negotiate token encoding",
+            )
+                .into_response()));
         }
     };
 
     // Reject oversized tokens (128 KiB limit, matching Akamu).
     const MAX_TOKEN_BYTES: usize = 128 * 1024;
     if token_bytes.len() > MAX_TOKEN_BYTES {
-        return Some(Err(
-            (StatusCode::BAD_REQUEST, "Negotiate token exceeds size limit").into_response()
-        ));
+        return Some(Err((
+            StatusCode::BAD_REQUEST,
+            "Negotiate token exceeds size limit",
+        )
+            .into_response()));
     }
 
     // Extract TLS channel binding data for tls-server-end-point binding.

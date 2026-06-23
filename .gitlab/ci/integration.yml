@@ -22,7 +22,7 @@ dogtag-integration:
     # Install Rust toolchain
     - dnf install -y rust cargo 2>/dev/null
         || curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs
-           | sh -s -- -y --default-toolchain 1.85.0
+           | sh -s -- -y --default-toolchain 1.88.0
     - export PATH="$HOME/.cargo/bin:$PATH"
     - rustc --version && cargo --version
   script:

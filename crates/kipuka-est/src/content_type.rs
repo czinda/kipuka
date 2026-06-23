@@ -86,11 +86,7 @@ pub fn multipart_content_type(boundary: &str) -> String {
 /// assert!(!validate_content_type("text/plain", "application/pkcs10"));
 /// ```
 pub fn validate_content_type(header_value: &str, expected_base: &str) -> bool {
-    let base = header_value
-        .split(';')
-        .next()
-        .unwrap_or("")
-        .trim();
+    let base = header_value.split(';').next().unwrap_or("").trim();
     base.eq_ignore_ascii_case(expected_base)
 }
 

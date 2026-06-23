@@ -72,9 +72,7 @@ pub fn to_http_content_type(format_id: u16) -> Option<&'static str> {
         APPLICATION_PKCS7_MIME_SERVER_GEN_TYPE => {
             Some("application/pkcs7-mime; smime-type=server-generated")
         }
-        APPLICATION_PKCS7_MIME_CERTS_ONLY => {
-            Some("application/pkcs7-mime; smime-type=certs-only")
-        }
+        APPLICATION_PKCS7_MIME_CERTS_ONLY => Some("application/pkcs7-mime; smime-type=certs-only"),
         APPLICATION_PKCS7_MIME_CMC_REQUEST => {
             Some("application/pkcs7-mime; smime-type=CMC-Request")
         }
@@ -167,10 +165,7 @@ mod tests {
             to_http_content_type(APPLICATION_CSRATTRS),
             Some("application/csrattrs")
         );
-        assert_eq!(
-            to_http_content_type(MULTIPART_CORE),
-            Some("multipart/core")
-        );
+        assert_eq!(to_http_content_type(MULTIPART_CORE), Some("multipart/core"));
         assert_eq!(to_http_content_type(9999), None);
     }
 

@@ -10,13 +10,13 @@
 use std::sync::Arc;
 
 use axum::extract::State;
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
 use crate::auth::OptionalAuth;
 use crate::error::KipukaError;
-use crate::routes::est::{content_types, encode_est_base64};
 use crate::routes::LabelExtractor;
+use crate::routes::est::{content_types, encode_est_base64};
 use crate::state::AppState;
 
 /// `GET /.well-known/est/cacerts`

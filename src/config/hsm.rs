@@ -93,9 +93,8 @@ impl HsmConfig {
     /// Resolve the HSM PIN, expanding `"env:VAR_NAME"` references.
     pub fn resolve_pin(&self) -> std::result::Result<String, String> {
         if let Some(var_name) = self.pin.strip_prefix("env:") {
-            std::env::var(var_name).map_err(|_| {
-                format!("[hsm].pin references env var {var_name:?} which is not set")
-            })
+            std::env::var(var_name)
+                .map_err(|_| format!("[hsm].pin references env var {var_name:?} which is not set"))
         } else {
             Ok(self.pin.clone())
         }

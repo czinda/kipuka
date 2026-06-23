@@ -24,11 +24,11 @@ pub mod simplereenroll;
 
 use std::sync::Arc;
 
+use axum::Router;
 use axum::extract::{FromRef, FromRequestParts, Path};
 use axum::http::request::Parts;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
-use axum::Router;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
 
@@ -73,8 +73,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     let est_routes = est::est_router();
 
     // Per-label EST routes: /.well-known/est/{label}/
-    let labeled_est_routes = Router::new()
-        .nest("/{label}", est::est_router());
+    let labeled_est_routes = Router::new().nest("/{label}", est::est_router());
 
     // Admin routes with separate authentication.
     let admin_routes = admin::admin_router();

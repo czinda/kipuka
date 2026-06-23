@@ -42,11 +42,7 @@ pub async fn try_extract_otp(
     parts: &Parts,
     app: &Arc<AppState>,
 ) -> Option<Result<AuthResult, Response>> {
-    let auth_header = parts
-        .headers
-        .get(AUTHORIZATION)?
-        .to_str()
-        .ok()?;
+    let auth_header = parts.headers.get(AUTHORIZATION)?.to_str().ok()?;
 
     // Only handle Basic auth; Negotiate is handled by the GSSAPI module.
     let credentials_b64 = auth_header.strip_prefix("Basic ")?;

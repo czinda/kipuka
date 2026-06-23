@@ -230,13 +230,16 @@ fn check_sans_against_identity(sans: &[SanEntry], expected: &str) -> bool {
     // Determine the type of expected identity.
     if let Ok(expected_ip) = expected.parse::<IpAddr>() {
         // IP address: match against iPAddress SANs.
-        sans.iter().any(|san| matches!(san, SanEntry::Ip(ip) if matches_ip(ip, &expected_ip)))
+        sans.iter()
+            .any(|san| matches!(san, SanEntry::Ip(ip) if matches_ip(ip, &expected_ip)))
     } else if expected.contains('@') {
         // Email address: match against rfc822Name SANs.
-        sans.iter().any(|san| matches!(san, SanEntry::Email(e) if matches_email(e, expected)))
+        sans.iter()
+            .any(|san| matches!(san, SanEntry::Email(e) if matches_email(e, expected)))
     } else {
         // DNS hostname: match against dNSName SANs.
-        sans.iter().any(|san| matches!(san, SanEntry::Dns(d) if matches_domain(d, expected)))
+        sans.iter()
+            .any(|san| matches!(san, SanEntry::Dns(d) if matches_domain(d, expected)))
     }
 }
 
@@ -307,7 +310,10 @@ mod tests {
     #[test]
     fn punycode_a_labels() {
         // IDN domains in A-label form.
-        assert!(matches_domain("xn--nxasmq6b.example.com", "xn--nxasmq6b.example.com"));
+        assert!(matches_domain(
+            "xn--nxasmq6b.example.com",
+            "xn--nxasmq6b.example.com"
+        ));
         assert!(matches_domain("*.xn--nxasmq6b.com", "foo.xn--nxasmq6b.com"));
     }
 

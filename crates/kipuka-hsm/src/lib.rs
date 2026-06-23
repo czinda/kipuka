@@ -154,14 +154,12 @@ pub mod providers;
 
 // Re-exports for convenience
 pub use error::{HsmError, HsmResult};
-pub use key::{
-    EcdsaCurve, HsmKeyPair, KeyAlgorithm, MlDsaLevel, MlKemLevel, PqcMechanismIds,
-};
+pub use key::{EcdsaCurve, HsmKeyPair, KeyAlgorithm, MlDsaLevel, MlKemLevel, PqcMechanismIds};
 pub use pkcs11::Pkcs11Context;
 pub use providers::HsmProvider;
 pub use sign::{
-    sign_ecdsa, sign_ml_dsa, sign_rsa_pkcs1, sign_rsa_pss, DefaultHsmSigner, HsmSigner,
-    RsaHashAlgorithm, SoftwarePqcFallback,
+    DefaultHsmSigner, HsmSigner, RsaHashAlgorithm, SoftwarePqcFallback, sign_ecdsa, sign_ml_dsa,
+    sign_rsa_pkcs1, sign_rsa_pss,
 };
 pub use slot::HsmSlot;
 

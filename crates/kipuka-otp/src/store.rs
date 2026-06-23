@@ -47,10 +47,7 @@ pub struct OtpRecord {
 /// Implementors must be `Send + Sync` for use in async contexts.
 pub trait OtpStore: Send + Sync {
     /// Insert a new OTP record.
-    fn insert(
-        &self,
-        record: OtpRecord,
-    ) -> impl std::future::Future<Output = OtpResult<()>> + Send;
+    fn insert(&self, record: OtpRecord) -> impl std::future::Future<Output = OtpResult<()>> + Send;
 
     /// Find a record by its token hash.
     fn find_by_hash(
@@ -66,15 +63,10 @@ pub trait OtpStore: Send + Sync {
     ) -> impl std::future::Future<Output = OtpResult<()>> + Send;
 
     /// Mark a record as revoked.
-    fn revoke(
-        &self,
-        id: &Uuid,
-    ) -> impl std::future::Future<Output = OtpResult<()>> + Send;
+    fn revoke(&self, id: &Uuid) -> impl std::future::Future<Output = OtpResult<()>> + Send;
 
     /// Remove all expired records (RHELBU-3536 R12).
-    fn cleanup_expired(
-        &self,
-    ) -> impl std::future::Future<Output = OtpResult<u64>> + Send;
+    fn cleanup_expired(&self) -> impl std::future::Future<Output = OtpResult<u64>> + Send;
 }
 
 // ---------------------------------------------------------------------------
@@ -218,7 +210,9 @@ mod tests {
     async fn in_memory_store_round_trip() {
         let store = InMemoryOtpStore::new();
         let generator = OtpGenerator::new(OtpGeneratorConfig::default()).unwrap();
-        let otp = generator.generate("host.example.com", "test", "default").unwrap();
+        let otp = generator
+            .generate("host.example.com", "test", "default")
+            .unwrap();
 
         let record = OtpRecord {
             id: otp.metadata.id,

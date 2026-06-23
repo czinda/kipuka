@@ -14,7 +14,7 @@ pub mod issue;
 pub mod keygen;
 pub mod pool;
 
-pub use init::{CaInstance, CaInitError};
+pub use init::{CaInitError, CaInstance};
 pub use issue::{IssuanceError, IssuanceResult};
 pub use keygen::{KeyGenError, KeyGenResult, KeyType};
 pub use pool::CaBackendPool;

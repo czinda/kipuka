@@ -817,7 +817,13 @@ mod tests {
 
         assert_eq!(msg.version, 1);
         assert_eq!(msg.msg_type, CoapMessageType::Confirmable);
-        assert_eq!(msg.code, CoapCode { class: 0, detail: 1 });
+        assert_eq!(
+            msg.code,
+            CoapCode {
+                class: 0,
+                detail: 1
+            }
+        );
         assert_eq!(msg.message_id, 0x1234);
         assert!(msg.token.is_empty());
         assert!(msg.options.is_empty());
@@ -1111,9 +1117,9 @@ mod tests {
             message_id: 999,
             token: vec![0xAA, 0xBB, 0xCC],
             options: vec![
-                CoapOption::new(OPTION_URI_PATH, b"test".to_vec()),     // 11
-                CoapOption::from_uint(OPTION_CONTENT_FORMAT, 285),      // 12
-                CoapOption::from_uint(OPTION_SIZE1, 4096),              // 60
+                CoapOption::new(OPTION_URI_PATH, b"test".to_vec()), // 11
+                CoapOption::from_uint(OPTION_CONTENT_FORMAT, 285),  // 12
+                CoapOption::from_uint(OPTION_SIZE1, 4096),          // 60
             ],
             payload: b"response-body".to_vec(),
         };

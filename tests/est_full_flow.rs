@@ -11,7 +11,7 @@
 
 mod common;
 
-use common::{generate_test_csr, TestClient, TestServer};
+use common::{TestClient, TestServer, generate_test_csr};
 
 /// Full EST enrollment flow: cacerts → OTP → enroll → reenroll → csrattrs.
 #[tokio::test]
@@ -34,7 +34,10 @@ async fn est_full_enrollment_flow() {
     );
 
     let cacerts_body = resp.text().await.unwrap();
-    assert!(!cacerts_body.is_empty(), "/cacerts body should not be empty");
+    assert!(
+        !cacerts_body.is_empty(),
+        "/cacerts body should not be empty"
+    );
 
     // ── Step 2: Generate OTP via admin API ──────────────────────────────
     let otp_resp = client
@@ -94,8 +97,7 @@ async fn est_full_enrollment_flow() {
             // In a full implementation, we would configure the reqwest client with
             // the issued certificate. For now, test that the endpoint accepts
             // the request format.
-            let (reenroll_csr, _) =
-                generate_test_csr("flow-test-device.kipuka.test", "rsa:2048");
+            let (reenroll_csr, _) = generate_test_csr("flow-test-device.kipuka.test", "rsa:2048");
             let reenroll_resp = client
                 .est_post_csr("simplereenroll", &reenroll_csr, None)
                 .await;
@@ -103,9 +105,7 @@ async fn est_full_enrollment_flow() {
             let reenroll_status = reenroll_resp.status().as_u16();
             // Without proper mTLS, expect 401 (auth required) — which is correct behavior
             assert!(
-                reenroll_status == 200
-                    || reenroll_status == 202
-                    || reenroll_status == 401,
+                reenroll_status == 200 || reenroll_status == 202 || reenroll_status == 401,
                 "simplereenroll should return 200, 202, or 401, got: {reenroll_status}"
             );
         }

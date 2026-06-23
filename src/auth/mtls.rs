@@ -109,10 +109,7 @@ pub async fn try_extract_mtls(parts: &Parts, _app: &Arc<AppState>) -> Option<Aut
 /// canonicalized (trimmed, lowercased) before comparison.
 ///
 /// Returns `Ok(())` if subjects match, `Err` with a description if not.
-pub fn validate_pop_linking(
-    auth: &AuthResult,
-    csr_subject: &str,
-) -> Result<(), String> {
+pub fn validate_pop_linking(auth: &AuthResult, csr_subject: &str) -> Result<(), String> {
     // If the client certificate has SANs, use RFC 6125 identity matching
     // against the CSR subject.  Per RFC 6125 §6.4.4, when SANs are
     // present the subject CN is ignored.
@@ -195,10 +192,7 @@ pub fn validate_cert_attributes(
 
     // Check subject DN patterns.
     if !allowed_subject_patterns.is_empty() {
-        let subject = auth
-            .subject_dn
-            .as_deref()
-            .unwrap_or("");
+        let subject = auth.subject_dn.as_deref().unwrap_or("");
         let matches = allowed_subject_patterns
             .iter()
             .any(|pattern| subject.contains(pattern.as_str()));
@@ -269,9 +263,7 @@ async fn check_revocation(cert_der: &[u8], app: &Arc<AppState>) -> Result<(), St
     // The issuer certificate DER is needed for building the OCSP CertID.
     // In production, this comes from the CA truststore. For now, use the
     // default CA cert if available.
-    let issuer_der = app
-        .default_ca_cert_der()
-        .unwrap_or_default();
+    let issuer_der = app.default_ca_cert_der().unwrap_or_default();
 
     if issuer_der.is_empty() {
         warn!("no issuer certificate available for OCSP check");
@@ -289,7 +281,10 @@ async fn check_revocation(cert_der: &[u8], app: &Arc<AppState>) -> Result<(), St
             info!("OCSP: certificate status is good");
             Ok(())
         }
-        Ok(OcspStatus::Revoked { reason, revocation_time }) => {
+        Ok(OcspStatus::Revoked {
+            reason,
+            revocation_time,
+        }) => {
             warn!(
                 reason = %reason,
                 revocation_time = %revocation_time,
@@ -315,7 +310,9 @@ async fn check_revocation(cert_der: &[u8], app: &Arc<AppState>) -> Result<(), St
                 Ok(())
             } else {
                 // TODO: Implement CRL fallback check here.
-                Err(format!("OCSP check failed and CRL fallback not yet implemented: {e}"))
+                Err(format!(
+                    "OCSP check failed and CRL fallback not yet implemented: {e}"
+                ))
             }
         }
     }

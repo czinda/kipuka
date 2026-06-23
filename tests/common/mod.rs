@@ -45,10 +45,8 @@ impl TestCa {
     /// - Key Usage: keyCertSign, cRLSign
     /// - Validity: 1 year from now
     pub fn new() -> Self {
-        let (cert_pem, key_pem, cert_der) = pki::generate_self_signed_ca(
-            "CN=Kipuka Test CA,O=Kipuka Integration Tests",
-            365,
-        );
+        let (cert_pem, key_pem, cert_der) =
+            pki::generate_self_signed_ca("CN=Kipuka Test CA,O=Kipuka Integration Tests", 365);
         let key_der = pki::pem_to_der(&key_pem);
         Self {
             cert_der,

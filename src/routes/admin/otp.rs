@@ -6,10 +6,10 @@
 
 use std::sync::Arc;
 
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde::{Deserialize, Serialize};
 
 use super::AdminAuth;
@@ -156,10 +156,7 @@ pub async fn generate_otp(
 
     // Audit log the OTP generation.
     state
-        .record_audit_event(
-            "otp_generated",
-            &format!("entity_id={}", req.entity_id),
-        )
+        .record_audit_event("otp_generated", &format!("entity_id={}", req.entity_id))
         .await;
 
     (
@@ -179,10 +176,7 @@ pub async fn generate_otp(
 /// Returns all non-expired, non-fully-consumed OTPs.  The actual OTP
 /// token values are NOT included (they are one-time secrets shown only
 /// at generation time).
-pub async fn list_otps(
-    _admin: AdminAuth,
-    State(state): State<Arc<AppState>>,
-) -> Response {
+pub async fn list_otps(_admin: AdminAuth, State(state): State<Arc<AppState>>) -> Response {
     if !state.config.otp.enabled {
         return (
             StatusCode::BAD_REQUEST,

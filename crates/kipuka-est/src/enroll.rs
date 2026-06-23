@@ -398,9 +398,7 @@ impl EnrollResponse {
     /// Validates the PKCS#7 structure.
     pub fn validate(&self) -> EstResult<()> {
         if self.pkcs7_der.is_empty() {
-            return Err(EstError::InvalidPkcs7(
-                "Empty PKCS#7 structure".to_string(),
-            ));
+            return Err(EstError::InvalidPkcs7("Empty PKCS#7 structure".to_string()));
         }
 
         if self.pkcs7_der[0] != 0x30 {
@@ -482,7 +480,10 @@ mod tests {
     #[test]
     fn test_validate_empty_csr() {
         let request = EnrollRequest::new(vec![]);
-        assert!(matches!(request.validate(), Err(EstError::InvalidPkcs10(_))));
+        assert!(matches!(
+            request.validate(),
+            Err(EstError::InvalidPkcs10(_))
+        ));
     }
 
     #[test]
@@ -525,21 +526,54 @@ mod tests {
 
     #[test]
     fn test_key_algorithm_from_oid() {
-        assert_eq!(KeyAlgorithm::from_oid("1.2.840.113549.1.1.1"), KeyAlgorithm::Rsa);
-        assert_eq!(KeyAlgorithm::from_oid("2.16.840.1.101.3.4.3.17"), KeyAlgorithm::MlDsa44);
-        assert_eq!(KeyAlgorithm::from_oid("2.16.840.1.101.3.4.3.18"), KeyAlgorithm::MlDsa65);
-        assert_eq!(KeyAlgorithm::from_oid("2.16.840.1.101.3.4.3.19"), KeyAlgorithm::MlDsa87);
-        assert_eq!(KeyAlgorithm::from_oid("2.16.840.1.101.3.4.4.1"), KeyAlgorithm::MlKem512);
-        assert_eq!(KeyAlgorithm::from_oid("2.16.840.1.101.3.4.4.2"), KeyAlgorithm::MlKem768);
-        assert_eq!(KeyAlgorithm::from_oid("2.16.840.1.101.3.4.4.3"), KeyAlgorithm::MlKem1024);
-        assert!(matches!(KeyAlgorithm::from_oid("1.2.3"), KeyAlgorithm::Unknown(_)));
+        assert_eq!(
+            KeyAlgorithm::from_oid("1.2.840.113549.1.1.1"),
+            KeyAlgorithm::Rsa
+        );
+        assert_eq!(
+            KeyAlgorithm::from_oid("2.16.840.1.101.3.4.3.17"),
+            KeyAlgorithm::MlDsa44
+        );
+        assert_eq!(
+            KeyAlgorithm::from_oid("2.16.840.1.101.3.4.3.18"),
+            KeyAlgorithm::MlDsa65
+        );
+        assert_eq!(
+            KeyAlgorithm::from_oid("2.16.840.1.101.3.4.3.19"),
+            KeyAlgorithm::MlDsa87
+        );
+        assert_eq!(
+            KeyAlgorithm::from_oid("2.16.840.1.101.3.4.4.1"),
+            KeyAlgorithm::MlKem512
+        );
+        assert_eq!(
+            KeyAlgorithm::from_oid("2.16.840.1.101.3.4.4.2"),
+            KeyAlgorithm::MlKem768
+        );
+        assert_eq!(
+            KeyAlgorithm::from_oid("2.16.840.1.101.3.4.4.3"),
+            KeyAlgorithm::MlKem1024
+        );
+        assert!(matches!(
+            KeyAlgorithm::from_oid("1.2.3"),
+            KeyAlgorithm::Unknown(_)
+        ));
     }
 
     #[test]
     fn test_key_algorithm_ec_curves() {
-        assert_eq!(KeyAlgorithm::from_ec_oid("1.2.840.10045.3.1.7"), KeyAlgorithm::EcdsaP256);
-        assert_eq!(KeyAlgorithm::from_ec_oid("1.3.132.0.34"), KeyAlgorithm::EcdsaP384);
-        assert!(matches!(KeyAlgorithm::from_ec_oid("1.2.3.4"), KeyAlgorithm::Unknown(_)));
+        assert_eq!(
+            KeyAlgorithm::from_ec_oid("1.2.840.10045.3.1.7"),
+            KeyAlgorithm::EcdsaP256
+        );
+        assert_eq!(
+            KeyAlgorithm::from_ec_oid("1.3.132.0.34"),
+            KeyAlgorithm::EcdsaP384
+        );
+        assert!(matches!(
+            KeyAlgorithm::from_ec_oid("1.2.3.4"),
+            KeyAlgorithm::Unknown(_)
+        ));
     }
 
     #[test]
@@ -556,7 +590,10 @@ mod tests {
             challenge_password: None,
             tbs_der: Vec::new(),
         };
-        assert!(matches!(cr.verify_self_signature(), Err(EstError::InvalidPkcs10(_))));
+        assert!(matches!(
+            cr.verify_self_signature(),
+            Err(EstError::InvalidPkcs10(_))
+        ));
     }
 
     #[test]
@@ -573,7 +610,10 @@ mod tests {
             challenge_password: None,
             tbs_der: vec![0x30, 0x00],
         };
-        assert!(matches!(cr.verify_self_signature(), Err(EstError::InvalidPkcs10(_))));
+        assert!(matches!(
+            cr.verify_self_signature(),
+            Err(EstError::InvalidPkcs10(_))
+        ));
     }
 
     #[test]

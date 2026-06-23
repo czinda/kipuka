@@ -29,8 +29,9 @@ impl Pkcs11Context {
 
         tracing::debug!("Loading PKCS#11 library from {}", path.display());
 
-        let pkcs11 = Pkcs11::new(path)
-            .map_err(|e| HsmError::LibraryLoad(format!("Failed to load {}: {}", path.display(), e)))?;
+        let pkcs11 = Pkcs11::new(path).map_err(|e| {
+            HsmError::LibraryLoad(format!("Failed to load {}: {}", path.display(), e))
+        })?;
 
         // Initialize the library with OS locking
         pkcs11

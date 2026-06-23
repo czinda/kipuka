@@ -28,7 +28,7 @@ use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::extract::State;
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
 use crate::error::KipukaError;
@@ -470,7 +470,10 @@ pub async fn post_cmp(
 
     // Verify message protection.
     match &cmp_req.protection {
-        CmpProtectionType::Signature { algorithm, cert_der } => {
+        CmpProtectionType::Signature {
+            algorithm,
+            cert_der,
+        } => {
             tracing::debug!(
                 algorithm = %algorithm,
                 cert_len = cert_der.len(),
@@ -596,9 +599,7 @@ pub async fn post_cmp(
     };
 
     if response_body_der.is_empty() {
-        return Err(KipukaError::Ca(
-            "CMP processing not yet implemented".into(),
-        ));
+        return Err(KipukaError::Ca("CMP processing not yet implemented".into()));
     }
 
     // Build the response PKIMessage.
@@ -607,10 +608,7 @@ pub async fn post_cmp(
     state
         .record_audit_event(
             "cmp_success",
-            &format!(
-                "type={}, sender={}",
-                cmp_req.message_type, cmp_req.sender
-            ),
+            &format!("type={}, sender={}", cmp_req.message_type, cmp_req.sender),
         )
         .await;
 
@@ -683,11 +681,26 @@ mod tests {
 
     #[test]
     fn expected_response_maps_correctly() {
-        assert_eq!(CmpMessageType::Ir.expected_response(), Some(CmpMessageType::Ip));
-        assert_eq!(CmpMessageType::Cr.expected_response(), Some(CmpMessageType::Cp));
-        assert_eq!(CmpMessageType::Kur.expected_response(), Some(CmpMessageType::Kup));
-        assert_eq!(CmpMessageType::Rr.expected_response(), Some(CmpMessageType::Rp));
-        assert_eq!(CmpMessageType::GenM.expected_response(), Some(CmpMessageType::GenP));
+        assert_eq!(
+            CmpMessageType::Ir.expected_response(),
+            Some(CmpMessageType::Ip)
+        );
+        assert_eq!(
+            CmpMessageType::Cr.expected_response(),
+            Some(CmpMessageType::Cp)
+        );
+        assert_eq!(
+            CmpMessageType::Kur.expected_response(),
+            Some(CmpMessageType::Kup)
+        );
+        assert_eq!(
+            CmpMessageType::Rr.expected_response(),
+            Some(CmpMessageType::Rp)
+        );
+        assert_eq!(
+            CmpMessageType::GenM.expected_response(),
+            Some(CmpMessageType::GenP)
+        );
         assert_eq!(
             CmpMessageType::CertConf.expected_response(),
             Some(CmpMessageType::PkiConf)

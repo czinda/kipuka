@@ -243,7 +243,8 @@ pub fn sign_ml_dsa(
     // cryptoki 0.7 doesn't support vendor-defined mechanisms directly
     // Fall back to error for now - HSM support requires vendor SDK integration
     Err(HsmError::PqcNotSupported(
-        "ML-DSA signing requires vendor-specific PKCS#11 extensions not available in cryptoki 0.7".to_string()
+        "ML-DSA signing requires vendor-specific PKCS#11 extensions not available in cryptoki 0.7"
+            .to_string(),
     ))
 }
 

@@ -46,8 +46,8 @@
 //! - AES Key Wrap (CKM_AES_KEY_WRAP, CKM_AES_KEY_WRAP_PAD)
 //! - RSAES-OAEP for key wrapping
 
-use crate::providers::HsmProviderConfig;
 use crate::HsmProvider;
+use crate::providers::HsmProviderConfig;
 use cryptoki::mechanism::MechanismType;
 
 /// Default PKCS#11 library path for Luna TCT.
@@ -109,12 +109,14 @@ pub fn provider_config() -> HsmProviderConfig {
         notes: vec![
             "Ruggedized, battery-backed HSM for tactical/field deployment".to_string(),
             "Tamper-responsive with physical intrusion detection".to_string(),
-            "Designed for disconnected/air-gapped environments (RHELBU-3536 R7-Disconnected)".to_string(),
+            "Designed for disconnected/air-gapped environments (RHELBU-3536 R7-Disconnected)"
+                .to_string(),
             "Limited slot count and key storage vs cloud HSMs".to_string(),
             "Same PKCS#11 mechanisms as Luna CSP".to_string(),
             "CKM_AES_KEY_WRAP and CKM_AES_KEY_WRAP_PAD fully supported".to_string(),
             "RSAES-OAEP fully supported".to_string(),
-            "Offline key generation and certificate issuance without network dependency".to_string(),
+            "Offline key generation and certificate issuance without network dependency"
+                .to_string(),
             "Manual key transport via physical custody for backup/recovery".to_string(),
         ],
     }
@@ -141,8 +143,18 @@ mod tests {
     #[test]
     fn test_config_has_tactical_notes() {
         let config = provider_config();
-        assert!(config.notes.iter().any(|n| n.contains("tactical") || n.contains("Tactical")));
-        assert!(config.notes.iter().any(|n| n.contains("disconnected") || n.contains("air-gapped")));
+        assert!(
+            config
+                .notes
+                .iter()
+                .any(|n| n.contains("tactical") || n.contains("Tactical"))
+        );
+        assert!(
+            config
+                .notes
+                .iter()
+                .any(|n| n.contains("disconnected") || n.contains("air-gapped"))
+        );
         assert!(config.notes.iter().any(|n| n.contains("battery")));
     }
 }

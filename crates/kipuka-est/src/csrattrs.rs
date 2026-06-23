@@ -232,9 +232,7 @@ impl CsrAttrsResponse {
         }
 
         if der[0] != 0x30 {
-            return Err(EstError::InvalidDer(
-                "Expected SEQUENCE tag".to_string(),
-            ));
+            return Err(EstError::InvalidDer("Expected SEQUENCE tag".to_string()));
         }
 
         // In production, parse OIDs from DER
@@ -312,13 +310,12 @@ impl CsrAttrsBuilder {
 
     /// Adds common composite ML-DSA OIDs.
     pub fn with_composite_ml_dsa(mut self) -> Self {
-        self.attributes.push(
-            CsrAttribute::with_description(
-                composite_ml_dsa_oids::ML_DSA_65_RSA_3072,
-                "Composite ML-DSA-65 + RSA-3072",
-            )
-        );
-        self.attributes.push(CsrAttribute::composite_ml_dsa_65_ecdsa_p384());
+        self.attributes.push(CsrAttribute::with_description(
+            composite_ml_dsa_oids::ML_DSA_65_RSA_3072,
+            "Composite ML-DSA-65 + RSA-3072",
+        ));
+        self.attributes
+            .push(CsrAttribute::composite_ml_dsa_65_ecdsa_p384());
         self
     }
 
@@ -405,18 +402,24 @@ mod tests {
         let response = CsrAttrsResponse::builder().with_all_ml_dsa().build();
 
         assert_eq!(response.attributes().len(), 3);
-        assert!(response
-            .attributes()
-            .iter()
-            .any(|a| a.oid == ml_dsa_oids::ML_DSA_44));
-        assert!(response
-            .attributes()
-            .iter()
-            .any(|a| a.oid == ml_dsa_oids::ML_DSA_65));
-        assert!(response
-            .attributes()
-            .iter()
-            .any(|a| a.oid == ml_dsa_oids::ML_DSA_87));
+        assert!(
+            response
+                .attributes()
+                .iter()
+                .any(|a| a.oid == ml_dsa_oids::ML_DSA_44)
+        );
+        assert!(
+            response
+                .attributes()
+                .iter()
+                .any(|a| a.oid == ml_dsa_oids::ML_DSA_65)
+        );
+        assert!(
+            response
+                .attributes()
+                .iter()
+                .any(|a| a.oid == ml_dsa_oids::ML_DSA_87)
+        );
     }
 
     #[test]
@@ -424,18 +427,24 @@ mod tests {
         let response = CsrAttrsResponse::builder().with_all_ml_kem().build();
 
         assert_eq!(response.attributes().len(), 3);
-        assert!(response
-            .attributes()
-            .iter()
-            .any(|a| a.oid == ml_kem_oids::ML_KEM_512));
-        assert!(response
-            .attributes()
-            .iter()
-            .any(|a| a.oid == ml_kem_oids::ML_KEM_768));
-        assert!(response
-            .attributes()
-            .iter()
-            .any(|a| a.oid == ml_kem_oids::ML_KEM_1024));
+        assert!(
+            response
+                .attributes()
+                .iter()
+                .any(|a| a.oid == ml_kem_oids::ML_KEM_512)
+        );
+        assert!(
+            response
+                .attributes()
+                .iter()
+                .any(|a| a.oid == ml_kem_oids::ML_KEM_768)
+        );
+        assert!(
+            response
+                .attributes()
+                .iter()
+                .any(|a| a.oid == ml_kem_oids::ML_KEM_1024)
+        );
     }
 
     #[test]
@@ -443,31 +452,37 @@ mod tests {
         let response = CsrAttrsResponse::builder().with_all_pqc().build();
 
         assert_eq!(response.attributes().len(), 6);
-        assert!(response
-            .attributes()
-            .iter()
-            .any(|a| a.oid == ml_dsa_oids::ML_DSA_44));
-        assert!(response
-            .attributes()
-            .iter()
-            .any(|a| a.oid == ml_kem_oids::ML_KEM_512));
+        assert!(
+            response
+                .attributes()
+                .iter()
+                .any(|a| a.oid == ml_dsa_oids::ML_DSA_44)
+        );
+        assert!(
+            response
+                .attributes()
+                .iter()
+                .any(|a| a.oid == ml_kem_oids::ML_KEM_512)
+        );
     }
 
     #[test]
     fn test_builder_composite() {
-        let response = CsrAttrsResponse::builder()
-            .with_composite_ml_dsa()
-            .build();
+        let response = CsrAttrsResponse::builder().with_composite_ml_dsa().build();
 
         assert_eq!(response.attributes().len(), 2);
-        assert!(response
-            .attributes()
-            .iter()
-            .any(|a| a.oid == composite_ml_dsa_oids::ML_DSA_65_RSA_3072));
-        assert!(response
-            .attributes()
-            .iter()
-            .any(|a| a.oid == composite_ml_dsa_oids::ML_DSA_65_ECDSA_P384));
+        assert!(
+            response
+                .attributes()
+                .iter()
+                .any(|a| a.oid == composite_ml_dsa_oids::ML_DSA_65_RSA_3072)
+        );
+        assert!(
+            response
+                .attributes()
+                .iter()
+                .any(|a| a.oid == composite_ml_dsa_oids::ML_DSA_65_ECDSA_P384)
+        );
     }
 
     #[test]
@@ -475,14 +490,18 @@ mod tests {
         let response = CsrAttrsResponse::builder().with_standard_attrs().build();
 
         assert_eq!(response.attributes().len(), 2);
-        assert!(response
-            .attributes()
-            .iter()
-            .any(|a| a.oid == x509_attr_oids::CHALLENGE_PASSWORD));
-        assert!(response
-            .attributes()
-            .iter()
-            .any(|a| a.oid == x509_attr_oids::EXTENSION_REQUEST));
+        assert!(
+            response
+                .attributes()
+                .iter()
+                .any(|a| a.oid == x509_attr_oids::CHALLENGE_PASSWORD)
+        );
+        assert!(
+            response
+                .attributes()
+                .iter()
+                .any(|a| a.oid == x509_attr_oids::EXTENSION_REQUEST)
+        );
     }
 
     #[test]
@@ -503,9 +522,7 @@ mod tests {
         let der = response.to_der();
         assert_eq!(der, &[0x30, 0x00]); // Empty SEQUENCE
 
-        let mut response = CsrAttrsResponse::builder()
-            .add_oid("1.2.3.4.5")
-            .build();
+        let mut response = CsrAttrsResponse::builder().add_oid("1.2.3.4.5").build();
         let der = response.to_der();
         assert_eq!(der[0], 0x30); // SEQUENCE tag
     }

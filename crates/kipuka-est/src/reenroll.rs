@@ -89,11 +89,7 @@ impl ReenrollRequest {
     ///
     /// Subject parsing is delegated to the caller (CA module) since it requires
     /// full X.509 ASN.1 parsing. This method only compares the pre-parsed values.
-    pub fn validate_subject_match(
-        &self,
-        mtls_subject: &str,
-        csr_subject: &str,
-    ) -> EstResult<()> {
+    pub fn validate_subject_match(&self, mtls_subject: &str, csr_subject: &str) -> EstResult<()> {
         if mtls_subject != csr_subject {
             return Err(EstError::SubjectMismatch {
                 expected: mtls_subject.to_string(),
@@ -222,9 +218,11 @@ mod tests {
         let mtls_subject = "CN=client.example.com,O=Example,C=US";
         let csr_subject = "CN=client.example.com,O=Example,C=US";
 
-        assert!(request
-            .validate_subject_match(mtls_subject, csr_subject)
-            .is_ok());
+        assert!(
+            request
+                .validate_subject_match(mtls_subject, csr_subject)
+                .is_ok()
+        );
     }
 
     #[test]

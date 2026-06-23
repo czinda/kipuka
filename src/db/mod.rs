@@ -88,9 +88,7 @@ pub(crate) fn pg_sql(s: &'static str) -> &'static str {
 
 /// Initialize the primary (read-write) database connection pool.
 pub async fn init_pool(config: &DbConfig) -> Result<(Db, DbKind), KipukaError> {
-    let url = config
-        .resolve_url()
-        .map_err(|e| KipukaError::Config(e))?;
+    let url = config.resolve_url().map_err(|e| KipukaError::Config(e))?;
 
     let kind = DbKind::from_url(&url);
     let _ = IS_POSTGRES.set(kind == DbKind::Postgres);
@@ -137,9 +135,7 @@ pub async fn init_pool(config: &DbConfig) -> Result<(Db, DbKind), KipukaError> {
 /// (WAL concurrency benefit).  For `:memory:` and non-SQLite backends,
 /// returns a clone of the primary pool.
 pub async fn init_ro_pool(config: &DbConfig, kind: DbKind) -> Result<Db, KipukaError> {
-    let url = config
-        .resolve_url()
-        .map_err(|e| KipukaError::Config(e))?;
+    let url = config.resolve_url().map_err(|e| KipukaError::Config(e))?;
 
     // Only SQLite file-backed databases benefit from a separate RO pool
     if kind != DbKind::Sqlite || url.contains(":memory:") {

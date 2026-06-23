@@ -25,8 +25,8 @@
 //! - CKM_AES_KEY_WRAP_PAD (RFC 5649) for non-aligned key lengths
 //! - CKM_RSA_PKCS_OAEP for RSA-based wrapping
 
-use crate::providers::HsmProviderConfig;
 use crate::HsmProvider;
+use crate::providers::HsmProviderConfig;
 use cryptoki::mechanism::MechanismType;
 
 /// Default PKCS#11 library path for Linux.

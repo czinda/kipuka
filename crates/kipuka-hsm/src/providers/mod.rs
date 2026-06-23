@@ -60,7 +60,8 @@ impl HsmProvider {
             Some(Self::Entrust)
         } else if manufacturer_lower.contains("utimaco") {
             Some(Self::Utimaco)
-        } else if manufacturer_lower.contains("kryoptic") || description_lower.contains("kryoptic") {
+        } else if manufacturer_lower.contains("kryoptic") || description_lower.contains("kryoptic")
+        {
             Some(Self::Kryoptic)
         } else if manufacturer_lower.contains("thales") || manufacturer_lower.contains("safenet") {
             // Distinguish CSP vs TCT by library path or model
