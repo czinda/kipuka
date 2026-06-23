@@ -168,6 +168,12 @@ impl DbOtpStore {
     }
 }
 
+impl Default for DbOtpStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OtpStore for DbOtpStore {
     async fn insert(&self, _record: OtpRecord) -> OtpResult<()> {
         // TODO: INSERT INTO otp_tokens (id, token_hash, entity_id, ...)
