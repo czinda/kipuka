@@ -32,6 +32,9 @@ variables:
   CARGO_TERM_COLOR: "always"
   RUSTFLAGS: "-D warnings"
   RUST_BACKTRACE: "1"
+  # Synta uses symlinks in ASN.1 schema dirs — Docker needs this
+  GIT_CONFIG_GLOBAL: ""
+  FF_ENABLE_SYMLINKS: "true"
 
   # Project settings
   KIPUKA_FEATURES: "--all-features"
