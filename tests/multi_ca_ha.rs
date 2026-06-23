@@ -8,8 +8,10 @@
 //! - Health check state transitions recorded in database
 //! - All-CAs-unhealthy returns 503 Service Unavailable
 
+#[allow(dead_code)]
 mod common;
 
+#[allow(unused_imports)]
 use common::TestServer;
 
 // ── Active-Passive Failover ─────────────────────────────────────────────────

@@ -9,6 +9,7 @@
 //! 5. GET /csrattrs — retrieve CSR attribute hints
 //! 6. Verify audit log entries for all operations
 
+#[allow(dead_code)]
 mod common;
 
 use common::{TestClient, TestServer, generate_test_csr};

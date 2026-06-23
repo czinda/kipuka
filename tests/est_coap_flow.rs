@@ -14,6 +14,7 @@
 //! These tests serve as specification contracts — they define the expected
 //! behavior and will be enabled once the CoAP transport is implemented.
 
+#[allow(dead_code)]
 mod common;
 
 use common::TestServer;

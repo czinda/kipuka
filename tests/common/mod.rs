@@ -355,7 +355,7 @@ pub async fn wait_for_server(url: &str, timeout: Duration) {
         let addr = url
             .trim_start_matches("http://")
             .trim_start_matches("https://");
-        if let Ok(_) = tokio::net::TcpStream::connect(addr).await {
+        if tokio::net::TcpStream::connect(addr).await.is_ok() {
             return;
         }
 

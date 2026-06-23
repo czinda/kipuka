@@ -3,6 +3,7 @@
 //! Verifies that the server correctly rejects malformed, unauthorized,
 //! and unsupported requests with appropriate HTTP status codes.
 
+#[allow(dead_code)]
 mod common;
 
 use common::{TestClient, TestServer, generate_test_csr};

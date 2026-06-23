@@ -11,6 +11,7 @@
 //! - ML-KEM-512/768/1024 via /serverkeygen
 //! - Composite ML-DSA-44+P-256
 
+#[allow(dead_code)]
 mod common;
 
 use common::pki;

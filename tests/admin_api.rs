@@ -6,6 +6,7 @@
 //! - System health checks
 //! - Certificate listing and revocation
 
+#[allow(dead_code)]
 mod common;
 
 use common::{TestClient, TestServer};
@@ -52,7 +53,7 @@ async fn otp_list_returns_array() {
     if status.is_success() {
         let body: serde_json::Value = resp.json().await.unwrap();
         assert!(
-            body.is_array() || body.get("otps").map_or(false, |v| v.is_array()),
+            body.is_array() || body.get("otps").is_some_and(|v| v.is_array()),
             "OTP list response must be an array or contain an 'otps' array"
         );
     } else {
@@ -258,7 +259,7 @@ async fn certs_list_returns_array() {
     if status.is_success() {
         let body: serde_json::Value = resp.json().await.unwrap();
         assert!(
-            body.is_array() || body.get("certificates").map_or(false, |v| v.is_array()),
+            body.is_array() || body.get("certificates").is_some_and(|v| v.is_array()),
             "certs list should be an array or contain a 'certificates' array"
         );
     } else {
