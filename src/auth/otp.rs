@@ -11,12 +11,20 @@
 //! - An expiry timestamp
 //! - A maximum usage count (typically 1 for single-use)
 //! - A current usage counter
+//!
+//! ## RFC 7617 compliance
+//!
+//! The HTTP Basic authentication scheme follows RFC 7617:
+//!
+//! - **Section 2**: `user-id:password` encoding with UTF-8 support.
+//! - **Section 2.1**: null bytes are rejected for security.
+//! - **Section 2.2**: `WWW-Authenticate` challenges include `charset="UTF-8"`.
 
 use std::sync::Arc;
 
-use axum::http::header::AUTHORIZATION;
+use axum::http::header::{AUTHORIZATION, WWW_AUTHENTICATE};
 use axum::http::request::Parts;
-use axum::http::StatusCode;
+use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use tracing::{debug, warn};
@@ -46,19 +54,24 @@ pub async fn try_extract_otp(
     let decoded = match base64::engine::general_purpose::STANDARD.decode(credentials_b64) {
         Ok(d) => d,
         Err(_) => {
-            return Some(Err(
-                (StatusCode::BAD_REQUEST, "malformed Basic auth encoding").into_response()
-            ));
+            return Some(Err(unauthorized_response("malformed Basic auth encoding")));
         }
     };
 
+    // RFC 7617 §2.1: reject null bytes in credentials (security).
+    if decoded.contains(&0x00) {
+        return Some(Err(unauthorized_response(
+            "Basic auth credentials contain null byte (rejected for security)",
+        )));
+    }
+
+    // RFC 7617 §2.1: decode as UTF-8.
     let credentials = match String::from_utf8(decoded) {
         Ok(s) => s,
         Err(_) => {
-            return Some(Err(
-                (StatusCode::BAD_REQUEST, "Basic auth credentials are not valid UTF-8")
-                    .into_response(),
-            ));
+            return Some(Err(unauthorized_response(
+                "Basic auth credentials are not valid UTF-8 (RFC 7617 §2.1)",
+            )));
         }
     };
 
@@ -66,16 +79,21 @@ pub async fn try_extract_otp(
     let (entity_id, otp_value) = match credentials.split_once(':') {
         Some((u, p)) => (u.to_string(), p.to_string()),
         None => {
-            return Some(Err(
-                (StatusCode::BAD_REQUEST, "malformed Basic auth credentials").into_response()
-            ));
+            return Some(Err(unauthorized_response(
+                "malformed Basic auth credentials (missing ':' separator, RFC 7617 §2)",
+            )));
         }
     };
 
-    if entity_id.is_empty() || otp_value.is_empty() {
-        return Some(Err(
-            (StatusCode::UNAUTHORIZED, "entity-id and OTP must not be empty").into_response()
-        ));
+    // RFC 7617 §2: user-id MUST NOT be empty.
+    if entity_id.is_empty() {
+        return Some(Err(unauthorized_response(
+            "entity-id must not be empty (RFC 7617 §2)",
+        )));
+    }
+
+    if otp_value.is_empty() {
+        return Some(Err(unauthorized_response("OTP value must not be empty")));
     }
 
     debug!(entity_id = %entity_id, "validating OTP for entity");
@@ -103,11 +121,23 @@ pub async fn try_extract_otp(
             )
             .await;
 
-            Some(Err(
-                (StatusCode::UNAUTHORIZED, "OTP authentication failed").into_response()
-            ))
+            Some(Err(unauthorized_response("OTP authentication failed")))
         }
     }
+}
+
+/// Build a 401 Unauthorized response with the proper `WWW-Authenticate`
+/// header per RFC 7617 Section 2.2.
+///
+/// The challenge includes `charset="UTF-8"` to indicate that the server
+/// accepts UTF-8 encoded credentials (RFC 7617 Section 2.1).
+fn unauthorized_response(detail: &str) -> Response {
+    let mut resp = (StatusCode::UNAUTHORIZED, detail.to_string()).into_response();
+    resp.headers_mut().insert(
+        WWW_AUTHENTICATE,
+        HeaderValue::from_static(kipuka_util::WWW_AUTHENTICATE_BASIC),
+    );
+    resp
 }
 
 /// Validate an OTP value against the configured backend.

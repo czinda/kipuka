@@ -10,8 +10,10 @@
 //! the [`EstAuth`] extractor enforces before the handler runs.  Admin routes
 //! use a separate authentication mechanism (see [`super::routes::admin`]).
 
+pub mod cms_auth;
 pub mod gssapi;
 pub mod mtls;
+pub mod name_match;
 pub mod otp;
 
 use std::sync::Arc;
@@ -36,6 +38,8 @@ pub enum AuthMethod {
     Otp,
     /// GSSAPI/SPNEGO (Kerberos) via the `Authorization: Negotiate` header.
     Gssapi,
+    /// CMS SignedData authentication (RFC 8295).
+    Cms,
     /// No authentication (used for unauthenticated endpoints like `/cacerts`).
     None,
 }

@@ -114,6 +114,82 @@ pub struct TlsConfig {
     /// ```
     #[serde(default)]
     pub ciphersuites: Vec<String>,
+
+    /// OCSP stapling configuration (RFC 7633 / RFC 6066 Section 8).
+    ///
+    /// When the server's TLS certificate contains the TLS Feature Extension
+    /// (must-staple, OID 1.3.6.1.5.5.7.1.24), OCSP stapling MUST be
+    /// enabled to satisfy RFC 7633 Section 4 requirements.  Clients that
+    /// understand must-staple will abort the handshake if no stapled OCSP
+    /// response is provided.
+    ///
+    /// Even without must-staple, enabling OCSP stapling improves TLS
+    /// handshake performance by eliminating the client-side OCSP lookup.
+    #[serde(default)]
+    pub ocsp_stapling: OcspStaplingConfig,
+}
+
+/// OCSP stapling configuration for the TLS listener.
+///
+/// RFC 6066 Section 8: the `status_request` TLS extension allows the
+/// server to provide a stapled OCSP response during the TLS handshake,
+/// eliminating the client's need to contact the OCSP responder directly.
+///
+/// RFC 7633 Section 4: when the server certificate contains the TLS
+/// Feature Extension (must-staple), the server MUST provide a stapled
+/// response; failure to do so causes compliant clients to abort.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OcspStaplingConfig {
+    /// Enable OCSP stapling.
+    ///
+    /// When `true`, the server fetches an OCSP response for its own
+    /// certificate at startup and refreshes it periodically.
+    ///
+    /// Default: `false`.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Override the OCSP responder URL.
+    ///
+    /// When `None`, the responder URL is extracted from the server
+    /// certificate's Authority Information Access (AIA) extension
+    /// (OID 1.3.6.1.5.5.7.48.1).
+    ///
+    /// Set this when the AIA URL is not reachable from the server
+    /// (e.g., behind a firewall) and a local OCSP responder proxy
+    /// is available.
+    #[serde(default)]
+    pub responder_url: Option<String>,
+
+    /// Interval in seconds between OCSP response refreshes.
+    ///
+    /// The server fetches a fresh OCSP response from the responder
+    /// at this interval, replacing the cached stapled response.
+    ///
+    /// Default: `14400` (4 hours).  OCSP responses typically have a
+    /// `nextUpdate` validity of 24-48 hours, so refreshing every 4
+    /// hours provides adequate margin.
+    #[serde(default = "default_ocsp_refresh_interval")]
+    pub refresh_interval_secs: u64,
+
+    /// Allow serving TLS without a stapled OCSP response when the
+    /// OCSP responder is unreachable.
+    ///
+    /// When `true` (soft-fail mode), the server continues to accept
+    /// TLS connections without a stapled response if the OCSP
+    /// responder cannot be reached.  A stale cached response is
+    /// served if still within its `nextUpdate` window.  A warning
+    /// is logged on each failed refresh attempt.
+    ///
+    /// When `false` (hard-fail mode), the server refuses to start
+    /// if the initial OCSP fetch fails, and transitions to
+    /// unhealthy status if subsequent refreshes fail with no valid
+    /// cached response.
+    ///
+    /// Default: `true`.
+    #[serde(default = "default_soft_fail")]
+    pub soft_fail: bool,
 }
 
 fn default_min_protocol() -> String {
@@ -122,6 +198,25 @@ fn default_min_protocol() -> String {
 
 fn default_max_protocol() -> String {
     "1.3".to_string()
+}
+
+fn default_ocsp_refresh_interval() -> u64 {
+    14400 // 4 hours
+}
+
+fn default_soft_fail() -> bool {
+    true
+}
+
+impl Default for OcspStaplingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            responder_url: None,
+            refresh_interval_secs: default_ocsp_refresh_interval(),
+            soft_fail: default_soft_fail(),
+        }
+    }
 }
 
 impl Default for TlsConfig {
@@ -135,6 +230,7 @@ impl Default for TlsConfig {
             min_protocol: default_min_protocol(),
             max_protocol: default_max_protocol(),
             ciphersuites: Vec::new(),
+            ocsp_stapling: OcspStaplingConfig::default(),
         }
     }
 }

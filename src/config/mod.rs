@@ -36,6 +36,9 @@
 mod admin;
 mod audit;
 mod ca;
+mod cmp;
+mod cms_est;
+mod coap;
 mod db;
 mod est;
 mod hsm;
@@ -46,12 +49,18 @@ mod tls;
 pub use self::admin::*;
 pub use self::audit::*;
 pub use self::ca::*;
+pub use self::cmp::*;
+pub use self::cms_est::*;
+pub use self::coap::*;
 pub use self::db::*;
 pub use self::est::*;
 pub use self::hsm::*;
 pub use self::otp::*;
 pub use self::server::*;
 pub use self::tls::*;
+
+// Re-export OcspConfig from the ocsp module for config-level access.
+pub use crate::ocsp::OcspConfig;
 
 use serde::Deserialize;
 
@@ -98,6 +107,23 @@ pub struct Config {
     /// Audit trail configuration.
     #[serde(default)]
     pub audit: AuditConfig,
+
+    /// CoAP transport configuration (RFC 9483).  Absent → CoAP disabled.
+    #[serde(default)]
+    pub coap: Option<CoapConfig>,
+
+    /// CMS-wrapped EST configuration (RFC 8295).  Absent → CMS-EST disabled.
+    #[serde(default)]
+    pub cms_est: Option<CmsEstConfig>,
+
+    /// CMP v3 configuration (RFC 9810).  Absent → CMP disabled.
+    #[serde(default)]
+    pub cmp: Option<CmpConfig>,
+
+    /// OCSP configuration for certificate revocation checking (RFC 6960).
+    /// Absent → OCSP checking disabled (RHELBU-3536 R21).
+    #[serde(default)]
+    pub ocsp: OcspConfig,
 }
 
 impl Config {
@@ -191,6 +217,21 @@ impl Config {
 
         // ── Audit ────────────────────────────────────────────────────────────
         self.audit.validate()?;
+
+        // ── CoAP ────────────────────────────────────────────────────────────
+        if let Some(ref coap) = self.coap {
+            coap.validate()?;
+        }
+
+        // ── CMS-EST ─────────────────────────────────────────────────────────
+        if let Some(ref cms_est) = self.cms_est {
+            cms_est.validate()?;
+        }
+
+        // ── CMP ─────────────────────────────────────────────────────────────
+        if let Some(ref cmp) = self.cmp {
+            let _ = cmp; // No validation needed yet beyond serde
+        }
 
         // ── File path existence checks ───────────────────────────────────────
         // These are warnings rather than hard failures to allow config

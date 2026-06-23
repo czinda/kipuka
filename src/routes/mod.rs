@@ -13,6 +13,8 @@
 
 pub mod admin;
 pub mod cacerts;
+pub mod cmp;
+pub mod cms_est;
 pub mod csrattrs;
 pub mod est;
 pub mod fullcmc;
@@ -25,6 +27,7 @@ use std::sync::Arc;
 use axum::extract::{FromRef, FromRequestParts, Path};
 use axum::http::request::Parts;
 use axum::response::{IntoResponse, Response};
+use axum::routing::post;
 use axum::Router;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
@@ -80,6 +83,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .nest("/.well-known/est", est_routes)
         .nest("/.well-known/est", labeled_est_routes)
         .nest("/admin", admin_routes)
+        // CMS-wrapped EST routes (RFC 8295).
+        .nest("/.well-known/est/cms", cms_est::cms_est_router())
+        // CMP v3 endpoint (RFC 9810).
+        .route("/.well-known/cmp", post(cmp::post_cmp))
         .layer(RequestBodyLimitLayer::new(max_body))
         .layer(
             TraceLayer::new_for_http()

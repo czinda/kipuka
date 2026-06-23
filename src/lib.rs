@@ -10,6 +10,7 @@ pub mod config;
 pub mod db;
 pub mod error;
 pub mod ha;
+pub mod ocsp;
 pub mod routes;
 pub mod state;
 pub mod tls;

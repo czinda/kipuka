@@ -82,6 +82,20 @@ impl AppState {
         self.cas.get(ca_id)
     }
 
+    /// Returns the DER-encoded certificate of the default CA.
+    ///
+    /// Used by the OCSP client (RFC 6960) to build CertID structures for
+    /// revocation checking of client certificates (RHELBU-3536 R21).
+    /// Returns `None` if no default CA is configured or the cert is empty.
+    pub fn default_ca_cert_der(&self) -> Option<Vec<u8>> {
+        let ca = self.default_ca();
+        if ca.cert_der.is_empty() {
+            None
+        } else {
+            Some(ca.cert_der.clone())
+        }
+    }
+
     /// Record an audit event, logging (but not propagating) any DB error.
     ///
     /// Convenience wrapper that bundles the DB pool and audit state so

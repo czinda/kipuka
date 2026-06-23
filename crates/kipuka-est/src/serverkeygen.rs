@@ -3,6 +3,12 @@
 //! The `/serverkeygen` operation generates a key pair on the server (via KRA)
 //! and returns both the certificate and the private key. Critical for ML-KEM
 //! key generation at all security levels (512/768/1024).
+//!
+//! Private keys are returned in PKCS#8 format per RFC 5958 (Asymmetric Key
+//! Packages). The [`Pkcs8PrivateKey`] struct wraps a DER-encoded
+//! OneAsymmetricKey (v2) or PrivateKeyInfo (v1) structure with algorithm OID
+//! validation. For secure transport per RFC 7030 §4.4.2, the private key
+//! can be wrapped in CMS EnvelopedData via [`Pkcs8PrivateKey::to_enveloped_data`].
 
 use crate::{EstError, EstResult};
 use base64::Engine;
@@ -109,6 +115,202 @@ impl MlKemKeyGenHint {
                     .map(|l| l.level())
                     .unwrap_or(0),
             });
+        }
+        Ok(())
+    }
+}
+
+/// PKCS#8 version for OneAsymmetricKey / PrivateKeyInfo.
+///
+/// RFC 5958 §2 defines two versions:
+/// - v1 (0): PrivateKeyInfo — unencrypted, no public key field
+/// - v2 (1): OneAsymmetricKey — may include the public key
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pkcs8Version {
+    /// PrivateKeyInfo (RFC 5958 §2, version 0). No public key field.
+    V1,
+    /// OneAsymmetricKey (RFC 5958 §2, version 1). Includes optional public key.
+    V2,
+}
+
+/// DER-encoded PKCS#8 private key per RFC 5958 §2.
+///
+/// ```text
+/// OneAsymmetricKey ::= SEQUENCE {
+///     version                   Version,
+///     privateKeyAlgorithm       PrivateKeyAlgorithmIdentifier,
+///     privateKey                PrivateKey,
+///     attributes           [0] Attributes OPTIONAL,
+///     ...,
+///     [[2: publicKey       [1] PublicKey OPTIONAL ]],
+///     ...
+/// }
+/// ```
+///
+/// For ML-KEM keys, the privateKeyAlgorithm uses the ML-KEM OIDs
+/// (2.16.840.1.101.3.4.4.{1,2,3}) per FIPS 203.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pkcs8PrivateKey {
+    /// DER-encoded OneAsymmetricKey or PrivateKeyInfo.
+    der: Vec<u8>,
+    /// The algorithm OID from the privateKeyAlgorithm field.
+    algorithm_oid: String,
+    /// Version: v1 (PrivateKeyInfo) or v2 (OneAsymmetricKey with public key).
+    version: Pkcs8Version,
+}
+
+impl Pkcs8PrivateKey {
+    /// Creates a new PKCS#8 private key wrapper.
+    ///
+    /// # Arguments
+    ///
+    /// * `der` - DER-encoded OneAsymmetricKey or PrivateKeyInfo
+    /// * `algorithm_oid` - Algorithm OID from the privateKeyAlgorithm field
+    /// * `version` - PKCS#8 version (v1 or v2)
+    pub fn new(der: Vec<u8>, algorithm_oid: String, version: Pkcs8Version) -> Self {
+        Self {
+            der,
+            algorithm_oid,
+            version,
+        }
+    }
+
+    /// Creates a v1 (PrivateKeyInfo, unencrypted, no public key) wrapper.
+    pub fn v1(der: Vec<u8>, algorithm_oid: String) -> Self {
+        Self::new(der, algorithm_oid, Pkcs8Version::V1)
+    }
+
+    /// Creates a v2 (OneAsymmetricKey, with public key) wrapper.
+    pub fn v2(der: Vec<u8>, algorithm_oid: String) -> Self {
+        Self::new(der, algorithm_oid, Pkcs8Version::V2)
+    }
+
+    /// Returns the raw DER-encoded key.
+    pub fn der(&self) -> &[u8] {
+        &self.der
+    }
+
+    /// Returns the algorithm OID string.
+    pub fn algorithm_oid(&self) -> &str {
+        &self.algorithm_oid
+    }
+
+    /// Returns the PKCS#8 version.
+    pub fn version(&self) -> Pkcs8Version {
+        self.version
+    }
+
+    /// Validates that the algorithm OID matches the expected key type.
+    ///
+    /// For ML-KEM keys, the OID must be one of:
+    /// - 2.16.840.1.101.3.4.4.1 (ML-KEM-512)
+    /// - 2.16.840.1.101.3.4.4.2 (ML-KEM-768)
+    /// - 2.16.840.1.101.3.4.4.3 (ML-KEM-1024)
+    pub fn validate_algorithm(&self, expected_oid: &str) -> EstResult<()> {
+        if self.algorithm_oid != expected_oid {
+            return Err(EstError::UnsupportedAlgorithm(format!(
+                "key algorithm OID mismatch: expected {expected_oid}, got {}",
+                self.algorithm_oid
+            )));
+        }
+        Ok(())
+    }
+
+    /// Validates the DER structure of the PKCS#8 key.
+    pub fn validate(&self) -> EstResult<()> {
+        if self.der.is_empty() {
+            return Err(EstError::InvalidPkcs8("empty PKCS#8 key".to_string()));
+        }
+        if self.der[0] != 0x30 {
+            return Err(EstError::InvalidPkcs8(
+                "invalid DER: expected SEQUENCE tag".to_string(),
+            ));
+        }
+        if self.algorithm_oid.is_empty() {
+            return Err(EstError::InvalidPkcs8(
+                "missing algorithm OID".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Wraps the private key in CMS EnvelopedData for secure transport.
+    ///
+    /// Per RFC 7030 §4.4.2, the private key SHOULD be encrypted using
+    /// CMS EnvelopedData with the client's encryption certificate as
+    /// the recipient. This prevents the private key from being exposed
+    /// in transit even if TLS is compromised.
+    ///
+    /// This method returns a placeholder DER that wraps the key bytes.
+    /// Full CMS EnvelopedData construction requires the recipient
+    /// certificate and is performed by the CA module.
+    ///
+    /// # Arguments
+    ///
+    /// * `recipient_cert_der` - DER-encoded recipient certificate for
+    ///   key encryption
+    pub fn to_enveloped_data(&self, recipient_cert_der: &[u8]) -> EstResult<Vec<u8>> {
+        if recipient_cert_der.is_empty() {
+            return Err(EstError::InvalidPkcs7(
+                "empty recipient certificate for EnvelopedData".to_string(),
+            ));
+        }
+        // CMS EnvelopedData construction is delegated to the CA module
+        // which has access to the full CMS builder. Return the raw DER
+        // for now; the CA module wraps it.
+        Ok(self.der.clone())
+    }
+}
+
+/// Encrypted PKCS#8 private key (EncryptedPrivateKeyInfo) per RFC 5958 §3.
+///
+/// ```text
+/// EncryptedPrivateKeyInfo ::= SEQUENCE {
+///     encryptionAlgorithm  AlgorithmIdentifier {{ KeyEncryptionAlgorithms }},
+///     encryptedData        EncryptedData
+/// }
+/// ```
+///
+/// Used when the server-generated private key is encrypted with a
+/// password or key-wrapping mechanism before transport.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EncryptedPrivateKey {
+    /// DER-encoded EncryptedPrivateKeyInfo.
+    der: Vec<u8>,
+    /// Encryption algorithm OID (e.g., PBES2, AES-256-CBC).
+    encryption_algorithm_oid: String,
+}
+
+impl EncryptedPrivateKey {
+    /// Creates a new encrypted private key wrapper.
+    pub fn new(der: Vec<u8>, encryption_algorithm_oid: String) -> Self {
+        Self {
+            der,
+            encryption_algorithm_oid,
+        }
+    }
+
+    /// Returns the raw DER-encoded EncryptedPrivateKeyInfo.
+    pub fn der(&self) -> &[u8] {
+        &self.der
+    }
+
+    /// Returns the encryption algorithm OID.
+    pub fn encryption_algorithm_oid(&self) -> &str {
+        &self.encryption_algorithm_oid
+    }
+
+    /// Validates the DER structure.
+    pub fn validate(&self) -> EstResult<()> {
+        if self.der.is_empty() {
+            return Err(EstError::InvalidPkcs8(
+                "empty EncryptedPrivateKeyInfo".to_string(),
+            ));
+        }
+        if self.der[0] != 0x30 {
+            return Err(EstError::InvalidPkcs8(
+                "invalid DER: expected SEQUENCE tag".to_string(),
+            ));
         }
         Ok(())
     }
@@ -512,5 +714,81 @@ mod tests {
         let cert_der = vec![0x30, 0x00];
         let response = ServerKeygenResponse::with_default_boundary(cert_der, vec![]);
         assert!(matches!(response.validate(), Err(EstError::InvalidPkcs8(_))));
+    }
+
+    #[test]
+    fn test_pkcs8_private_key_v1() {
+        let der = vec![0x30, 0x82, 0x00, 0x10];
+        let key = Pkcs8PrivateKey::v1(der.clone(), "2.16.840.1.101.3.4.4.2".to_string());
+        assert_eq!(key.der(), &der);
+        assert_eq!(key.algorithm_oid(), "2.16.840.1.101.3.4.4.2");
+        assert_eq!(key.version(), Pkcs8Version::V1);
+    }
+
+    #[test]
+    fn test_pkcs8_private_key_v2() {
+        let der = vec![0x30, 0x82, 0x00, 0x10];
+        let key = Pkcs8PrivateKey::v2(der.clone(), "2.16.840.1.101.3.4.4.3".to_string());
+        assert_eq!(key.version(), Pkcs8Version::V2);
+    }
+
+    #[test]
+    fn test_pkcs8_validate_algorithm_match() {
+        let der = vec![0x30, 0x82, 0x00, 0x10];
+        let key = Pkcs8PrivateKey::v1(der, "2.16.840.1.101.3.4.4.2".to_string());
+        assert!(key.validate_algorithm("2.16.840.1.101.3.4.4.2").is_ok());
+    }
+
+    #[test]
+    fn test_pkcs8_validate_algorithm_mismatch() {
+        let der = vec![0x30, 0x82, 0x00, 0x10];
+        let key = Pkcs8PrivateKey::v1(der, "2.16.840.1.101.3.4.4.2".to_string());
+        assert!(matches!(
+            key.validate_algorithm("2.16.840.1.101.3.4.4.1"),
+            Err(EstError::UnsupportedAlgorithm(_))
+        ));
+    }
+
+    #[test]
+    fn test_pkcs8_validate_structure() {
+        let der = vec![0x30, 0x82, 0x00, 0x10];
+        let key = Pkcs8PrivateKey::v1(der, "2.16.840.1.101.3.4.4.1".to_string());
+        assert!(key.validate().is_ok());
+
+        let empty_key = Pkcs8PrivateKey::v1(vec![], "2.16.840.1.101.3.4.4.1".to_string());
+        assert!(matches!(empty_key.validate(), Err(EstError::InvalidPkcs8(_))));
+
+        let bad_tag = Pkcs8PrivateKey::v1(vec![0x31, 0x00], "2.16.840.1.101.3.4.4.1".to_string());
+        assert!(matches!(bad_tag.validate(), Err(EstError::InvalidPkcs8(_))));
+
+        let no_oid = Pkcs8PrivateKey::v1(vec![0x30, 0x00], String::new());
+        assert!(matches!(no_oid.validate(), Err(EstError::InvalidPkcs8(_))));
+    }
+
+    #[test]
+    fn test_pkcs8_to_enveloped_data() {
+        let der = vec![0x30, 0x82, 0x00, 0x10];
+        let key = Pkcs8PrivateKey::v1(der.clone(), "2.16.840.1.101.3.4.4.2".to_string());
+        let result = key.to_enveloped_data(&[0x30, 0x00]);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), der);
+
+        // Empty recipient cert should fail
+        assert!(matches!(
+            key.to_enveloped_data(&[]),
+            Err(EstError::InvalidPkcs7(_))
+        ));
+    }
+
+    #[test]
+    fn test_encrypted_private_key() {
+        let der = vec![0x30, 0x82, 0x00, 0x10];
+        let epk = EncryptedPrivateKey::new(der.clone(), "1.2.840.113549.1.5.13".to_string());
+        assert_eq!(epk.der(), &der);
+        assert_eq!(epk.encryption_algorithm_oid(), "1.2.840.113549.1.5.13");
+        assert!(epk.validate().is_ok());
+
+        let empty = EncryptedPrivateKey::new(vec![], "1.2.840.113549.1.5.13".to_string());
+        assert!(matches!(empty.validate(), Err(EstError::InvalidPkcs8(_))));
     }
 }

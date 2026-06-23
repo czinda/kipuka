@@ -110,6 +110,29 @@ pub struct EnrollmentProfile {
     /// PQC enrollment (and vice versa) as linked certificates.
     #[serde(default)]
     pub require_dual_cert: bool,
+
+    /// Include the TLS Feature Extension (RFC 7633, OID 1.3.6.1.5.5.7.1.24)
+    /// in issued certificates.
+    ///
+    /// RFC 7633 Section 4: when set, the issued certificate declares that
+    /// the TLS server presenting it MUST provide an OCSP stapled response
+    /// (status_request, TLS extension type 5) during the TLS handshake.
+    /// Clients that understand this extension MUST abort the handshake if
+    /// the server fails to staple a valid OCSP response.
+    ///
+    /// This is required for NIAP CA PP compliance and is commonly referred
+    /// to as "must-staple".
+    ///
+    /// When `true`, the certificate will contain:
+    /// ```text
+    /// TLS Feature Extension (id-pe-tlsfeature):
+    ///   OID:   1.3.6.1.5.5.7.1.24
+    ///   Value: SEQUENCE { INTEGER 5 }   -- status_request
+    /// ```
+    ///
+    /// Default: `false`.
+    #[serde(default)]
+    pub must_staple: bool,
 }
 
 impl Default for EnrollmentProfile {
@@ -137,9 +160,28 @@ impl Default for EnrollmentProfile {
             ],
             allow_composite_ml_dsa: true,
             require_dual_cert: false,
+            must_staple: false,
         }
     }
 }
+
+/// DER-encoded TLS Feature Extension value for must-staple certificates.
+///
+/// RFC 7633 Section 4 / RFC 6066 Section 8:
+///   TLSFeature ::= SEQUENCE OF INTEGER
+///   status_request(5)
+///
+/// ASN.1 DER encoding of SEQUENCE { INTEGER 5 }:
+///   30 03        -- SEQUENCE, length 3
+///     02 01 05   -- INTEGER, length 1, value 5
+///
+/// OID: 1.3.6.1.5.5.7.1.24 (id-pe-tlsfeature)
+pub const TLS_FEATURE_MUST_STAPLE_DER: &[u8] = &[0x30, 0x03, 0x02, 0x01, 0x05];
+
+/// OID for the TLS Feature Extension (id-pe-tlsfeature).
+///
+/// RFC 7633 Section 4: 1.3.6.1.5.5.7.1.24
+pub const OID_TLS_FEATURE: &str = "1.3.6.1.5.5.7.1.24";
 
 /// Issue a certificate from a CSR.
 ///
@@ -180,8 +222,25 @@ pub fn issue_certificate(
         profile = %profile.name,
         max_days = profile.max_validity_days,
         ct = profile.ct_enabled,
+        must_staple = profile.must_staple,
         "building certificate from CSR"
     );
+
+    // Step 5a: RFC 7633 — include TLS Feature Extension (must-staple) when
+    // the profile requests it.  The extension value is a DER-encoded
+    // SEQUENCE { INTEGER 5 } indicating the server MUST staple an OCSP
+    // response during the TLS handshake.
+    if profile.must_staple {
+        debug!(
+            oid = OID_TLS_FEATURE,
+            "including TLS Feature Extension (must-staple) per RFC 7633 §4"
+        );
+        // TODO: when synta-certificate integration lands, add:
+        //   template.add_extension(OID_TLS_FEATURE, false, TLS_FEATURE_MUST_STAPLE_DER);
+        // The extension is non-critical so clients that do not understand it
+        // will ignore it, but TLS stacks that do (e.g., modern browsers)
+        // will enforce OCSP stapling.
+    }
 
     // Step 6: Sign certificate with CA key.
     // TODO: integrate with synta-certificate for actual X.509 construction

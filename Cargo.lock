@@ -1318,6 +1318,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "kipuka-coap"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "serde",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "kipuka-dogtag"
 version = "0.1.0"
 dependencies = [

@@ -183,10 +183,12 @@ impl IntoResponse for KipukaError {
         );
 
         // RFC 7030 §4.2.3: 401 responses MUST include WWW-Authenticate.
+        // RFC 7617 §2.2: the challenge includes charset="UTF-8" to indicate
+        // the server accepts UTF-8 encoded credentials.
         if status == StatusCode::UNAUTHORIZED {
             resp.headers_mut().insert(
                 axum::http::header::WWW_AUTHENTICATE,
-                HeaderValue::from_static("Basic realm=\"EST\""),
+                HeaderValue::from_static(kipuka_util::WWW_AUTHENTICATE_BASIC),
             );
         }
 

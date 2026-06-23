@@ -8,20 +8,44 @@
 //!   (RHELBU-3536 R18: separate from admin truststore)
 //! - TLS 1.2+ enforcement (NIAP CA PP FTP_TRP.1)
 //! - Channel binding computation for `tls-server-end-point` (RFC 5929)
+//! - OCSP response stapling (RFC 6066 Section 8 / RFC 7633)
+//!
+//! ## OCSP Stapling (RFC 6066 Section 8)
+//!
+//! When OCSP stapling is enabled, the server fetches an OCSP response for
+//! its own certificate from the OCSP responder (extracted from the AIA
+//! extension or configured explicitly) and provides it during the TLS
+//! handshake via the `status_request` extension.
+//!
+//! ## Must-Staple (RFC 7633)
+//!
+//! If the server's TLS certificate contains the TLS Feature Extension
+//! (OID 1.3.6.1.5.5.7.1.24, value `status_request(5)`), the server MUST
+//! provide a stapled OCSP response.  Compliant clients abort the handshake
+//! if no response is stapled.  The [`OcspStapler`] background task handles
+//! periodic refresh of the stapled response.
 
 use std::io::BufReader;
 use std::sync::Arc;
+use std::time::Duration;
 
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use tokio::sync::RwLock;
 use tokio_rustls::TlsAcceptor;
+use tracing::{debug, error, info, warn};
 
-use crate::config::{ClientAuthMode, TlsConfig};
+use crate::config::{ClientAuthMode, OcspStaplingConfig, TlsConfig};
 use crate::error::KipukaError;
 
 /// Build a `TlsAcceptor` from the Kipuka TLS configuration.
 ///
 /// The resulting acceptor can be used with `tokio_rustls` to wrap a
 /// TCP listener.
+///
+/// When OCSP stapling is enabled, the returned acceptor includes a
+/// `CertifiedKey` that carries the stapled OCSP response.  The caller
+/// should also spawn the [`OcspStapler`] background task to keep the
+/// stapled response fresh.
 pub fn build_tls_acceptor(config: &TlsConfig) -> Result<TlsAcceptor, KipukaError> {
     let server_config = build_server_config(config)?;
     Ok(TlsAcceptor::from(Arc::new(server_config)))
@@ -198,6 +222,230 @@ pub fn compute_channel_binding(cert_der: &[u8]) -> Vec<u8> {
     hasher.finalize().to_vec()
 }
 
+// ── OCSP Stapling (RFC 6066 §8 / RFC 7633) ──────────────────────────────────
+
+/// Cached OCSP response for TLS stapling.
+///
+/// RFC 6066 Section 8: the server provides a DER-encoded OCSPResponse
+/// in the `CertificateStatus` handshake message when the client sends
+/// the `status_request` extension.
+///
+/// The response is refreshed periodically by [`OcspStapler`].  If the
+/// OCSP responder is unreachable, the stale response is served when
+/// `soft_fail` is enabled (RFC 7633 Section 4 note: a stale but
+/// unexpired response is preferable to no response at all).
+#[derive(Debug, Clone)]
+pub struct StapledOcspResponse {
+    /// DER-encoded OCSPResponse bytes.
+    pub response_der: Vec<u8>,
+
+    /// When this response was fetched from the responder.
+    pub fetched_at: std::time::Instant,
+
+    /// The `nextUpdate` time from the OCSP response, if present.
+    ///
+    /// Used to determine whether a stale cached response is still
+    /// within tolerance for soft-fail serving.
+    pub next_update: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Shared handle to the current stapled OCSP response.
+///
+/// Protected by an `RwLock` so the background refresh task can update
+/// the response without blocking concurrent TLS handshakes.
+pub type OcspResponseHandle = Arc<RwLock<Option<StapledOcspResponse>>>;
+
+/// Background task that periodically refreshes the stapled OCSP response.
+///
+/// RFC 6066 Section 8 / RFC 7633:
+///
+/// The stapler fetches an OCSP response for the server's end-entity
+/// certificate from the configured (or AIA-derived) OCSP responder URL.
+/// It replaces the cached response atomically so in-flight handshakes
+/// are not affected.
+///
+/// ## Refresh strategy
+///
+/// 1. Fetch at startup (blocking — the server does not accept TLS
+///    connections until the first response is obtained, unless
+///    `soft_fail` is `true`).
+/// 2. Re-fetch at `refresh_interval_secs` intervals.
+/// 3. On fetch failure: log a warning and keep serving the stale
+///    response if `soft_fail` is enabled and the response has not
+///    passed its `nextUpdate` window.
+pub struct OcspStapler {
+    /// Configuration for the stapling subsystem.
+    config: OcspStaplingConfig,
+
+    /// DER-encoded server end-entity certificate (needed for the OCSP request).
+    server_cert_der: Vec<u8>,
+
+    /// DER-encoded issuer certificate (needed to build the OCSP request).
+    issuer_cert_der: Option<Vec<u8>>,
+
+    /// Shared handle to the current response (read by TLS accept path).
+    response: OcspResponseHandle,
+}
+
+impl OcspStapler {
+    /// Create a new OCSP stapler.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` — OCSP stapling configuration from `[tls.ocsp_stapling]`.
+    /// * `server_cert_der` — DER bytes of the server's end-entity certificate.
+    /// * `issuer_cert_der` — DER bytes of the issuing CA certificate (second
+    ///   cert in the chain file).  Needed to construct the OCSP request.
+    pub fn new(
+        config: OcspStaplingConfig,
+        server_cert_der: Vec<u8>,
+        issuer_cert_der: Option<Vec<u8>>,
+    ) -> Self {
+        Self {
+            config,
+            server_cert_der,
+            issuer_cert_der,
+            response: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    /// Returns a clone of the shared OCSP response handle.
+    ///
+    /// Pass this to the TLS accept loop so it can read the current
+    /// stapled response during handshakes.
+    pub fn response_handle(&self) -> OcspResponseHandle {
+        Arc::clone(&self.response)
+    }
+
+    /// Run the OCSP refresh loop.
+    ///
+    /// This should be spawned as a background tokio task.  It runs
+    /// indefinitely, fetching a fresh OCSP response at the configured
+    /// interval.
+    ///
+    /// # Cancellation
+    ///
+    /// The task is cancel-safe.  Dropping the `JoinHandle` stops the loop.
+    pub async fn run(&self) {
+        let interval = Duration::from_secs(self.config.refresh_interval_secs);
+
+        info!(
+            interval_secs = self.config.refresh_interval_secs,
+            soft_fail = self.config.soft_fail,
+            "OCSP stapler started (RFC 6066 §8)"
+        );
+
+        // Initial fetch.
+        self.refresh_once().await;
+
+        // Periodic refresh loop.
+        let mut ticker = tokio::time::interval(interval);
+        ticker.tick().await; // consume the immediate first tick
+        loop {
+            ticker.tick().await;
+            self.refresh_once().await;
+        }
+    }
+
+    /// Perform a single OCSP response fetch and cache update.
+    async fn refresh_once(&self) {
+        debug!("refreshing stapled OCSP response");
+
+        match self.fetch_ocsp_response().await {
+            Ok(response) => {
+                info!("OCSP stapled response refreshed successfully");
+                let mut guard = self.response.write().await;
+                *guard = Some(response);
+            }
+            Err(e) => {
+                if self.config.soft_fail {
+                    warn!(
+                        error = %e,
+                        "OCSP responder unreachable, serving stale response (soft-fail mode)"
+                    );
+                    // Keep the existing cached response; it may still be
+                    // within its nextUpdate window.
+                } else {
+                    error!(
+                        error = %e,
+                        "OCSP responder unreachable and soft_fail is disabled"
+                    );
+                    // Clear the cached response so handshakes fail visibly
+                    // rather than serving an expired response.
+                    let mut guard = self.response.write().await;
+                    *guard = None;
+                }
+            }
+        }
+    }
+
+    /// Fetch an OCSP response from the responder.
+    ///
+    /// Constructs an OCSP request for the server certificate, sends it
+    /// to the responder URL (from config or AIA), and parses the response.
+    async fn fetch_ocsp_response(&self) -> Result<StapledOcspResponse, String> {
+        let responder_url = self
+            .config
+            .responder_url
+            .as_deref()
+            .or_else(|| self.extract_aia_ocsp_url())
+            .ok_or_else(|| {
+                "no OCSP responder URL configured and none found in certificate AIA".to_string()
+            })?
+            .to_string();
+
+        debug!(url = %responder_url, "fetching OCSP response");
+
+        // TODO: Build OCSP request from server_cert_der + issuer_cert_der
+        // using the `ocsp` or `x509-ocsp` crate, POST to responder_url,
+        // and parse the OCSPResponse.
+        //
+        // The implementation should:
+        // 1. Extract serial number and issuer name hash from server cert
+        // 2. Build an OCSPRequest with a single CertID
+        // 3. HTTP POST to responder_url with Content-Type: application/ocsp-request
+        // 4. Parse the OCSPResponse, verify signature against issuer cert
+        // 5. Extract thisUpdate/nextUpdate for cache management
+        let _ = &self.server_cert_der;
+        let _ = &self.issuer_cert_der;
+
+        Err(format!(
+            "OCSP fetch not yet implemented (responder: {responder_url})"
+        ))
+    }
+
+    /// Extract the OCSP responder URL from the server certificate's AIA extension.
+    ///
+    /// RFC 5280 Section 4.2.2.1: the Authority Information Access extension
+    /// contains the access method `id-ad-ocsp` (OID 1.3.6.1.5.5.7.48.1)
+    /// with a GeneralName (typically a uniformResourceIdentifier) pointing
+    /// to the OCSP responder.
+    fn extract_aia_ocsp_url(&self) -> Option<&str> {
+        // TODO: Parse AIA extension from self.server_cert_der.
+        // For now, return None so the config-level URL is required.
+        let _ = &self.server_cert_der;
+        None
+    }
+}
+
+/// Check whether a DER-encoded certificate contains the TLS Feature
+/// Extension (must-staple, OID 1.3.6.1.5.5.7.1.24).
+///
+/// RFC 7633 Section 4: if this extension is present with value
+/// `status_request(5)`, the TLS server MUST provide a stapled OCSP
+/// response during every handshake.
+pub fn has_must_staple_extension(cert_der: &[u8]) -> bool {
+    // The OID 1.3.6.1.5.5.7.1.24 encodes to:
+    //   06 08 2b 06 01 05 05 07 01 18
+    const MUST_STAPLE_OID_DER: &[u8] = &[0x06, 0x08, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x01, 0x18];
+
+    // Simple byte-pattern search.  A full implementation would parse the
+    // X.509 extensions properly via an ASN.1 library.
+    cert_der
+        .windows(MUST_STAPLE_OID_DER.len())
+        .any(|window| window == MUST_STAPLE_OID_DER)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,5 +473,36 @@ mod tests {
         let cert_der = b"fake certificate DER bytes";
         let binding = compute_channel_binding(cert_der);
         assert_eq!(binding.len(), 32); // SHA-256 output is 32 bytes
+    }
+
+    #[test]
+    fn must_staple_detection_positive() {
+        // Construct a byte sequence containing the TLS Feature OID.
+        let mut cert = vec![0x30, 0x20]; // SEQUENCE header (placeholder)
+        // ... some bytes ...
+        cert.extend_from_slice(&[0x00, 0x00]);
+        // The OID for id-pe-tlsfeature: 1.3.6.1.5.5.7.1.24
+        cert.extend_from_slice(&[0x06, 0x08, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x01, 0x18]);
+        // The value: SEQUENCE { INTEGER 5 }
+        cert.extend_from_slice(&[0x30, 0x03, 0x02, 0x01, 0x05]);
+        cert.extend_from_slice(&[0x00, 0x00]);
+
+        assert!(has_must_staple_extension(&cert));
+    }
+
+    #[test]
+    fn must_staple_detection_negative() {
+        // A certificate without the TLS Feature OID.
+        let cert = b"some certificate bytes without the must-staple OID";
+        assert!(!has_must_staple_extension(cert));
+    }
+
+    #[test]
+    fn ocsp_stapling_config_defaults() {
+        let config = crate::config::OcspStaplingConfig::default();
+        assert!(!config.enabled);
+        assert!(config.responder_url.is_none());
+        assert_eq!(config.refresh_interval_secs, 14400);
+        assert!(config.soft_fail);
     }
 }

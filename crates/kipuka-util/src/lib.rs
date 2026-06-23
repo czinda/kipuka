@@ -10,7 +10,7 @@ pub mod auth;
 pub mod listen;
 pub mod tls;
 
-pub use auth::{AuthCredential, AuthError};
+pub use auth::{AuthCredential, AuthError, BasicChallenge, WWW_AUTHENTICATE_BASIC};
 pub use listen::{ListenConfig, Listener};
 pub use tls::{TlsConfig, TlsConfigBuilder};
 

@@ -1,0 +1,42 @@
+kipuka - EST (RFC 7030) enrollment server
+==========================================
+
+Copyright 2026 Red Hat, Inc. and kipuka contributors
+
+This product is licensed under the Apache License 2.0 or the MIT License,
+at your option.
+
+You may obtain a copy of the Apache License at:
+    http://www.apache.org/licenses/LICENSE-2.0
+
+You may obtain a copy of the MIT License at:
+    https://opensource.org/licenses/MIT
+
+
+Third-Party Dependencies
+------------------------
+
+This project includes or depends on the following third-party software:
+
+### Synta (ASN.1/X.509/CMS library)
+- Copyright: Alexander Bokovoy and contributors
+- License: Apache-2.0 OR MIT
+- Source: https://codeberg.org/abbra/synta
+
+### Rust crates
+This project depends on various Rust crates from crates.io, each with their
+own license. Key dependencies include:
+
+- axum, tower, hyper (MIT)
+- tokio (MIT)
+- rustls (Apache-2.0 OR ISC OR MIT)
+- sqlx (Apache-2.0 OR MIT)
+- serde, serde_json (Apache-2.0 OR MIT)
+- cryptoki (Apache-2.0)
+- chrono (Apache-2.0 OR MIT)
+- clap (Apache-2.0 OR MIT)
+- tracing, tracing-subscriber (MIT)
+- thiserror, anyhow (Apache-2.0 OR MIT)
+
+For the complete list of dependencies and their licenses, see Cargo.lock
+or run: cargo tree --edges normal --prefix none | sort -u

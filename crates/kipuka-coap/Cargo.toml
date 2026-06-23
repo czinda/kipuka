@@ -1,0 +1,14 @@
+[package]
+name = "kipuka-coap"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "EST over CoAP (RFC 9483) transport for constrained devices"
+
+[dependencies]
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+serde.workspace = true
+bytes.workspace = true

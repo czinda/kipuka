@@ -2,8 +2,11 @@
 //!
 //! The `/simplereenroll` operation renews an existing certificate using mTLS.
 //! The subject in the CSR must match the mTLS client certificate subject.
+//!
+//! CSR format follows RFC 2986 (PKCS#10). The [`CertificationRequest`] struct
+//! from [`crate::enroll`] is reused for structured CSR access.
 
-use crate::enroll::{EnrollRequest, EnrollResponse};
+use crate::enroll::{CertificationRequest, EnrollRequest, EnrollResponse};
 use crate::{EstError, EstResult};
 use serde::{Deserialize, Serialize};
 
@@ -108,6 +111,14 @@ impl ReenrollRequest {
     /// Checks if the CSR appears to contain an ML-KEM public key.
     pub fn contains_ml_kem(&self) -> bool {
         self.inner.contains_ml_kem()
+    }
+
+    /// Returns a parsed [`CertificationRequest`] from the inner DER-encoded CSR.
+    ///
+    /// Delegates to [`EnrollRequest::to_certification_request`]. The CA module
+    /// populates the struct fields from actual ASN.1 parsing.
+    pub fn to_certification_request(&self) -> CertificationRequest {
+        self.inner.to_certification_request()
     }
 }
 
@@ -274,5 +285,16 @@ mod tests {
         let request = ReenrollRequest::new(der);
         assert!(request.contains_ml_dsa());
         assert!(!request.contains_ml_kem());
+    }
+
+    #[test]
+    fn test_to_certification_request() {
+        let mut der = vec![0x30, 0x82, 0x01, 0x00];
+        der.extend(vec![0x00; 252]);
+
+        let request = ReenrollRequest::new(der.clone());
+        let cr = request.to_certification_request();
+        assert_eq!(cr.version, 0);
+        assert_eq!(cr.tbs_der, der);
     }
 }
