@@ -1,22 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!--
-  Beaker job XML for provisioning a kipuka EST server integration test.
-
-  Provisions a RHEL 9.6 x86_64 system with RHCS 11 (Dogtag PKI) repos,
-  installs the kipuka EST server from source, and reserves the system for
-  48 hours for interactive testing.
-
-  Submit with:
-    bkr job-submit kipuka-beaker.xml
-
-  Or clone for a different arch/distro:
-    bkr job-clone --xml kipuka-beaker.xml --distro RHEL-9.5.0
--->
 <job>
-  <whiteboard>kipuka EST server integration test — RHEL 9.6 + Dogtag PKI</whiteboard>
+  <whiteboard>kipuka EST server integration test - RHEL 9.6 + Dogtag PKI</whiteboard>
   <recipeSet>
     <recipe whiteboard="kipuka-est-test">
-      <!-- ── Distro requirements ─────────────────────────────────────── -->
       <distroRequires>
         <and>
           <distro_name op="=" value="RHEL-9.6.0"/>
@@ -24,46 +10,31 @@
           <distro_arch op="=" value="x86_64"/>
         </and>
       </distroRequires>
-
-      <!-- ── Host requirements ───────────────────────────────────────── -->
       <hostRequires>
         <and>
           <system_type value="Machine"/>
-          <memory op=">=" value="4096"/>
-          <cpu_count op=">=" value="2"/>
-          <disk_size op=">=" value="40" units="GiB"/>
+          <memory op="&gt;=" value="4096"/>
+          <cpu_count op="&gt;=" value="2"/>
+          <disk_size op="&gt;=" value="40" units="GiB"/>
         </and>
       </hostRequires>
-
-      <!-- ── Additional repos ────────────────────────────────────────── -->
       <repos>
-        <!-- RHCS 11 (Dogtag PKI 11) AppStream for pki-ca, pki-kra -->
         <repo name="rhcs-11-appstream"
               url="http://download.eng.bos.redhat.com/rhel-9/nightly/RHCS-11.0/latest-RHCS-11.0-RHEL-9/compose/AppStream/x86_64/os/"/>
-        <!-- CRB (CodeReady Linux Builder) for build dependencies -->
         <repo name="rhel-9-crb"
               url="http://download.eng.bos.redhat.com/rhel-9/nightly/RHEL-9/latest-RHEL-9.6.0/compose/CRB/x86_64/os/"/>
       </repos>
-
-      <!-- ── Partitions ──────────────────────────────────────────────── -->
       <partitions>
         <partition name="/" size="20" type="part" fs="xfs"/>
         <partition name="/var" size="15" type="part" fs="xfs"/>
       </partitions>
-
-      <!-- ── Tasks ───────────────────────────────────────────────────── -->
-      <!-- Standard Beaker OS installation -->
       <task name="/distribution/install" role="STANDALONE"/>
-
-      <!-- Post-install setup: install Dogtag + build kipuka + run tests -->
       <task name="/distribution/command" role="STANDALONE">
         <params>
           <param name="CMDS_TO_RUN"
                  value="curl -sSfLk https://gitlab.cee.redhat.com/czinda/kipuka/-/raw/main/contrib/beaker/setup.sh | bash"/>
         </params>
       </task>
-
-      <!-- Reserve the system for 48 hours for interactive debugging -->
       <task name="/distribution/reservesys" role="STANDALONE">
         <params>
           <param name="RESERVETIME" value="172800"/>
