@@ -1,0 +1,307 @@
+# kipuka EST Server Configuration
+# =================================
+# Copy this file to kipuka.toml and adjust for your environment.
+# All paths are relative to the working directory unless absolute.
+
+# ── Server ────────────────────────────────────────────────────────────────────
+
+[server]
+# Listen address and port for the EST HTTPS endpoint.
+listen = "0.0.0.0:8443"
+
+# Optional administrative API (bind to localhost or internal network only).
+# admin_listen = "127.0.0.1:9443"
+
+# Worker threads (defaults to number of CPU cores).
+# workers = 4
+
+# Request body size limit in bytes (default: 1 MiB).
+# max_body_size = 1048576
+
+# Graceful shutdown timeout in seconds.
+# shutdown_timeout = 30
+
+# ── TLS ───────────────────────────────────────────────────────────────────────
+
+[tls]
+# Server certificate and private key for the EST HTTPS endpoint.
+# The certificate MUST include the id-kp-cmcRA extended key usage (RFC 7030 S3.3.2)
+# or clients will reject the TLS connection.
+cert = "/etc/kipuka/tls/server.pem"
+key = "/etc/kipuka/tls/server.key"
+
+# Minimum TLS version. Only TLS 1.2 and 1.3 are supported.
+# min_version = "1.2"
+
+# Allowed cipher suites (TLS 1.2 only; TLS 1.3 suites are always enabled).
+# Defaults to AEAD-only suites. Uncomment to restrict further.
+# cipher_suites = [
+#     "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+#     "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
+#     "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+#     "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+# ]
+
+[tls.client_auth]
+# Trust anchors for mTLS client certificate verification.
+# Used for /simplereenroll and optionally /simpleenroll.
+trust_anchors = "/etc/kipuka/tls/client-ca-bundle.pem"
+
+# Client certificate verification mode:
+#   "required" - all connections must present a valid client cert
+#   "optional" - client cert requested but not required (allows OTP fallback)
+#   "none"     - no client cert requested
+# Default: "optional" (allows both mTLS and OTP authentication).
+# mode = "optional"
+
+# ── Database ──────────────────────────────────────────────────────────────────
+
+[db]
+# Database URL. Supported backends:
+#   SQLite:     sqlite:///var/lib/kipuka/kipuka.db
+#   PostgreSQL: postgres://user:pass@host:5432/kipuka
+#   MariaDB:    mysql://user:pass@host:3306/kipuka
+url = "sqlite:///var/lib/kipuka/kipuka.db"
+
+# Maximum number of database connections in the pool.
+# max_connections = 10
+
+# Connection timeout in seconds.
+# connect_timeout = 5
+
+# Run migrations automatically on startup (default: false).
+# For production, use `kipuka migrate` instead.
+# auto_migrate = false
+
+# ── Certificate Authorities ───────────────────────────────────────────────────
+# Define one or more CA configurations. Each [[ca]] block is a separate CA
+# that can issue certificates. Use the `id` to reference CAs in EST labels.
+
+[[ca]]
+# Unique identifier for this CA. Referenced by EST labels and HA groups.
+id = "rsa-ca"
+
+# Display name (used in logs and admin API).
+name = "RSA Issuing CA"
+
+# CA certificate (PEM). This is the issuing CA certificate, not the root.
+cert = "/etc/kipuka/ca/rsa-ca.pem"
+
+# CA private key (PEM). Omit if the key is stored in an HSM.
+key = "/etc/kipuka/ca/rsa-ca.key"
+
+# Full certificate chain from this CA up to (but not including) the root.
+# Returned by /cacerts. If omitted, only the CA cert is returned.
+# chain = "/etc/kipuka/ca/rsa-ca-chain.pem"
+
+# Default certificate validity period.
+# validity_days = 398
+
+# Maximum allowed validity (CA/B Forum BR limit).
+# max_validity_days = 398
+
+# Key usage constraints for issued certificates.
+# default_key_usage = ["digitalSignature", "keyEncipherment"]
+
+# Extended key usage constraints.
+# default_ext_key_usage = ["serverAuth", "clientAuth"]
+
+# HSM slot for this CA's private key (omit for file-based keys).
+# hsm_slot = "rsa-ca-slot"
+
+[[ca]]
+id = "ecdsa-ca"
+name = "ECDSA Issuing CA"
+cert = "/etc/kipuka/ca/ecdsa-ca.pem"
+key = "/etc/kipuka/ca/ecdsa-ca.key"
+# chain = "/etc/kipuka/ca/ecdsa-ca-chain.pem"
+# validity_days = 398
+# default_key_usage = ["digitalSignature"]
+# default_ext_key_usage = ["serverAuth", "clientAuth"]
+
+# ── EST Protocol ──────────────────────────────────────────────────────────────
+
+[est]
+# Base path for EST endpoints (RFC 7030 S3.2.2).
+# Default: "/.well-known/est"
+# base_path = "/.well-known/est"
+
+# Enable or disable individual EST operations.
+# All are enabled by default.
+# cacerts = true
+# simpleenroll = true
+# simplereenroll = true
+# fullcmc = true
+# serverkeygen = true
+# csrattrs = true
+
+# CSR attributes to request from clients (returned by /csrattrs).
+# OID values per RFC 7030 S4.5.2.
+# csr_attributes = [
+#     "1.2.840.113549.1.9.7",   # challengePassword
+#     "1.2.840.10045.4.3.2",    # ecdsaWithSHA256
+#     "1.2.840.113549.1.1.11",  # sha256WithRSAEncryption
+# ]
+
+# Retry-After header value (seconds) when CA is temporarily unavailable.
+# retry_after = 120
+
+# ── EST Labels ────────────────────────────────────────────────────────────────
+# Labels allow different certificate profiles via the EST path:
+#   /.well-known/est/<label>/simpleenroll
+# Each label maps to a CA and optional profile constraints.
+
+# [[est.label]]
+# name = "server-tls"
+# ca_id = "rsa-ca"
+# # Certificate profile constraints for this label.
+# allowed_key_types = ["rsa:2048", "rsa:4096", "ec:p256", "ec:p384"]
+# required_ext_key_usage = ["serverAuth"]
+# max_validity_days = 398
+# require_san = true
+
+# [[est.label]]
+# name = "client-auth"
+# ca_id = "ecdsa-ca"
+# allowed_key_types = ["ec:p256", "ec:p384"]
+# required_ext_key_usage = ["clientAuth"]
+# max_validity_days = 398
+
+# [[est.label]]
+# name = "device"
+# ca_id = "rsa-ca"
+# allowed_key_types = ["rsa:2048", "ec:p256"]
+# required_ext_key_usage = ["clientAuth"]
+# max_validity_days = 825
+# # Restrict to specific Subject DN pattern.
+# subject_pattern = "CN=device-.*,O=Example Corp"
+
+# ── HSM ───────────────────────────────────────────────────────────────────────
+# PKCS#11 HSM integration for protecting CA private keys.
+# Only needed if any [[ca]] block uses hsm_slot instead of a key file.
+
+# [hsm]
+# PKCS#11 library path. Varies by vendor:
+#
+# Entrust nShield:
+#   library = "/opt/nfast/toolkits/pkcs11/libcknfast.so"
+#
+# Utimaco CryptoServer:
+#   library = "/usr/lib/libcs_pkcs11_R3.so"
+#
+# Kryoptic (dev/test):
+#   library = "/usr/lib/libkryoptic_pkcs11.so"
+#
+# Thales Luna (CSP11):
+#   library = "/usr/safenet/lunaclient/lib/libCryptoki2_64.so"
+
+# library = "/usr/lib/pkcs11/libsofthsm2.so"
+
+# PKCS#11 slot number or token label.
+# slot = 0
+# token_label = "kipuka-hsm"
+
+# PIN for the HSM slot. For production, use pin_env or pin_file.
+# pin = "1234"
+
+# Read PIN from an environment variable (preferred for containers).
+# pin_env = "KIPUKA_HSM_PIN"
+
+# Read PIN from a file (must be mode 0400, owned by the kipuka user).
+# pin_file = "/etc/kipuka/hsm.pin"
+
+# ── OTP Authentication ───────────────────────────────────────────────────────
+
+[otp]
+# Enable OTP-based authentication for initial enrollment.
+enabled = true
+
+# OTP token length (characters). Must be >= 16 for NIAP compliance.
+token_length = 24
+
+# Default OTP validity period.
+default_ttl = "24h"
+
+# Maximum number of uses per OTP token (default: 1 for one-time use).
+# max_uses = 1
+
+# Hash algorithm for stored OTP tokens (argon2id, bcrypt, sha256-hmac).
+# argon2id is recommended for NIAP compliance.
+hash_algorithm = "argon2id"
+
+# Rate limiting: max failed OTP attempts per source IP per window.
+# max_failures = 5
+# failure_window = "15m"
+# lockout_duration = "30m"
+
+# ── Audit Logging ─────────────────────────────────────────────────────────────
+
+[audit]
+# Audit log destination. Events are always stored in the database.
+# Additional destinations can be configured here.
+
+# File-based audit log (append-only, one JSON event per line).
+# file = "/var/log/kipuka/audit.log"
+
+# Syslog destination (RFC 5424).
+# syslog = "udp://127.0.0.1:514"
+# syslog_facility = "local0"
+
+# Events to log. Default: all security-relevant events (NIAP FAU_GEN.1).
+# Possible values: all, auth, enroll, revoke, admin, config, startup, error
+# events = ["all"]
+
+# Include full certificate DER in enrollment events (increases log size).
+# include_cert_data = false
+
+# ── High Availability ─────────────────────────────────────────────────────────
+
+# [ha]
+# Enable HA failover across multiple CA backends.
+# enabled = false
+
+# Failover strategy:
+#   "active-passive" - use primary CA, fail over to secondary on error
+#   "round-robin"    - distribute requests across all healthy CAs
+#   "weighted"       - distribute by weight (requires ca weight settings)
+# strategy = "active-passive"
+
+# Health check interval.
+# check_interval = "30s"
+
+# Number of consecutive failures before marking a CA as unhealthy.
+# failure_threshold = 3
+
+# Time to wait before retrying a failed CA.
+# recovery_timeout = "60s"
+
+# Health check timeout per CA.
+# check_timeout = "10s"
+
+# ── HA Group ──────────────────────────────────────────────────────────────────
+# Group CAs together for HA. CAs must be defined in [[ca]] blocks above.
+
+# [[ha.group]]
+# name = "rsa-ha"
+# ca_ids = ["rsa-ca-primary", "rsa-ca-secondary"]
+# strategy = "active-passive"
+
+# [[ha.group]]
+# name = "ecdsa-ha"
+# ca_ids = ["ecdsa-ca-1", "ecdsa-ca-2", "ecdsa-ca-3"]
+# strategy = "round-robin"
+
+# ── Admin API ─────────────────────────────────────────────────────────────────
+
+# [admin]
+# Enable the administrative API for OTP provisioning and CA management.
+# enabled = false
+
+# Authentication for admin API.
+# auth = "mtls"  # "mtls", "bearer", or "both"
+
+# Admin client certificate trust anchors (for mTLS auth).
+# trust_anchors = "/etc/kipuka/admin/admin-ca.pem"
+
+# Bearer token for admin API (use bearer_token_env for production).
+# bearer_token_env = "KIPUKA_ADMIN_TOKEN"

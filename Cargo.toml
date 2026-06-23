@@ -1,0 +1,140 @@
+[workspace]
+members = [
+    ".",
+    "crates/kipuka-est",
+    "crates/kipuka-hsm",
+    "crates/kipuka-otp",
+    "crates/kipuka-util",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0 OR MIT"
+repository = "https://codeberg.org/czinda/kipuka"
+
+[workspace.dependencies]
+# ASN.1 / X.509 / CMS (Synta)
+synta = { git = "https://codeberg.org/abbra/synta.git", branch = "main" }
+synta-certificate = { git = "https://codeberg.org/abbra/synta.git", branch = "main", features = ["openssl"] }
+
+# Web framework
+axum = { version = "0.8", features = ["macros"] }
+axum-extra = { version = "0.10", features = ["typed-header"] }
+tower = { version = "0.5", features = ["full"] }
+tower-http = { version = "0.6", features = ["trace", "limit", "cors"] }
+hyper = { version = "1", features = ["full"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# TLS
+rustls = { version = "0.23", features = ["ring"] }
+tokio-rustls = "0.26"
+rustls-pemfile = "2"
+
+# PKCS#11 / HSM
+cryptoki = "0.7"
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio", "any", "sqlite", "postgres", "mysql", "migrate"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+base64 = "0.22"
+
+# Logging / tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Crypto
+rand = "0.8"
+sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+time = "0.3"
+
+# Misc
+clap = { version = "4", features = ["derive"] }
+indexmap = { version = "2", features = ["serde"] }
+url = { version = "2", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+bytes = "1"
+parking_lot = "0.12"
+dashmap = "6"
+
+# Internal crates
+kipuka-est = { path = "crates/kipuka-est" }
+kipuka-hsm = { path = "crates/kipuka-hsm" }
+kipuka-otp = { path = "crates/kipuka-otp" }
+kipuka-util = { path = "crates/kipuka-util" }
+
+[package]
+name = "kipuka"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "EST (RFC 7030) enrollment server with Multi-CA HA, HSM support, and NIAP CA PP compliance"
+default-run = "kipuka"
+
+[[bin]]
+name = "kipuka"
+path = "src/main.rs"
+
+[dependencies]
+kipuka-est.workspace = true
+kipuka-hsm.workspace = true
+kipuka-otp.workspace = true
+kipuka-util.workspace = true
+synta.workspace = true
+synta-certificate.workspace = true
+axum.workspace = true
+axum-extra.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+hyper.workspace = true
+tokio.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
+rustls-pemfile.workspace = true
+sqlx.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+base64.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+rand.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+clap.workspace = true
+indexmap.workspace = true
+url.workspace = true
+uuid.workspace = true
+bytes.workspace = true
+parking_lot.workspace = true
+dashmap.workspace = true
+
+[features]
+default = ["backend-sqlite"]
+backend-sqlite = []
+backend-postgres = []
+backend-mariadb = []
+
+[dev-dependencies]
+reqwest = { version = "0.12", features = ["rustls-tls", "json"] }
+tempfile = "3"

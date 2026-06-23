@@ -1,0 +1,63 @@
+# Build artifacts
+/target/
+**/*.rs.bk
+
+# Cargo lock (binary; keep for applications)
+# Cargo.lock is committed for this binary project
+
+# Profiling
+*.prof*
+*.profraw
+perf.data*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.age
+
+# HSM credentials — NEVER commit
+*.pin
+*.so.conf
+hsm-tokens/
+pkcs11-proxy.conf
+
+# Test certificates and keys
+tests/certs/
+tests/keys/
+*.pem
+*.der
+*.p12
+*.pfx
+*.crt
+*.key
+!tests/fixtures/**/*.pem
+!tests/fixtures/**/*.der
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Documentation build
+docs/book/*
+docs/node_modules/
+docs/package-lock.json
+
+# Coverage
+lcov.info
+tarpaulin-report.html
+coverage/
+
+# Benchmarks
+autoresearch-results.tsv

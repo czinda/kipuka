@@ -1,0 +1,15 @@
+[package]
+name = "kipuka-est"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "EST (RFC 7030) protocol types and wire format encoding"
+
+[dependencies]
+synta.workspace = true
+synta-certificate.workspace = true
+base64.workspace = true
+bytes.workspace = true
+thiserror.workspace = true
+serde.workspace = true
