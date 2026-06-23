@@ -6,11 +6,12 @@
   stage: build
   image: ${RUST_IMAGE}
   variables:
-    # Synta repo uses symlinks in asn1/ schemas; Docker builds need this
     GIT_SUBMODULE_STRATEGY: recursive
+    LIBCLANG_PATH: "/usr/lib/llvm-16/lib"
   before_script:
-    - apt-get update -qq && apt-get install -y -qq libssl-dev pkg-config clang cmake libclang-dev libc6-dev >/dev/null 2>&1 || true
+    - apt-get update -qq && apt-get install -y -qq libssl-dev pkg-config clang cmake libclang-dev libc6-dev llvm-dev >/dev/null 2>&1
     - git config --global core.symlinks true
+    - export LIBCLANG_PATH="$(find /usr/lib -name 'libclang*.so*' -print -quit | xargs dirname 2>/dev/null || echo /usr/lib/llvm-16/lib)"
   cache:
     key: build-${CI_COMMIT_REF_SLUG}
     paths:
