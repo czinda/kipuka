@@ -163,6 +163,27 @@ pub use sign::{
 };
 pub use slot::HsmSlot;
 
+/// High-level HSM context wrapping PKCS#11 initialization and provider config.
+///
+/// Used by `AppState` to hold the HSM connection for the server lifetime.
+pub struct HsmContext {
+    pub context: Pkcs11Context,
+    pub provider: HsmProvider,
+}
+
+impl HsmContext {
+    pub fn new(context: Pkcs11Context, provider: HsmProvider) -> Self {
+        Self { context, provider }
+    }
+
+    pub fn placeholder() -> Self {
+        Self {
+            context: Pkcs11Context::placeholder(),
+            provider: HsmProvider::Kryoptic,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

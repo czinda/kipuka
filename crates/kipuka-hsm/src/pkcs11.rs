@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 /// and automatic initialization/finalization.
 #[derive(Clone)]
 pub struct Pkcs11Context {
-    inner: Arc<Mutex<Pkcs11>>,
+    inner: Arc<Mutex<Option<Pkcs11>>>,
 }
 
 impl Pkcs11Context {
@@ -41,7 +41,7 @@ impl Pkcs11Context {
         tracing::info!("PKCS#11 library initialized: {}", path.display());
 
         Ok(Self {
-            inner: Arc::new(Mutex::new(pkcs11)),
+            inner: Arc::new(Mutex::new(Some(pkcs11))),
         })
     }
 
@@ -50,18 +50,26 @@ impl Pkcs11Context {
     /// # Panics
     ///
     /// Panics if the mutex is poisoned (should never happen in normal operation).
-    pub fn with_pkcs11<F, R>(&self, f: F) -> R
+    /// Execute a closure with the PKCS#11 handle.
+    ///
+    /// Returns `HsmError::LibraryLoad` if this is a placeholder context.
+    pub fn with_pkcs11<F, R>(&self, f: F) -> HsmResult<R>
     where
-        F: FnOnce(&Pkcs11) -> R,
+        F: FnOnce(&Pkcs11) -> HsmResult<R>,
     {
-        let pkcs11 = self.inner.lock().expect("Pkcs11Context mutex poisoned");
-        f(&pkcs11)
+        let guard = self.inner.lock().expect("Pkcs11Context mutex poisoned");
+        let pkcs11 = guard
+            .as_ref()
+            .ok_or_else(|| HsmError::LibraryLoad("HSM not initialized (placeholder context)".into()))?;
+        f(pkcs11)
     }
 
     /// Get library information.
     pub fn library_info(&self) -> HsmResult<String> {
         self.with_pkcs11(|pkcs11| {
-            let info = pkcs11.get_library_info()?;
+            let info = pkcs11.get_library_info().map_err(|e| {
+                HsmError::LibraryLoad(format!("Failed to get library info: {e}"))
+            })?;
             Ok(format!(
                 "Library: {} v{}.{}",
                 info.library_description(),
@@ -69,6 +77,15 @@ impl Pkcs11Context {
                 info.cryptoki_version().minor()
             ))
         })
+    }
+
+    /// Create a placeholder context for use when HSM is not configured.
+    ///
+    /// Any PKCS#11 operation on a placeholder will return `HsmError::LibraryLoad`.
+    pub fn placeholder() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(None)),
+        }
     }
 }
 
