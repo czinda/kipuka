@@ -1,5 +1,5 @@
 # =============================================================================
-# Stage: test — unit tests, protocol tests, crate-specific tests
+# Stage: test
 # =============================================================================
 
 .test-base:
@@ -13,23 +13,16 @@
       - ${CARGO_HOME}/git/
     policy: pull
   before_script:
-    - cargo install --locked cargo2junit 2>/dev/null || true
-  artifacts:
-    when: always
-    reports:
-      junit: results.xml
-    expire_in: 30 days
+    - apt-get update -qq && apt-get install -y -qq libssl-dev pkg-config clang cmake libclang-dev libc6-dev >/dev/null 2>&1 || true
+  retry:
+    max: 1
+    when: runner_system_failure
 
 unit-tests:
   extends: .test-base
   timeout: 30 minutes
   script:
-    - cargo test --all-features -- -Z unstable-options --format json
-        | cargo2junit > results.xml || TESTS_FAILED=1
-    - test -z "${TESTS_FAILED:-}" || exit 1
-  retry:
-    max: 1
-    when: runner_system_failure
+    - cargo test --all-features 2>&1
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
@@ -38,9 +31,7 @@ est-protocol-tests:
   extends: .test-base
   timeout: 30 minutes
   script:
-    - cargo test --test est_cacerts --test est_enroll -- -Z unstable-options --format json
-        | cargo2junit > results.xml || TESTS_FAILED=1
-    - test -z "${TESTS_FAILED:-}" || exit 1
+    - cargo test --test est_cacerts --test est_enroll 2>&1
   needs:
     - job: build-debug
       optional: true
@@ -52,9 +43,7 @@ otp-tests:
   extends: .test-base
   timeout: 30 minutes
   script:
-    - cargo test --test otp_auth -- -Z unstable-options --format json
-        | cargo2junit > results.xml || TESTS_FAILED=1
-    - test -z "${TESTS_FAILED:-}" || exit 1
+    - cargo test --test otp_auth 2>&1
   needs:
     - job: build-debug
       optional: true
@@ -66,9 +55,7 @@ ha-tests:
   extends: .test-base
   timeout: 30 minutes
   script:
-    - cargo test --test ha_failover -- -Z unstable-options --format json
-        | cargo2junit > results.xml || TESTS_FAILED=1
-    - test -z "${TESTS_FAILED:-}" || exit 1
+    - cargo test --test ha_failover 2>&1
   needs:
     - job: build-debug
       optional: true
@@ -80,9 +67,7 @@ coap-tests:
   extends: .test-base
   timeout: 30 minutes
   script:
-    - cargo test -p kipuka-coap -- -Z unstable-options --format json
-        | cargo2junit > results.xml || TESTS_FAILED=1
-    - test -z "${TESTS_FAILED:-}" || exit 1
+    - cargo test -p kipuka-coap 2>&1
   needs:
     - job: build-debug
       optional: true
