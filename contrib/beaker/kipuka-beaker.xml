@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <job>
-  <whiteboard>kipuka EST server integration test - RHEL 9.6 + Dogtag PKI</whiteboard>
+  <whiteboard>kipuka EST server integration test - RHEL 10.0 + Dogtag PKI + PQC</whiteboard>
   <recipeSet>
-    <recipe whiteboard="kipuka-est-test">
+    <recipe whiteboard="kipuka-est-rhel10">
       <distroRequires>
         <and>
-          <distro_name op="=" value="RHEL-9.6.0"/>
+          <distro_name op="=" value="RHEL-10.0-updates-20260623.1"/>
           <distro_variant op="=" value="BaseOS"/>
           <distro_arch op="=" value="x86_64"/>
         </and>
@@ -13,20 +13,20 @@
       <hostRequires>
         <and>
           <system_type value="Machine"/>
-          <memory op="&gt;=" value="4096"/>
-          <cpu_count op="&gt;=" value="2"/>
-          <disk_size op="&gt;=" value="40" units="GiB"/>
+          <memory op="&gt;=" value="8192"/>
+          <cpu_count op="&gt;=" value="4"/>
+          <disk_size op="&gt;=" value="60" units="GiB"/>
         </and>
       </hostRequires>
       <repos>
-        <repo name="rhcs-11-appstream"
-              url="http://download.eng.bos.redhat.com/rhel-9/nightly/RHCS-11.0/latest-RHCS-11.0-RHEL-9/compose/AppStream/x86_64/os/"/>
-        <repo name="rhel-9-crb"
-              url="http://download.eng.bos.redhat.com/rhel-9/nightly/RHEL-9/latest-RHEL-9.6.0/compose/CRB/x86_64/os/"/>
+        <repo name="rhel-10-crb"
+              url="http://download.eng.bos.redhat.com/rhel-10/composes/RHEL-10/RHEL-10.0-updates-20260623.1/compose/CRB/x86_64/os/"/>
+        <repo name="rhel-10-appstream"
+              url="http://download.eng.bos.redhat.com/rhel-10/composes/RHEL-10/RHEL-10.0-updates-20260623.1/compose/AppStream/x86_64/os/"/>
       </repos>
       <partitions>
-        <partition name="/" size="20" type="part" fs="xfs"/>
-        <partition name="/var" size="15" type="part" fs="xfs"/>
+        <partition name="/" size="30" type="part" fs="xfs"/>
+        <partition name="/var" size="20" type="part" fs="xfs"/>
       </partitions>
       <task name="/distribution/install" role="STANDALONE"/>
       <task name="/distribution/command" role="STANDALONE">

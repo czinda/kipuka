@@ -6,9 +6,9 @@
 # source, generates test PKI material, and starts the EST server.
 #
 # Assumptions:
-#   - RHEL 9.x system provisioned by Beaker
-#   - RHCS 11 and CRB repos already configured (see kipuka-beaker.xml)
-#   - Internet access for cloning the kipuka repo and installing Rust
+#   - RHEL 10.x system provisioned by Beaker (OpenSSL 3.5+ for PQC)
+#   - CRB and AppStream repos already configured (see kipuka-beaker.xml)
+#   - Internet access for cloning the kipuka repo
 #
 # Usage:
 #   bash setup.sh           # full setup (default)
@@ -82,13 +82,42 @@ dnf install -y \
 # ── Step 2: Install Rust toolchain ───────────────────────────────────────────
 
 log "Installing Rust toolchain"
-if ! command -v rustc &>/dev/null; then
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.85.0
+# RHEL 10 ships Rust 1.85+ (edition 2024) in AppStream — prefer system packages.
+# Fall back to rustup only if the system Rust is too old or missing.
+if command -v rustc &>/dev/null; then
+    SYSTEM_RUST_VER=$(rustc --version | awk '{print $2}')
+    log "System Rust: ${SYSTEM_RUST_VER}"
+    # kipuka requires rust-version = "1.85"
+    if [[ "$(printf '%s\n1.85.0\n' "${SYSTEM_RUST_VER}" | sort -V | head -1)" == "1.85.0" ]]; then
+        log "System Rust ${SYSTEM_RUST_VER} meets minimum 1.85 — using system toolchain"
+    else
+        log "System Rust ${SYSTEM_RUST_VER} too old; installing via rustup"
+        dnf install -y rust cargo 2>/dev/null || true
+        if ! rustc --version 2>/dev/null | grep -qE '1\.(8[5-9]|9[0-9])'; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.85.0
+            source "$HOME/.cargo/env"
+        fi
+    fi
+else
+    log "No Rust found; installing from AppStream"
+    dnf install -y rust cargo || {
+        log "AppStream Rust not available; falling back to rustup"
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.85.0
+        # shellcheck source=/dev/null
+        source "$HOME/.cargo/env"
+    }
 fi
-# shellcheck source=/dev/null
-source "$HOME/.cargo/env"
 rustc --version
 cargo --version
+
+# Verify OpenSSL 3.5+ for PQC (ML-DSA/ML-KEM) support
+OPENSSL_VER=$(openssl version | awk '{print $2}')
+log "OpenSSL version: ${OPENSSL_VER}"
+if [[ "$(printf '%s\n3.5.0\n' "${OPENSSL_VER}" | sort -V | head -1)" == "3.5.0" ]]; then
+    log "OpenSSL ${OPENSSL_VER} supports PQC (ML-DSA/ML-KEM via oqsprovider)"
+else
+    log "WARNING: OpenSSL ${OPENSSL_VER} may not support PQC algorithms"
+fi
 
 # ── Step 3: Set up 389 Directory Server ─────────────────────────────────────
 
