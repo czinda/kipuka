@@ -42,6 +42,7 @@ variables:
 # ── Global cache ────────────────────────────────────────────────────────────
 
 default:
+  image: ${RUST_IMAGE}
   cache:
     key: "${CI_COMMIT_REF_SLUG}"
     paths:
