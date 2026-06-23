@@ -36,7 +36,7 @@ impl Pkcs11Context {
         // Initialize the library with OS locking
         pkcs11
             .initialize(CInitializeArgs::OsThreads)
-            .map_err(|e| HsmError::LibraryLoad(format!("C_Initialize failed: {}", e)))?;
+            .map_err(|e| HsmError::LibraryLoad(format!("C_Initialize failed: {e}")))?;
 
         tracing::info!("PKCS#11 library initialized: {}", path.display());
 

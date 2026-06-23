@@ -50,7 +50,7 @@ impl MlKemLevel {
             512 => Ok(Self::Level512),
             768 => Ok(Self::Level768),
             1024 => Ok(Self::Level1024),
-            _ => Err(EstError::UnsupportedAlgorithm(format!("ML-KEM-{}", level))),
+            _ => Err(EstError::UnsupportedAlgorithm(format!("ML-KEM-{level}"))),
         }
     }
 
@@ -477,8 +477,8 @@ impl ServerKeygenResponse {
     ///
     /// Returns `EstError::InvalidMultipart` if parsing fails.
     pub fn from_multipart_body(body: &str, boundary: &str) -> EstResult<Self> {
-        let boundary_line = format!("--{}", boundary);
-        let end_boundary = format!("--{}--", boundary);
+        let boundary_line = format!("--{boundary}");
+        let end_boundary = format!("--{boundary}--");
 
         let parts: Vec<&str> = body.split(&boundary_line).collect();
 
@@ -513,8 +513,7 @@ impl ServerKeygenResponse {
     fn extract_base64_content<'a>(part: &'a str, expected_ct: &str) -> EstResult<&'a str> {
         if !part.contains(expected_ct) {
             return Err(EstError::InvalidMultipart(format!(
-                "Expected Content-Type: {}",
-                expected_ct
+                "Expected Content-Type: {expected_ct}"
             )));
         }
 
@@ -563,7 +562,7 @@ impl ServerKeygenResponse {
 mod serde_bytes {
     use serde::{Deserialize, Deserializer, Serializer};
 
-    pub fn serialize<S>(bytes: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error>
+    pub fn serialize<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {

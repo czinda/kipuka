@@ -65,7 +65,7 @@ impl HsmSlot {
         self.context.with_pkcs11(|pkcs11| {
             pkcs11
                 .open_ro_session(self.slot)
-                .map_err(|e| HsmError::SessionCreate(format!("Failed to open RO session: {}", e)))
+                .map_err(|e| HsmError::SessionCreate(format!("Failed to open RO session: {e}")))
         })
     }
 
@@ -74,7 +74,7 @@ impl HsmSlot {
         self.context.with_pkcs11(|pkcs11| {
             pkcs11
                 .open_rw_session(self.slot)
-                .map_err(|e| HsmError::SessionCreate(format!("Failed to open RW session: {}", e)))
+                .map_err(|e| HsmError::SessionCreate(format!("Failed to open RW session: {e}")))
         })
     }
 
@@ -87,7 +87,7 @@ impl HsmSlot {
     pub fn login(&self, session: &Session, pin: &str) -> HsmResult<()> {
         session
             .login(UserType::User, Some(&AuthPin::new(pin.to_owned())))
-            .map_err(|e| HsmError::Login(format!("User login failed: {}", e)))
+            .map_err(|e| HsmError::Login(format!("User login failed: {e}")))
     }
 
     /// Login as security officer (SO).
@@ -99,7 +99,7 @@ impl HsmSlot {
     pub fn login_so(&self, session: &Session, pin: &str) -> HsmResult<()> {
         session
             .login(UserType::So, Some(&AuthPin::new(pin.to_owned())))
-            .map_err(|e| HsmError::Login(format!("SO login failed: {}", e)))
+            .map_err(|e| HsmError::Login(format!("SO login failed: {e}")))
     }
 
     /// Enumerate all slots with tokens present.
@@ -111,7 +111,7 @@ impl HsmSlot {
         context.with_pkcs11(|pkcs11| {
             pkcs11
                 .get_slots_with_token()
-                .map_err(|e| HsmError::SlotAccess(format!("Failed to enumerate slots: {}", e)))
+                .map_err(|e| HsmError::SlotAccess(format!("Failed to enumerate slots: {e}")))
         })
     }
 
@@ -142,16 +142,14 @@ impl HsmSlot {
 
         for slot_id in slots {
             let slot = Self::new(context.clone(), slot_id);
-            if let Ok(token_label) = slot.token_label() {
-                if token_label == label {
+            if let Ok(token_label) = slot.token_label()
+                && token_label == label {
                     return Ok(slot);
                 }
-            }
         }
 
         Err(HsmError::SlotAccess(format!(
-            "No slot found with token label '{}'",
-            label
+            "No slot found with token label '{label}'"
         )))
     }
 }

@@ -229,7 +229,7 @@ impl HsmKeyPair {
 
         session
             .generate_key_pair(&mechanism, &public_key_template, &private_key_template)
-            .map_err(|e| HsmError::KeyGeneration(format!("RSA key generation failed: {}", e)))
+            .map_err(|e| HsmError::KeyGeneration(format!("RSA key generation failed: {e}")))
     }
 
     /// Generate ECDSA key pair.
@@ -271,7 +271,7 @@ impl HsmKeyPair {
 
         session
             .generate_key_pair(&mechanism, &public_key_template, &private_key_template)
-            .map_err(|e| HsmError::KeyGeneration(format!("ECDSA key generation failed: {}", e)))
+            .map_err(|e| HsmError::KeyGeneration(format!("ECDSA key generation failed: {e}")))
     }
 
     /// Generate ML-DSA key pair (FIPS 204).
@@ -336,15 +336,15 @@ impl HsmKeyPair {
         ];
 
         session.find_objects(&template).map_err(|e| {
-            HsmError::KeyNotFound(format!("Failed to search for key '{}': {}", label, e))
+            HsmError::KeyNotFound(format!("Failed to search for key '{label}': {e}"))
         })?;
 
         let private_key = session
             .find_objects(&template)
-            .map_err(|e| HsmError::KeyNotFound(format!("Find operation failed: {}", e)))?
+            .map_err(|e| HsmError::KeyNotFound(format!("Find operation failed: {e}")))?
             .into_iter()
             .next()
-            .ok_or_else(|| HsmError::KeyNotFound(format!("Key '{}' not found", label)))?;
+            .ok_or_else(|| HsmError::KeyNotFound(format!("Key '{label}' not found")))?;
 
         // Find matching public key
         let public_template = vec![
@@ -354,10 +354,10 @@ impl HsmKeyPair {
 
         let public_key = session
             .find_objects(&public_template)
-            .map_err(|e| HsmError::KeyNotFound(format!("Public key search failed: {}", e)))?
+            .map_err(|e| HsmError::KeyNotFound(format!("Public key search failed: {e}")))?
             .into_iter()
             .next()
-            .ok_or_else(|| HsmError::KeyNotFound(format!("Public key '{}' not found", label)))?;
+            .ok_or_else(|| HsmError::KeyNotFound(format!("Public key '{label}' not found")))?;
 
         Ok(Self {
             session,
@@ -378,7 +378,7 @@ impl HsmKeyPair {
 
         let private_key = session
             .find_objects(&template)
-            .map_err(|e| HsmError::KeyNotFound(format!("Find operation failed: {}", e)))?
+            .map_err(|e| HsmError::KeyNotFound(format!("Find operation failed: {e}")))?
             .into_iter()
             .next()
             .ok_or_else(|| {
@@ -392,7 +392,7 @@ impl HsmKeyPair {
 
         let public_key = session
             .find_objects(&public_template)
-            .map_err(|e| HsmError::KeyNotFound(format!("Public key search failed: {}", e)))?
+            .map_err(|e| HsmError::KeyNotFound(format!("Public key search failed: {e}")))?
             .into_iter()
             .next()
             .ok_or_else(|| {
@@ -437,7 +437,7 @@ impl HsmKeyPair {
         // Prefer CKA_ID lookup
         if let Some(id_hex) = params.get("id") {
             let id = hex::decode(id_hex)
-                .map_err(|e| HsmError::UriParse(format!("Invalid hex ID '{}': {}", id_hex, e)))?;
+                .map_err(|e| HsmError::UriParse(format!("Invalid hex ID '{id_hex}': {e}")))?;
             return Self::find_by_id(slot, &id, algorithm);
         }
 

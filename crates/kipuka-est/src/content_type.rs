@@ -67,7 +67,7 @@ pub const DEFAULT_BOUNDARY: &str = "----=_EST_ServerKeyGen_Boundary";
 
 /// Constructs a multipart/mixed Content-Type header with custom boundary.
 pub fn multipart_content_type(boundary: &str) -> String {
-    format!("multipart/mixed; boundary={}", boundary)
+    format!("multipart/mixed; boundary={boundary}")
 }
 
 /// Validates a Content-Type header value against an expected EST media type.

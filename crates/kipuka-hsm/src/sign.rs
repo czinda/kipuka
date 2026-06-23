@@ -124,7 +124,7 @@ impl HsmSigner for DefaultHsmSigner {
 
         session
             .sign(mechanism, private_key, digest)
-            .map_err(|e| HsmError::SigningFailure(format!("Sign operation failed: {}", e)))
+            .map_err(|e| HsmError::SigningFailure(format!("Sign operation failed: {e}")))
     }
 
     fn wrap_key_aes(
@@ -137,7 +137,7 @@ impl HsmSigner for DefaultHsmSigner {
 
         session
             .wrap_key(&mechanism, wrapping_key, key_to_wrap)
-            .map_err(|e| HsmError::KeyWrap(format!("AES key wrap failed: {}", e)))
+            .map_err(|e| HsmError::KeyWrap(format!("AES key wrap failed: {e}")))
     }
 
     fn wrap_key_rsa_oaep(
@@ -232,7 +232,7 @@ pub fn sign_ml_dsa(
         MlDsaLevel::L5 => pqc_mechanisms.ml_dsa_87,
     }
     .ok_or_else(|| {
-        HsmError::PqcNotSupported(format!("ML-DSA level {:?} mechanism not configured", level))
+        HsmError::PqcNotSupported(format!("ML-DSA level {level:?} mechanism not configured"))
     })?;
 
     tracing::warn!(
