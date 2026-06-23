@@ -26,7 +26,7 @@ AUDIT_LOG="/var/log/kipuka/audit.log"
 
 AGENT_CERT="${CERT_DIR}/tls/agent.pem"
 AGENT_KEY="${CERT_DIR}/tls/agent.key"
-CA_BUNDLE="${CERT_DIR}/ca/dogtag-ca.pem"
+export CA_BUNDLE="${CERT_DIR}/ca/dogtag-ca.pem"
 
 PASS=0
 FAIL=0

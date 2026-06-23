@@ -159,6 +159,7 @@ fi
 section "NIAP FCS_CKM.1 — Non-extractable Key"
 
 # The key must have CKA_EXTRACTABLE=FALSE and CKA_SENSITIVE=TRUE
+export KEY_ATTRS
 KEY_ATTRS=$(pkcs11-tool --module "${KRYOPTIC_LIB}" \
     --token-label "${TOKEN_LABEL}" --pin "${TOKEN_PIN}" \
     --list-objects --type privkey 2>/dev/null || true)

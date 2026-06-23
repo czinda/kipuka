@@ -12,10 +12,7 @@ all-features = true
 # Deny any crate with a known security vulnerability or unmaintained status.
 
 [advisories]
-vulnerability = "deny"
-unmaintained = "warn"
-yanked = "warn"
-notice = "warn"
+version = 2
 ignore = []
 
 # ── Licenses ────────────────────────────────────────────────────────────────
