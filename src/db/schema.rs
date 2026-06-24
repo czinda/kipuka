@@ -132,8 +132,13 @@ pub async fn run_migrations(pool: &sqlx::AnyPool) -> Result<(), KipukaError> {
         // Execute migration statements one at a time (sqlx Any doesn't
         // support multi-statement execution on all backends).
         for statement in MIGRATION_V1.split(';') {
-            let trimmed = statement.trim();
-            if trimmed.is_empty() || trimmed.starts_with("--") {
+            let stripped: String = statement
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("--"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let trimmed = stripped.trim();
+            if trimmed.is_empty() {
                 continue;
             }
             sqlx::query(trimmed)
