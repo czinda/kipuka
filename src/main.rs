@@ -44,6 +44,9 @@ struct Cli {
 
 #[tokio::main]
 async fn main() {
+    // ── sqlx driver registration (required for AnyPool) ─────────────────────
+    sqlx::any::install_default_drivers();
+
     // ── Logging ──────────────────────────────────────────────────────────────
     tracing_subscriber::fmt()
         .with_env_filter(
