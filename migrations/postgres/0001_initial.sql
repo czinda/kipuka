@@ -11,15 +11,15 @@ CREATE TABLE certificates (
     serial            TEXT         NOT NULL UNIQUE,
     subject_dn        TEXT         NOT NULL,
     issuer_dn         TEXT         NOT NULL,
-    not_before        TIMESTAMPTZ  NOT NULL,
-    not_after         TIMESTAMPTZ  NOT NULL,
+    not_before        TEXT  NOT NULL,
+    not_after         TEXT  NOT NULL,
     der_encoded       BYTEA        NOT NULL,
     ca_id             TEXT         NOT NULL,
     profile           TEXT,
     status            certificate_status NOT NULL DEFAULT 'active',
     revocation_reason TEXT,
-    revocation_time   TIMESTAMPTZ,
-    created_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    revocation_time   TEXT,
+    created_at        TEXT  NOT NULL DEFAULT (to_char(NOW(), 'YYYY-MM-DD"T"HH24:MI:SS"Z"'))
 );
 
 CREATE INDEX idx_certificates_serial ON certificates (serial);
@@ -34,12 +34,12 @@ CREATE TABLE otp_tokens (
     entity_id       TEXT         NOT NULL,
     label           TEXT,
     profile         TEXT,
-    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-    expires_at      TIMESTAMPTZ  NOT NULL,
+    created_at      TEXT  NOT NULL DEFAULT (to_char(NOW(), 'YYYY-MM-DD"T"HH24:MI:SS"Z"')),
+    expires_at      TEXT  NOT NULL,
     max_uses        INTEGER      NOT NULL DEFAULT 1,
     current_uses    INTEGER      NOT NULL DEFAULT 0,
     revoked         BOOLEAN      NOT NULL DEFAULT FALSE,
-    revoked_at      TIMESTAMPTZ
+    revoked_at      TEXT
 );
 
 CREATE INDEX idx_otp_tokens_entity_id ON otp_tokens (entity_id);
@@ -47,11 +47,11 @@ CREATE INDEX idx_otp_tokens_expires_at ON otp_tokens (expires_at);
 
 CREATE TABLE audit_events (
     id              BIGSERIAL    PRIMARY KEY,
-    timestamp       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    timestamp       TEXT  NOT NULL DEFAULT (to_char(NOW(), 'YYYY-MM-DD"T"HH24:MI:SS"Z"')),
     event_type      TEXT         NOT NULL,
     actor           TEXT,
     target          TEXT,
-    detail_json     JSONB,
+    detail_json     TEXT,
     source_ip       TEXT,
     session_id      TEXT
 );
@@ -64,9 +64,9 @@ CREATE TABLE ca_health (
     id                    BIGSERIAL        PRIMARY KEY,
     ca_id                 TEXT             NOT NULL UNIQUE,
     status                ca_health_status NOT NULL DEFAULT 'unknown',
-    last_check            TIMESTAMPTZ,
-    last_success          TIMESTAMPTZ,
-    last_failure          TIMESTAMPTZ,
+    last_check            TEXT,
+    last_success          TEXT,
+    last_failure          TEXT,
     consecutive_failures  INTEGER          NOT NULL DEFAULT 0,
     response_latency_ms   INTEGER
 );
@@ -83,8 +83,8 @@ CREATE TABLE enrollment_requests (
     entity_id       TEXT,
     status          enrollment_status NOT NULL DEFAULT 'pending',
     certificate_id  BIGINT            REFERENCES certificates(id),
-    created_at      TIMESTAMPTZ       NOT NULL DEFAULT NOW(),
-    completed_at    TIMESTAMPTZ
+    created_at      TEXT       NOT NULL DEFAULT (to_char(NOW(), 'YYYY-MM-DD"T"HH24:MI:SS"Z"')),
+    completed_at    TEXT
 );
 
 CREATE INDEX idx_enrollment_requests_status ON enrollment_requests (status);
@@ -99,7 +99,7 @@ CREATE TABLE server_generated_keys (
     key_size        INTEGER      NOT NULL,
     archived        BOOLEAN      NOT NULL DEFAULT FALSE,
     archive_id      TEXT,
-    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    created_at      TEXT  NOT NULL DEFAULT (to_char(NOW(), 'YYYY-MM-DD"T"HH24:MI:SS"Z"'))
 );
 
 CREATE INDEX idx_server_generated_keys_enrollment_id ON server_generated_keys (enrollment_id);
@@ -115,15 +115,15 @@ CREATE TABLE star_orders (
     key_type              TEXT             NOT NULL,
     profile               TEXT             NOT NULL,
     renewal_interval_secs INTEGER          NOT NULL,
-    lifetime_end          TIMESTAMPTZ      NOT NULL,
+    lifetime_end          TEXT      NOT NULL,
     max_renewals          INTEGER          NOT NULL,
     current_renewals      INTEGER          NOT NULL DEFAULT 0,
     status                star_order_status NOT NULL DEFAULT 'active',
     requestor_dn          TEXT,
     ca_id                 TEXT             NOT NULL,
     csr_der               BYTEA            NOT NULL,
-    created_at            TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
-    cancelled_at          TIMESTAMPTZ
+    created_at            TEXT      NOT NULL DEFAULT (to_char(NOW(), 'YYYY-MM-DD"T"HH24:MI:SS"Z"')),
+    cancelled_at          TEXT
 );
 
 CREATE TABLE star_certificates (
@@ -131,10 +131,10 @@ CREATE TABLE star_certificates (
     star_order_id   TEXT         NOT NULL REFERENCES star_orders(id),
     serial_number   TEXT         NOT NULL,
     certificate_der BYTEA        NOT NULL,
-    not_before      TIMESTAMPTZ  NOT NULL,
-    not_after       TIMESTAMPTZ  NOT NULL,
+    not_before      TEXT  NOT NULL,
+    not_after       TEXT  NOT NULL,
     renewal_number  INTEGER      NOT NULL,
-    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    created_at      TEXT  NOT NULL DEFAULT (to_char(NOW(), 'YYYY-MM-DD"T"HH24:MI:SS"Z"'))
 );
 
 CREATE INDEX idx_star_certs_order ON star_certificates(star_order_id, renewal_number DESC);

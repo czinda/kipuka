@@ -165,9 +165,10 @@ async fn validate_otp(app: &Arc<AppState>, entity_id: &str, otp_value: &str) -> 
     let row: Option<OtpValidationRow> = sqlx::query_as(crate::db::pg_sql(
         "SELECT id, token_hash, current_uses, max_uses \
          FROM otp_tokens \
-         WHERE entity_id = ? AND revoked = 0 AND expires_at > ? AND current_uses < max_uses",
+         WHERE entity_id = ? AND revoked = ? AND expires_at > ? AND current_uses < max_uses",
     ))
     .bind(entity_id)
+    .bind(false)
     .bind(&now)
     .fetch_optional(&app.db_ro)
     .await

@@ -42,7 +42,7 @@ rustls-pemfile = "2"
 cryptoki = "0.7"
 
 # Database
-sqlx = { version = "0.8", features = ["runtime-tokio", "any", "sqlite", "postgres", "mysql", "migrate"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "any", "sqlite", "postgres", "mysql", "migrate", "chrono"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

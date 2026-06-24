@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS audit_events (
     event_type      VARCHAR(255) NOT NULL,
     actor           VARCHAR(255),
     target          VARCHAR(255),
-    detail_json     JSON,
+    detail_json     TEXT,
     source_ip       VARCHAR(45),
     session_id      VARCHAR(255)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
