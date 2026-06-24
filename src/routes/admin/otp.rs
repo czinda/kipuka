@@ -157,7 +157,7 @@ pub async fn generate_otp(
 
     // Insert the hashed token into the database.
     let insert_result = sqlx::query(
-        "INSERT INTO otp_tokens (token_hash, identity, usage_count, max_usage, expires_at) \
+        "INSERT INTO otp_tokens (token_hash, entity_id, current_uses, max_uses, expires_at) \
          VALUES (?, ?, 0, ?, ?)",
     )
     .bind(&token_hash)
@@ -216,7 +216,7 @@ pub async fn list_otps(_admin: AdminAuth, State(state): State<Arc<AppState>>) ->
     let now = chrono::Utc::now().to_rfc3339();
 
     let rows: Vec<OtpRow> = match sqlx::query_as(
-        "SELECT id, identity, expires_at, max_usage, usage_count, created_at \
+        "SELECT id, entity_id, expires_at, max_uses, current_uses, created_at \
          FROM otp_tokens WHERE revoked = 0 AND expires_at > ?",
     )
     .bind(&now)
@@ -241,10 +241,10 @@ pub async fn list_otps(_admin: AdminAuth, State(state): State<Arc<AppState>>) ->
         .into_iter()
         .map(|r| OtpSummary {
             id: r.id.to_string(),
-            entity_id: r.identity.unwrap_or_default(),
+            entity_id: r.entity_id.unwrap_or_default(),
             expires_at: r.expires_at,
-            max_usage: r.max_usage as u32,
-            usage_count: r.usage_count as u32,
+            max_usage: r.max_uses as u32,
+            usage_count: r.current_uses as u32,
             created_at: r.created_at,
         })
         .collect();
@@ -330,9 +330,9 @@ pub async fn revoke_otp(
 #[derive(sqlx::FromRow)]
 struct OtpRow {
     id: i64,
-    identity: Option<String>,
+    entity_id: Option<String>,
     expires_at: String,
-    max_usage: i64,
-    usage_count: i64,
+    max_uses: i64,
+    current_uses: i64,
     created_at: String,
 }

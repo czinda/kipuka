@@ -154,7 +154,7 @@ pub async fn post_simpleenroll(
 
     if let Err(e) = sqlx::query(
         "INSERT INTO certificates (serial, subject_dn, issuer_dn, not_before, not_after, der_encoded, ca_id, profile, status) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active')"
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')"
     )
     .bind(serial)
     .bind(subject_dn)

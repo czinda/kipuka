@@ -7,11 +7,23 @@
 # First time: generate test certificates
 #   ./contrib/local-dev/setup-ca.sh
 #
-# Then:
-#   podman compose up
+# ── Database backends ──────────────────────────────────────────────────
 #
-# Test (fetch CA certs):
-#   curl -sk https://localhost:9443/.well-known/est/cacerts | base64 -d | openssl pkcs7 -inform DER -print_certs
+#   SQLite (default — no profile needed):
+#     podman compose up
+#
+#   PostgreSQL:
+#     podman compose --profile postgres up
+#
+#   MariaDB:
+#     podman compose --profile mariadb up
+#
+# Only one backend can run at a time (all kipuka variants bind port 9443).
+#
+# ── Quick test ─────────────────────────────────────────────────────────
+#
+#   curl -sk https://localhost:9443/.well-known/est/cacerts | \
+#     base64 -d | openssl pkcs7 -inform DER -print_certs
 #
 # Enroll with OTP (once admin API issues an OTP):
 #   curl -sk --cacert contrib/local-dev/ca/ca.pem \
@@ -24,6 +36,7 @@
 # ────────────────────────────────────────────────────────────────────────
 
 services:
+  # ── SQLite (default) ─────────────────────────────────────────────────
   kipuka:
     # ARM64 (Apple Silicon, Graviton):
     image: registry.heebh.st/heebus/kipuka:latest-arm64
@@ -42,5 +55,84 @@ services:
       - RUST_LOG=info
     restart: unless-stopped
 
+  # ── PostgreSQL backend ───────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: kipuka-postgres
+    profiles: [postgres]
+    environment:
+      POSTGRES_USER: kipuka
+      POSTGRES_PASSWORD: kipuka-dev
+      POSTGRES_DB: kipuka
+    volumes:
+      - kipuka-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kipuka"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  kipuka-pg:
+    image: registry.heebh.st/heebus/kipuka:latest-arm64
+    # image: registry.heebh.st/heebus/kipuka:latest-amd64
+    container_name: kipuka-est-pg
+    profiles: [postgres]
+    user: "0:0"
+    ports:
+      - "9443:9443"
+    volumes:
+      - ./contrib/local-dev/kipuka-postgres.toml:/etc/kipuka/kipuka.toml:ro,Z
+      - ./contrib/local-dev/tls:/etc/kipuka/tls:ro,Z
+      - ./contrib/local-dev/ca:/etc/kipuka/ca:ro,Z
+      - kipuka-data:/var/lib/kipuka
+    environment:
+      - RUST_LOG=info
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── MariaDB backend ─────────────────────────────────────────────────
+  mariadb:
+    image: mariadb:11
+    container_name: kipuka-mariadb
+    profiles: [mariadb]
+    environment:
+      MARIADB_ROOT_PASSWORD: root-dev
+      MARIADB_DATABASE: kipuka
+      MARIADB_USER: kipuka
+      MARIADB_PASSWORD: kipuka-dev
+    volumes:
+      - kipuka-mydata:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  kipuka-my:
+    image: registry.heebh.st/heebus/kipuka:latest-arm64
+    # image: registry.heebh.st/heebus/kipuka:latest-amd64
+    container_name: kipuka-est-my
+    profiles: [mariadb]
+    user: "0:0"
+    ports:
+      - "9443:9443"
+    volumes:
+      - ./contrib/local-dev/kipuka-mariadb.toml:/etc/kipuka/kipuka.toml:ro,Z
+      - ./contrib/local-dev/tls:/etc/kipuka/tls:ro,Z
+      - ./contrib/local-dev/ca:/etc/kipuka/ca:ro,Z
+      - kipuka-data:/var/lib/kipuka
+    environment:
+      - RUST_LOG=info
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   kipuka-data:
+  kipuka-pgdata:
+  kipuka-mydata:

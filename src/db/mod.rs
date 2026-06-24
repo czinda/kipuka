@@ -188,6 +188,6 @@ pub async fn begin_write(
 }
 
 /// Run pending database migrations.
-pub async fn run_migrations(pool: &Db) -> Result<(), KipukaError> {
-    crate::db::schema::run_migrations(pool).await
+pub async fn run_migrations(pool: &Db, kind: DbKind) -> Result<(), KipukaError> {
+    crate::db::schema::run_migrations(pool, kind).await
 }

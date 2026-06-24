@@ -88,7 +88,7 @@ async fn run() -> Result<(), String> {
 
     if config.database.run_migrations {
         tracing::info!("running database migrations");
-        kipuka::db::run_migrations(&db)
+        kipuka::db::run_migrations(&db, db_kind)
             .await
             .map_err(|e| e.to_string())?;
     }

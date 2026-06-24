@@ -163,9 +163,9 @@ async fn validate_otp(app: &Arc<AppState>, entity_id: &str, otp_value: &str) -> 
     let now = chrono::Utc::now().to_rfc3339();
 
     let row: Option<OtpValidationRow> = sqlx::query_as(
-        "SELECT id, token_hash, usage_count, max_usage \
+        "SELECT id, token_hash, current_uses, max_uses \
          FROM otp_tokens \
-         WHERE identity = ? AND revoked = 0 AND expires_at > ? AND usage_count < max_usage",
+         WHERE entity_id = ? AND revoked = 0 AND expires_at > ? AND current_uses < max_uses",
     )
     .bind(entity_id)
     .bind(&now)
@@ -193,8 +193,8 @@ async fn validate_otp(app: &Arc<AppState>, entity_id: &str, otp_value: &str) -> 
         return Err("OTP token does not match".into());
     }
 
-    // Atomically increment usage_count.
-    sqlx::query("UPDATE otp_tokens SET usage_count = usage_count + 1 WHERE id = ?")
+    // Atomically increment current_uses.
+    sqlx::query("UPDATE otp_tokens SET current_uses = current_uses + 1 WHERE id = ?")
         .bind(row.id)
         .execute(&app.db)
         .await
@@ -203,8 +203,8 @@ async fn validate_otp(app: &Arc<AppState>, entity_id: &str, otp_value: &str) -> 
     debug!(
         entity_id = %entity_id,
         otp_id = row.id,
-        new_usage = row.usage_count + 1,
-        max_usage = row.max_usage,
+        new_usage = row.current_uses + 1,
+        max_uses = row.max_uses,
         "OTP validated and consumed"
     );
 
@@ -216,6 +216,6 @@ async fn validate_otp(app: &Arc<AppState>, entity_id: &str, otp_value: &str) -> 
 struct OtpValidationRow {
     id: i64,
     token_hash: String,
-    usage_count: i64,
-    max_usage: i64,
+    current_uses: i64,
+    max_uses: i64,
 }
