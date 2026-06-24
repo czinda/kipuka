@@ -5,20 +5,23 @@
 #   podman build -t kryoptic -f contrib/kryoptic/Containerfile contrib/kryoptic/
 #   podman run --rm -v kryoptic-lib:/usr/lib/pkcs11 -v kryoptic-data:/var/lib/kryoptic kryoptic
 
-FROM rust:1.88-bookworm AS builder
+FROM rust:1.88-slim-bookworm AS builder
 
-RUN apt-get update && apt-get install -y \
-    libssl-dev pkg-config opensc sqlite3 \
+# Kryoptic requires OpenSSL 3.2+ — build from Debian trixie packages
+RUN echo "deb http://deb.debian.org/debian trixie main" > /etc/apt/sources.list.d/trixie.list \
+    && apt-get update && apt-get install -y -t trixie \
+    libssl-dev pkg-config opensc sqlite3 libsqlite3-dev \
+    clang libclang-dev cmake git \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
 RUN git clone --depth 1 https://github.com/latchset/kryoptic.git . \
-    && cargo build --release -p kryoptic_pkcs11
+    && cargo build --release -p kryoptic
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y \
-    ca-certificates libssl3 opensc sqlite3 p11-kit \
+    ca-certificates libssl3t64 opensc sqlite3 p11-kit \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /build/target/release/libkryoptic_pkcs11.so /usr/lib/pkcs11/libkryoptic_pkcs11.so
