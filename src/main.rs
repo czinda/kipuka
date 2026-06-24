@@ -293,8 +293,21 @@ async fn serve_tls(
                         }
                     };
 
+                    // Extract the client certificate before wrapping the stream.
+                    let peer_cert_der: Option<Vec<u8>> = tls_stream
+                        .get_ref()
+                        .1
+                        .peer_certificates()
+                        .and_then(|certs| certs.first())
+                        .map(|c| c.as_ref().to_vec());
+
                     let io = TokioIo::new(tls_stream);
-                    let hyper_svc = hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                    let hyper_svc = hyper::service::service_fn(move |mut req: hyper::Request<hyper::body::Incoming>| {
+                        if let Some(ref cert_der) = peer_cert_der {
+                            req.extensions_mut().insert(
+                                kipuka::auth::mtls::PeerCertificate(cert_der.clone()),
+                            );
+                        }
                         let mut svc = app.clone();
                         async move {
                             svc.call(req).await
