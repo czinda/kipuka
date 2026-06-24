@@ -21,6 +21,9 @@
 #   HSM (Kryoptic PKCS#11 software token):
 #     podman compose --profile hsm up
 #
+#   HSM + PostgreSQL:
+#     podman compose --profile hsm-postgres up
+#
 # Only one backend can run at a time (all kipuka variants bind port 9443).
 #
 # ── Quick test ─────────────────────────────────────────────────────────
@@ -64,7 +67,7 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: kipuka-postgres
-    profiles: [postgres]
+    profiles: [postgres, hsm-postgres]
     environment:
       POSTGRES_USER: kipuka
       POSTGRES_PASSWORD: kipuka-dev
@@ -145,7 +148,7 @@ services:
       context: ./contrib/kryoptic
       dockerfile: Containerfile
     container_name: kipuka-kryoptic
-    profiles: [hsm]
+    profiles: [hsm, hsm-postgres]
     environment:
       TOKEN_LABEL: kipuka-hsm
       SO_PIN: "12345678"
@@ -183,6 +186,33 @@ services:
       - KIPUKA_HSM_PIN=1234
     depends_on:
       kryoptic:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── HSM + PostgreSQL backend ──────────────────────────────────────────
+  kipuka-hsm-pg:
+    image: registry.kipuka.dev/kipuka:latest-arm64
+    # image: registry.kipuka.dev/kipuka:latest-amd64
+    container_name: kipuka-est-hsm-pg
+    profiles: [hsm-postgres]
+    user: "0:0"
+    ports:
+      - "9443:9443"
+    volumes:
+      - ./contrib/local-dev/kipuka-hsm-postgres.toml:/etc/kipuka/kipuka.toml:ro,Z
+      - ./contrib/local-dev/tls:/etc/kipuka/tls:ro,Z
+      - ./contrib/local-dev/ca:/etc/kipuka/ca:ro,Z
+      - ./web:/var/www/kipuka/web:ro,Z
+      - kipuka-data:/var/lib/kipuka
+      - kryoptic-lib:/usr/lib/pkcs11:ro
+      - kryoptic-data:/var/lib/kryoptic:ro
+    environment:
+      - RUST_LOG=info
+      - KIPUKA_HSM_PIN=1234
+    depends_on:
+      kryoptic:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     restart: unless-stopped
 

@@ -1,0 +1,72 @@
+# ── Kipuka EST Server — HSM Configuration (Kryoptic) ───────────────────
+#
+# Uses a Kryoptic PKCS#11 software token for CA key storage.
+# The CA private key lives inside the Kryoptic token — kipuka never
+# touches the raw key material.
+#
+# Usage:
+#   podman compose --profile hsm up
+#
+# ────────────────────────────────────────────────────────────────────────
+
+# ── Server ───────────────────────────────────────────────────────────────
+[server]
+listen_addr = "0.0.0.0:9443"
+
+# ── TLS ──────────────────────────────────────────────────────────────────
+[tls]
+enabled   = true
+cert_file = "/etc/kipuka/tls/server.pem"
+key_file  = "/etc/kipuka/tls/server-key.pem"
+ca_file   = "/etc/kipuka/ca/ca.pem"
+client_auth = "optional"
+
+# ── Database ─────────────────────────────────────────────────────────────
+[database]
+url = "postgres://kipuka:kipuka-dev@postgres:5432/kipuka"
+
+# ── HSM (Kryoptic PKCS#11 Software Token) ────────────────────────────────
+[hsm]
+provider       = "kryoptic"
+library_path   = "/usr/lib/pkcs11/libkryoptic_pkcs11.so"
+pin            = "env:KIPUKA_HSM_PIN"
+token_label    = "kipuka-hsm"
+max_sessions   = 4
+
+# ── Certificate Authority (HSM-backed) ───────────────────────────────────
+[ca]
+cert_file   = "/etc/kipuka/ca/ca.pem"
+key_file    = "/etc/kipuka/ca/ca-key.pem"
+pkcs11_uri  = "pkcs11:token=kipuka-hsm;object=kipuka-ca-key;type=private"
+validity_days   = 365
+hash_algorithm  = "sha256"
+common_name     = "Kipuka HSM Dev CA"
+organization    = "Kipuka Development"
+
+# ── EST Protocol ─────────────────────────────────────────────────────────
+[est]
+simpleenroll   = true
+simplereenroll = true
+csrattrs       = true
+fullcmc        = false
+serverkeygen   = false
+
+# ── OTP Enrollment Authentication ────────────────────────────────────────
+[otp]
+enabled         = true
+storage_backend = "db"
+entropy_bits    = 128
+ttl_seconds     = 3600
+max_usage       = 1
+
+# ── Admin API ────────────────────────────────────────────────────────────
+[admin]
+enabled        = true
+auth_method    = "mtls"
+admin_ca_file  = "/etc/kipuka/ca/ca.pem"
+
+# ── Audit ────────────────────────────────────────────────────────────────
+[audit]
+enabled    = true
+log_path   = "/dev/stdout"
+log_to_db  = true

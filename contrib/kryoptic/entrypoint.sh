@@ -4,7 +4,7 @@
 # Initializes a token, creates a CA signing key, and keeps the
 # container running so kipuka can access the PKCS#11 library.
 
-set -e
+set -uo pipefail
 
 TOKEN_LABEL="${TOKEN_LABEL:-kipuka-hsm}"
 SO_PIN="${SO_PIN:-12345678}"
@@ -14,27 +14,45 @@ KEY_TYPE="${KEY_TYPE:-rsa:3072}"
 MODULE="/usr/lib/pkcs11/libkryoptic_pkcs11.so"
 TOKEN_DIR="/var/lib/kryoptic"
 
-# Write Kryoptic configuration
+# Write Kryoptic configuration — must exist before any PKCS#11 call
+mkdir -p "${TOKEN_DIR}/tokens"
 cat > "${TOKEN_DIR}/token.conf" << EOF
 [global]
-token_dir = ${TOKEN_DIR}
+token_dir = ${TOKEN_DIR}/tokens
 EOF
 
 export KRYOPTIC_CONF="${TOKEN_DIR}/token.conf"
 
+echo "Kryoptic config: ${KRYOPTIC_CONF}"
+echo "Token dir: ${TOKEN_DIR}/tokens"
+echo "Module: ${MODULE}"
+
+# Verify the module loads
+if ! pkcs11-tool --module "$MODULE" --show-info 2>/dev/null; then
+    echo "ERROR: Kryoptic PKCS#11 module failed to load"
+    echo "Checking library..."
+    ls -la "$MODULE" 2>/dev/null || echo "Module not found at $MODULE"
+    ldd "$MODULE" 2>/dev/null || echo "Cannot check dependencies"
+    exit 1
+fi
+
 # Initialize token if not already done
-if ! pkcs11-tool --module "$MODULE" --list-token-slots 2>/dev/null | grep -q "$TOKEN_LABEL"; then
+if pkcs11-tool --module "$MODULE" --list-token-slots 2>/dev/null | grep -q "$TOKEN_LABEL"; then
+    echo "Token ${TOKEN_LABEL} already initialized."
+else
     echo "Initializing Kryoptic token: ${TOKEN_LABEL}"
     pkcs11-tool --module "$MODULE" \
-        --init-token --label "$TOKEN_LABEL" --so-pin "$SO_PIN"
+        --init-token --label "$TOKEN_LABEL" --so-pin "$SO_PIN" || {
+        echo "ERROR: Token initialization failed. Listing available slots:"
+        pkcs11-tool --module "$MODULE" --list-slots 2>&1 || true
+        exit 1
+    }
 
     pkcs11-tool --module "$MODULE" \
         --token-label "$TOKEN_LABEL" --so-pin "$SO_PIN" \
         --init-pin --pin "$USER_PIN"
 
     echo "Token initialized."
-else
-    echo "Token ${TOKEN_LABEL} already initialized."
 fi
 
 # Generate CA key if not already present
