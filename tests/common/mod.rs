@@ -117,7 +117,7 @@ impl TestServer {
             .await
             .expect("failed to init test DB pool");
 
-        kipuka::db::run_migrations(&db)
+        kipuka::db::run_migrations(&db, db_kind)
             .await
             .expect("failed to run test DB migrations");
 
