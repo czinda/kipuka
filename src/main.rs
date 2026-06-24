@@ -44,6 +44,11 @@ struct Cli {
 
 #[tokio::main]
 async fn main() {
+    // ── Crypto provider (required by rustls before any TLS operations) ──────
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("failed to install rustls crypto provider");
+
     // ── sqlx driver registration (required for AnyPool) ─────────────────────
     sqlx::any::install_default_drivers();
 
