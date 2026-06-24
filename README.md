@@ -12,7 +12,7 @@ inspired by the [Akamu](https://codeberg.org/abbra/akamu) ACME server.
 
 | | |
 |---|---|
-| **Container image** | `registry.kipuka.dev/kipuka` |
+| **Container image** | `registry.kipuka.dev/heebus/kipuka` |
 | **API docs** | [kipuka.dev/api/](https://kipuka.dev/api/) |
 | **Project site** | [kipuka.dev](https://kipuka.dev) |
 | **CI/CD** | GitLab CI on `gitlab.heebh.st` and `gitlab.cee.redhat.com` |
@@ -44,18 +44,18 @@ inspired by the [Akamu](https://codeberg.org/abbra/akamu) ACME server.
 
 ```bash
 # Pull the container image (no login required)
-podman pull registry.kipuka.dev/kipuka:latest        # x86_64
-podman pull registry.kipuka.dev/kipuka:latest-arm64   # arm64
+podman pull registry.kipuka.dev/heebus/kipuka:latest        # x86_64
+podman pull registry.kipuka.dev/heebus/kipuka:latest-arm64   # arm64
 
 # Verify the image
-podman run --rm registry.kipuka.dev/kipuka:latest --version
+podman run --rm registry.kipuka.dev/heebus/kipuka:latest --version
 
 # Run with a configuration file
 podman run --rm \
   -v ./kipuka.toml:/etc/kipuka/kipuka.toml:ro \
   -v ./certs:/etc/kipuka/certs:ro \
   -p 9443:9443 \
-  registry.kipuka.dev/kipuka:latest
+  registry.kipuka.dev/heebus/kipuka:latest
 ```
 
 ### Build from source
@@ -200,7 +200,7 @@ definitions in [`.gitlab/ci/`](.gitlab/ci/).
 | **test** | Unit tests, protocol-specific tests |
 | **security** | `cargo audit`, license compliance, FIPS validation |
 | **integration** | Dogtag PKI end-to-end, EST interop (idm-ci / Beaker) |
-| **package** | OCI container image (`registry.kipuka.dev/kipuka`), RPM (placeholder) |
+| **package** | OCI container image (`registry.kipuka.dev/heebus/kipuka`), RPM (placeholder) |
 | **deploy** | Beaker hardware tests, GitLab Pages ([kipuka.dev](https://kipuka.dev)) |
 
 ## Requirements Tracking
