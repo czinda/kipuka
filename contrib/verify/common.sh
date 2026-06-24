@@ -18,12 +18,15 @@ failed=0
 skipped=0
 
 # ── API configuration ──────────────────────────────────────────────────
-EST_URL="https://localhost:9443/.well-known/est"
-ADMIN_URL="https://localhost:9443/admin"
+export EST_URL="https://localhost:9443/.well-known/est"
+export ADMIN_URL="https://localhost:9443/admin"
 ADMIN_AUTH=(-H "Authorization: Bearer admin-dev-token")
 CA_CERT="$(cd "$(dirname "$0")/../local-dev" && pwd)/ca/ca.pem"
+export CA_CERT
 AGENT_CERT="$(cd "$(dirname "$0")/../local-dev" && pwd)/tls/agent.pem"
+export AGENT_CERT
 AGENT_KEY="$(cd "$(dirname "$0")/../local-dev" && pwd)/tls/agent-key.pem"
+export AGENT_KEY
 TMPDIR="${TMPDIR:-/tmp}/kipuka-verify-$$"
 mkdir -p "$TMPDIR"
 

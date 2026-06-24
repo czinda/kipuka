@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034
 # ═══════════════════════════════════════════════════════════════════════
 # Kipuka EST Server — STAR Certificate Verification (RFC 8739)
 # ═══════════════════════════════════════════════════════════════════════
