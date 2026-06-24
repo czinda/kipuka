@@ -72,6 +72,37 @@ else
     echo "Key ${KEY_LABEL} already exists."
 fi
 
+# Generate self-signed CA certificate from HSM key.
+# Uses OpenSSL with the PKCS#11 engine to sign with the HSM-resident key.
+CA_CERT="${TOKEN_DIR}/ca.pem"
+if [ ! -f "${CA_CERT}" ]; then
+    CA_CN="${CA_CN:-Kipuka HSM CA}"
+    CA_ORG="${CA_ORG:-Kipuka}"
+    CA_DAYS="${CA_DAYS:-3650}"
+    PKCS11_KEY_URI="pkcs11:token=${TOKEN_LABEL};object=${KEY_LABEL};type=private;pin-value=${USER_PIN}"
+
+    echo "Generating self-signed CA certificate from HSM key..."
+    openssl req -new -x509 \
+        -engine pkcs11 -keyform engine \
+        -key "${PKCS11_KEY_URI}" \
+        -out "${CA_CERT}" \
+        -days "${CA_DAYS}" \
+        -subj "/CN=${CA_CN}/O=${CA_ORG}/C=US" \
+        -addext "basicConstraints=critical,CA:TRUE" \
+        -addext "keyUsage=critical,keyCertSign,cRLSign" \
+        -sha256 2>&1 && {
+        echo "CA certificate generated: ${CA_CERT}"
+        openssl x509 -in "${CA_CERT}" -noout -subject -issuer -dates 2>/dev/null || true
+    } || {
+        echo "WARNING: CA certificate generation failed."
+        echo "  The PKCS#11 engine may not be available."
+        echo "  Generate the CA cert manually using setup-ca-hsm.sh."
+    }
+else
+    echo "CA certificate already exists: ${CA_CERT}"
+    openssl x509 -in "${CA_CERT}" -noout -subject -dates 2>/dev/null || true
+fi
+
 # Show token info
 echo ""
 echo "=== Kryoptic Token Info ==="
@@ -84,6 +115,7 @@ echo ""
 echo "PKCS#11 module: ${MODULE}"
 echo "Token label:    ${TOKEN_LABEL}"
 echo "PKCS#11 URI:    pkcs11:token=${TOKEN_LABEL};object=${KEY_LABEL};type=private"
+echo "CA certificate: ${CA_CERT}"
 echo ""
 echo "Kryoptic ready. Container will stay running."
 

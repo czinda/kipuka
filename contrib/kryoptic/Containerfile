@@ -22,6 +22,7 @@ FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y \
     ca-certificates libssl3t64 opensc sqlite3 p11-kit \
+    openssl libengine-pkcs11-openssl gnutls-bin \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /build/target/release/libkryoptic_pkcs11.so /usr/lib/pkcs11/libkryoptic_pkcs11.so

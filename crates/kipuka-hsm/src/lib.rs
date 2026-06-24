@@ -166,21 +166,109 @@ pub use slot::HsmSlot;
 /// High-level HSM context wrapping PKCS#11 initialization and provider config.
 ///
 /// Used by `AppState` to hold the HSM connection for the server lifetime.
+/// When fully initialized, holds a logged-in PKCS#11 session for signing.
 pub struct HsmContext {
     pub context: Pkcs11Context,
     pub provider: HsmProvider,
+    /// Active logged-in session for signing operations.
+    ///
+    /// Wrapped in a `Mutex` because `Session` is not `Send`+`Sync` and
+    /// signing requires `&Session` (which takes a lock internally).
+    session: std::sync::Mutex<Option<cryptoki::session::Session>>,
+    /// The slot used for this context (needed for opening new sessions).
+    #[allow(dead_code)]
+    slot: Option<HsmSlot>,
 }
 
+// Safety: The `Session` inside `Mutex` is only accessed while locked.
+// The cryptoki `Session` is `!Send` but we only use it from within a
+// synchronous `Mutex::lock()` guard, which is safe for `Send`+`Sync`.
+unsafe impl Send for HsmContext {}
+unsafe impl Sync for HsmContext {}
+
 impl HsmContext {
-    pub fn new(context: Pkcs11Context, provider: HsmProvider) -> Self {
-        Self { context, provider }
+    /// Create a new HSM context with a logged-in session ready for signing.
+    pub fn new(
+        context: Pkcs11Context,
+        provider: HsmProvider,
+        slot: HsmSlot,
+        session: cryptoki::session::Session,
+    ) -> Self {
+        Self {
+            context,
+            provider,
+            session: std::sync::Mutex::new(Some(session)),
+            slot: Some(slot),
+        }
     }
 
     pub fn placeholder() -> Self {
         Self {
             context: Pkcs11Context::placeholder(),
             provider: HsmProvider::Kryoptic,
+            session: std::sync::Mutex::new(None),
+            slot: None,
         }
+    }
+
+    /// Sign data using the HSM key identified by label.
+    ///
+    /// Uses `CKM_SHA256_RSA_PKCS` for RSA keys (the mechanism hashes
+    /// and signs in one operation, so `data` is the raw TBS bytes).
+    ///
+    /// # Arguments
+    ///
+    /// * `key_label` - CKA_LABEL of the private key in the token
+    /// * `data` - data to sign (raw TBS certificate bytes)
+    /// * `hash_algorithm` - hash algorithm name ("sha256", "sha384", "sha512")
+    pub fn sign_data(
+        &self,
+        key_label: &str,
+        data: &[u8],
+        hash_algorithm: &str,
+    ) -> HsmResult<Vec<u8>> {
+        use cryptoki::mechanism::Mechanism;
+        use cryptoki::object::{Attribute, ObjectClass};
+
+        let guard = self
+            .session
+            .lock()
+            .expect("HsmContext session mutex poisoned");
+        let session = guard.as_ref().ok_or_else(|| {
+            HsmError::LibraryLoad("HSM session not initialized (placeholder context)".into())
+        })?;
+
+        // Find the private key by label.
+        let template = vec![
+            Attribute::Label(key_label.as_bytes().to_vec()),
+            Attribute::Class(ObjectClass::PRIVATE_KEY),
+        ];
+
+        let objects = session
+            .find_objects(&template)
+            .map_err(|e| HsmError::KeyNotFound(format!("Failed to find key '{key_label}': {e}")))?;
+
+        let private_key = objects.into_iter().next().ok_or_else(|| {
+            HsmError::KeyNotFound(format!("Private key '{key_label}' not found in token"))
+        })?;
+
+        // Select the combined hash+sign mechanism based on algorithm.
+        // These mechanisms hash the data internally then sign.
+        let mechanism = match hash_algorithm {
+            "sha256" => Mechanism::Sha256RsaPkcs,
+            "sha384" => Mechanism::Sha384RsaPkcs,
+            "sha512" => Mechanism::Sha512RsaPkcs,
+            other => {
+                return Err(HsmError::UnsupportedMechanism(format!(
+                    "Unsupported hash algorithm for RSA signing: {other}"
+                )));
+            }
+        };
+
+        // Sign the data.
+        session.sign(&mechanism, private_key, data).map_err(|e| {
+            HsmError::SigningFailure(format!("C_Sign failed for key '{key_label}': {e}"))
+        })
     }
 }
 

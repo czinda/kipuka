@@ -35,12 +35,15 @@ use crate::state::CaState;
 /// * `star_manager` - Shared STAR order manager
 /// * `db` - Database pool for persisting renewed certificates
 /// * `cas` - Map of CA states keyed by CA identifier
+/// * `ca_configs` - CA configurations for key material access
+/// * `hsm` - Optional HSM context for HSM-backed signing
 /// * `audit` - Shared audit state for event recording
 pub async fn spawn_renewal_task(
     star_manager: Arc<StarManager>,
     db: sqlx::AnyPool,
     cas: Arc<indexmap::IndexMap<String, Arc<CaState>>>,
     ca_configs: Arc<Vec<CaConfig>>,
+    hsm: Option<Arc<kipuka_hsm::HsmContext>>,
     audit: Arc<AuditState>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -48,7 +51,7 @@ pub async fn spawn_renewal_task(
 
         loop {
             interval.tick().await;
-            renewal_cycle(&star_manager, &db, &cas, &ca_configs, &audit).await;
+            renewal_cycle(&star_manager, &db, &cas, &ca_configs, hsm.as_ref(), &audit).await;
         }
     })
 }
@@ -59,6 +62,7 @@ async fn renewal_cycle(
     db: &sqlx::AnyPool,
     cas: &indexmap::IndexMap<String, Arc<CaState>>,
     ca_configs: &[CaConfig],
+    hsm: Option<&Arc<kipuka_hsm::HsmContext>>,
     audit: &AuditState,
 ) {
     let span = tracing::info_span!("star_renewal_cycle");
@@ -117,11 +121,48 @@ async fn renewal_cycle(
             ..EnrollmentProfile::default()
         };
 
-        // Load the CA private key PEM for signing.
+        // Resolve key material — HSM-backed or PEM from disk.
         let ca_cfg = ca_configs.iter().find(|c| c.id == order.ca_id);
-        let ca_key_pem = match ca_cfg {
+        let ca_key_pem: Vec<u8>;
+        let key_label_owned: String;
+
+        let signing_key = match ca_cfg {
+            Some(cfg) if cfg.is_hsm_backed() => match hsm {
+                Some(hsm_ctx) => {
+                    key_label_owned = match crate::routes::simpleenroll::parse_pkcs11_object_label(
+                        cfg.pkcs11_uri.as_deref().unwrap(),
+                    ) {
+                        Ok(l) => l,
+                        Err(e) => {
+                            warn!(
+                                order_id = %id,
+                                error = %e,
+                                "invalid pkcs11_uri for STAR renewal — skipping"
+                            );
+                            failed += 1;
+                            continue;
+                        }
+                    };
+                    issue::CaSigningKey::Hsm {
+                        context: hsm_ctx,
+                        key_label: &key_label_owned,
+                    }
+                }
+                None => {
+                    warn!(
+                        order_id = %id,
+                        ca_id = %order.ca_id,
+                        "HSM not configured but CA has pkcs11_uri — skipping"
+                    );
+                    failed += 1;
+                    continue;
+                }
+            },
             Some(cfg) => match std::fs::read(&cfg.key_file) {
-                Ok(pem) => pem,
+                Ok(pem) => {
+                    ca_key_pem = pem;
+                    issue::CaSigningKey::Pem(&ca_key_pem)
+                }
                 Err(e) => {
                     warn!(
                         order_id = %id,
@@ -149,7 +190,7 @@ async fn renewal_cycle(
             &order.csr_der,
             &profile,
             &ca.cert_der,
-            &ca_key_pem,
+            signing_key,
             &ca.hash_algorithm,
         ) {
             Ok(result) => {

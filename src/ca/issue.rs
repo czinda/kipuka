@@ -7,6 +7,8 @@
 //! Certificate signing uses the `synta-certificate` `CertificateBuilder`
 //! with `OpensslCertificateSigner` for the actual cryptographic operations.
 
+use std::sync::Arc;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -61,6 +63,22 @@ pub struct IssuanceResult {
     pub not_before: DateTime<Utc>,
     /// Not After timestamp.
     pub not_after: DateTime<Utc>,
+}
+
+/// CA signing key — either a PEM key from disk or an HSM-backed key.
+///
+/// When `Hsm` is used, the private key never leaves the HSM; signing
+/// is performed via PKCS#11 `C_Sign` operations.
+pub enum CaSigningKey<'a> {
+    /// PEM-encoded private key loaded from disk.
+    Pem(&'a [u8]),
+    /// HSM-backed private key accessed via PKCS#11.
+    Hsm {
+        /// Reference to the HSM context with an active session.
+        context: &'a Arc<kipuka_hsm::HsmContext>,
+        /// Object label of the private key in the PKCS#11 token.
+        key_label: &'a str,
+    },
 }
 
 /// Enrollment profile defining constraints for issued certificates.
@@ -197,7 +215,7 @@ const OID_TLS_FEATURE_COMPONENTS: &[u32] = &[1, 3, 6, 1, 5, 5, 7, 1, 24];
 /// * `csr_der` - DER-encoded PKCS#10 Certificate Signing Request
 /// * `profile` - Enrollment profile with constraints to apply
 /// * `ca_cert_der` - DER-encoded CA certificate (for issuer DN and AKI)
-/// * `ca_key_pem` - PEM-encoded CA private key for signing
+/// * `signing_key` - CA signing key (PEM from disk or HSM-backed)
 /// * `hash_algorithm` - Hash algorithm name (e.g. "sha256")
 ///
 /// # Returns
@@ -207,7 +225,7 @@ pub fn issue_certificate(
     csr_der: &[u8],
     profile: &EnrollmentProfile,
     ca_cert_der: &[u8],
-    ca_key_pem: &[u8],
+    signing_key: CaSigningKey<'_>,
     hash_algorithm: &str,
 ) -> Result<IssuanceResult, IssuanceError> {
     // Step 1: Parse and validate CSR.
@@ -249,11 +267,22 @@ pub fn issue_certificate(
         .to_der()
         .map_err(|e| IssuanceError::SigningError(format!("CA SPKI encode failed: {e}")))?;
 
-    // Step 7: Load the CA private key from PEM.
-    let ca_pkey = synta_certificate::BackendPrivateKey::from_pem(ca_key_pem, None)
-        .map_err(|e| IssuanceError::SigningError(format!("CA key parse failed: {e}")))?;
-
-    debug!("loaded CA private key from PEM");
+    // Step 7: Prepare the signing backend (PEM or HSM).
+    let pem_key: Option<synta_certificate::BackendPrivateKey>;
+    match &signing_key {
+        CaSigningKey::Pem(pem) => {
+            pem_key = Some(
+                synta_certificate::BackendPrivateKey::from_pem(pem, None).map_err(|e| {
+                    IssuanceError::SigningError(format!("CA key parse failed: {e}"))
+                })?,
+            );
+            debug!("loaded CA private key from PEM");
+        }
+        CaSigningKey::Hsm { key_label, .. } => {
+            pem_key = None;
+            debug!(key_label = %key_label, "using HSM-backed CA signing key");
+        }
+    }
 
     // Step 8: Generate serial number — 20 bytes of random data (RFC 5280 §4.1.2.2
     // recommends at least 64 bits of entropy; we use 159 bits with leading 0 for positive).
@@ -351,12 +380,29 @@ pub fn issue_certificate(
         );
     }
 
-    // Step 11: Sign the certificate with the CA private key.
-    use synta_certificate::PrivateKey as _;
-    let signer = ca_pkey.as_signer(hash_algorithm);
-    let cert_der = builder
-        .sign(&signer)
-        .map_err(|e| IssuanceError::SigningError(format!("certificate signing failed: {e}")))?;
+    // Step 11: Sign the certificate.
+    let cert_der = match &signing_key {
+        CaSigningKey::Pem(_) => {
+            // PEM path: use the synta-certificate OpenSSL signer.
+            use synta_certificate::PrivateKey as _;
+            let ca_pkey = pem_key.as_ref().expect("PEM key loaded in step 7");
+            let signer = ca_pkey.as_signer(hash_algorithm);
+            builder.sign(&signer).map_err(|e| {
+                IssuanceError::SigningError(format!("certificate signing failed: {e}"))
+            })?
+        }
+        CaSigningKey::Hsm { context, key_label } => {
+            // HSM path: build TBS, sign via PKCS#11, assemble.
+            let hsm_signer = HsmCertificateSigner {
+                context,
+                key_label,
+                hash_algorithm,
+            };
+            builder.sign(&hsm_signer).map_err(|e| {
+                IssuanceError::SigningError(format!("HSM certificate signing failed: {e}"))
+            })?
+        }
+    };
 
     // Step 12: Format subject DN for logging and DB storage.
     let subject_dn = synta_certificate::format_dn(&csr_subject_der);
@@ -583,6 +629,83 @@ fn check_validity_period(profile: &EnrollmentProfile) -> Result<(), IssuanceErro
     }
 
     Ok(())
+}
+
+// ── HSM CertificateSigner ────────────────────────────────────────────────────
+
+/// `CertificateSigner` implementation that delegates signing to a PKCS#11 HSM.
+///
+/// Uses `CKM_SHA256_RSA_PKCS` (or SHA-384/SHA-512 variants) which hashes
+/// the TBS data and signs in a single PKCS#11 `C_Sign` operation.
+struct HsmCertificateSigner<'a> {
+    context: &'a Arc<kipuka_hsm::HsmContext>,
+    key_label: &'a str,
+    hash_algorithm: &'a str,
+}
+
+/// Error type for HSM signing operations in the CertificateSigner trait.
+#[derive(Debug)]
+struct HsmSignerError(String);
+
+impl std::fmt::Display for HsmSignerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for HsmSignerError {}
+
+impl<'a> synta_certificate::CertificateSigner for HsmCertificateSigner<'a> {
+    type Error = HsmSignerError;
+
+    fn signature_algorithm_der(&self) -> Result<Vec<u8>, Self::Error> {
+        // Return the DER-encoded AlgorithmIdentifier for SHA-256 with RSA.
+        //
+        // AlgorithmIdentifier ::= SEQUENCE {
+        //   algorithm   OBJECT IDENTIFIER,
+        //   parameters  ANY OPTIONAL
+        // }
+        //
+        // sha256WithRSAEncryption: OID 1.2.840.113549.1.1.11
+        // Parameters: NULL
+        match self.hash_algorithm {
+            "sha256" => {
+                // OID 1.2.840.113549.1.1.11 + NULL params
+                Ok(vec![
+                    0x30, 0x0d, // SEQUENCE, length 13
+                    0x06, 0x09, // OID, length 9
+                    0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01,
+                    0x0b, // sha256WithRSAEncryption
+                    0x05, 0x00, // NULL
+                ])
+            }
+            "sha384" => {
+                // OID 1.2.840.113549.1.1.12 + NULL params
+                Ok(vec![
+                    0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0c,
+                    0x05, 0x00,
+                ])
+            }
+            "sha512" => {
+                // OID 1.2.840.113549.1.1.13 + NULL params
+                Ok(vec![
+                    0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0d,
+                    0x05, 0x00,
+                ])
+            }
+            other => Err(HsmSignerError(format!(
+                "unsupported hash algorithm for HSM RSA signing: {other}"
+            ))),
+        }
+    }
+
+    fn sign_tbs(&self, tbs_der: &[u8]) -> Result<Vec<u8>, Self::Error> {
+        // CKM_SHA256_RSA_PKCS (and variants) hash the data internally,
+        // so we pass the raw TBS bytes directly.
+        self.context
+            .sign_data(self.key_label, tbs_der, self.hash_algorithm)
+            .map_err(|e| HsmSignerError(format!("PKCS#11 sign failed: {e}")))
+    }
 }
 
 /// Verify that required extensions are configured.

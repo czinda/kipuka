@@ -147,10 +147,63 @@ async fn run() -> Result<(), String> {
     };
 
     // ── HSM context ──────────────────────────────────────────────────────────
-    let hsm = config.hsm.as_ref().map(|_hsm_cfg| {
-        tracing::info!("initializing HSM context");
-        Arc::new(kipuka_hsm::HsmContext::placeholder())
-    });
+    let hsm = if let Some(hsm_cfg) = config.hsm.as_ref() {
+        tracing::info!(
+            provider = ?hsm_cfg.provider,
+            library = %hsm_cfg.library_path,
+            "initializing HSM context"
+        );
+
+        let ctx = kipuka_hsm::Pkcs11Context::new(&hsm_cfg.library_path)
+            .map_err(|e| format!("PKCS#11 library load failed: {e}"))?;
+
+        // Log library info.
+        if let Ok(info) = ctx.library_info() {
+            tracing::info!(info = %info, "PKCS#11 library loaded");
+        }
+
+        // Find the HSM slot by token label or slot ID.
+        let slot = if let Some(ref label) = hsm_cfg.token_label {
+            kipuka_hsm::HsmSlot::find_by_label(&ctx, label)
+                .map_err(|e| format!("HSM slot lookup by label '{label}' failed: {e}"))?
+        } else {
+            kipuka_hsm::HsmSlot::find_first_slot(&ctx)
+                .map_err(|e| format!("HSM slot enumeration failed: {e}"))?
+        };
+
+        if let Ok(info) = slot.token_info() {
+            tracing::info!(info = %info, "PKCS#11 token found");
+        }
+
+        // Open a read-write session and login.
+        let session = slot
+            .open_rw_session()
+            .map_err(|e| format!("PKCS#11 session open failed: {e}"))?;
+
+        let pin = hsm_cfg
+            .resolve_pin()
+            .map_err(|e| format!("HSM PIN resolution failed: {e}"))?;
+
+        slot.login(&session, &pin)
+            .map_err(|e| format!("PKCS#11 login failed: {e}"))?;
+
+        tracing::info!("PKCS#11 session logged in — HSM ready for signing");
+
+        // Map config provider to HSM crate provider.
+        let provider = match hsm_cfg.provider {
+            kipuka::config::HsmProvider::Entrust => kipuka_hsm::HsmProvider::Entrust,
+            kipuka::config::HsmProvider::Utimaco => kipuka_hsm::HsmProvider::Utimaco,
+            kipuka::config::HsmProvider::Kryoptic => kipuka_hsm::HsmProvider::Kryoptic,
+            kipuka::config::HsmProvider::ThalesCsp => kipuka_hsm::HsmProvider::ThalesCsp,
+            kipuka::config::HsmProvider::ThalesTct => kipuka_hsm::HsmProvider::ThalesTct,
+        };
+
+        Some(Arc::new(kipuka_hsm::HsmContext::new(
+            ctx, provider, slot, session,
+        )))
+    } else {
+        None
+    };
 
     // ── Audit state ──────────────────────────────────────────────────────────
     let audit = Arc::new(AuditState::new());
