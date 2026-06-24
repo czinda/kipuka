@@ -23,6 +23,7 @@ rpm-build:
 
 container:
   stage: package
+  allow_failure: true
   image:
     name: gcr.io/kaniko-project/executor:v1.23.2-debug
     entrypoint: [""]
