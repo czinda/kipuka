@@ -1288,6 +1288,7 @@ dependencies = [
  "clap",
  "dashmap",
  "hyper",
+ "hyper-util",
  "indexmap",
  "kipuka-est",
  "kipuka-hsm",

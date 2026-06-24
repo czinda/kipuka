@@ -28,6 +28,7 @@ axum-extra = { version = "0.10", features = ["typed-header"] }
 tower = { version = "0.5", features = ["full"] }
 tower-http = { version = "0.6", features = ["trace", "limit", "cors"] }
 hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["tokio", "server-auto", "http1", "http2"] }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -109,6 +110,7 @@ axum-extra.workspace = true
 tower.workspace = true
 tower-http.workspace = true
 hyper.workspace = true
+hyper-util.workspace = true
 tokio.workspace = true
 rustls.workspace = true
 tokio-rustls.workspace = true

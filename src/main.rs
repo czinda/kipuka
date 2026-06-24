@@ -244,14 +244,59 @@ async fn serve_tls(
     app: axum::Router,
     shutdown_timeout_secs: u64,
 ) -> Result<(), String> {
-    // TLS accept loop — a production implementation would use
-    // hyper::server::conn or axum_server.  This placeholder waits
-    // for shutdown to allow the rest of the startup to be validated.
-    let _ = (listener, acceptor, app, shutdown_timeout_secs);
-    tracing::warn!("TLS accept loop not yet fully implemented — use a reverse proxy for now");
-    tokio::signal::ctrl_c()
-        .await
-        .map_err(|e| format!("signal error: {e}"))?;
+    use hyper_util::rt::TokioIo;
+    use tower::Service;
+
+    let shutdown = shutdown_signal(shutdown_timeout_secs);
+    tokio::pin!(shutdown);
+
+    loop {
+        tokio::select! {
+            result = listener.accept() => {
+                let (tcp_stream, peer_addr) = result
+                    .map_err(|e| format!("accept error: {e}"))?;
+
+                let acceptor = acceptor.clone();
+                let mut app = app.clone();
+
+                tokio::spawn(async move {
+                    let tls_stream = match acceptor.accept(tcp_stream).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            tracing::debug!(
+                                peer = %peer_addr,
+                                error = %e,
+                                "TLS handshake failed"
+                            );
+                            return;
+                        }
+                    };
+
+                    let io = TokioIo::new(tls_stream);
+                    let hyper_svc = hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                        let mut svc = app.clone();
+                        async move {
+                            svc.call(req).await
+                        }
+                    });
+
+                    if let Err(e) = hyper_util::server::conn::auto::Builder::new(
+                        hyper_util::rt::TokioExecutor::new(),
+                    )
+                    .serve_connection(io, hyper_svc)
+                    .await
+                    {
+                        tracing::debug!(peer = %peer_addr, error = %e, "connection error");
+                    }
+                });
+            }
+            _ = &mut shutdown => {
+                tracing::info!("shutdown signal received, stopping TLS server");
+                break;
+            }
+        }
+    }
+
     Ok(())
 }
 
