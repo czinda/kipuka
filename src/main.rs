@@ -257,7 +257,7 @@ async fn serve_tls(
                     .map_err(|e| format!("accept error: {e}"))?;
 
                 let acceptor = acceptor.clone();
-                let mut app = app.clone();
+                let app = app.clone();
 
                 tokio::spawn(async move {
                     let tls_stream = match acceptor.accept(tcp_stream).await {
