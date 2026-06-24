@@ -39,8 +39,13 @@ tests/keys/
 *.pfx
 *.crt
 *.key
+*.srl
 !tests/fixtures/**/*.pem
 !tests/fixtures/**/*.der
+
+# Local development generated PKI (setup-ca.sh output)
+contrib/local-dev/tls/
+contrib/local-dev/ca/
 
 # Database files
 *.db

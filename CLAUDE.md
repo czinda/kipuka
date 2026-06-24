@@ -13,12 +13,16 @@ Built on the Synta ASN.1/X.509 library. Architecture inspired by Akamu ACME serv
 - Run: `cargo run -- --config kipuka.toml`
 
 ## Architecture
-- Workspace with 4 internal crates: kipuka-est, kipuka-hsm, kipuka-otp, kipuka-util
+- Workspace with 6 internal crates: kipuka-est, kipuka-hsm, kipuka-otp, kipuka-util, kipuka-dogtag, kipuka-coap
 - EST operations: /cacerts, /simpleenroll, /simplereenroll, /fullcmc, /serverkeygen, /csrattrs
-- Multi-CA with HA failover (active-passive, round-robin, weighted)
+- Multi-CA with HA failover (active-passive, round-robin, weighted, latency-based)
 - PKCS#11 HSM integration for CA key protection
-- OTP and mTLS authentication for enrollment
-- SQLite/PostgreSQL/MariaDB database backends
+- Dogtag PKI integration (enrollment, revocation, KRA key generation)
+- OTP, mTLS, and GSSAPI/Kerberos authentication for enrollment
+- SQLite/PostgreSQL/MariaDB database backends (via sqlx Any driver)
+- Container image: registry.heebh.st/heebus/kipuka (x86_64 latest, arm64 latest-arm64)
+- API docs: kipuka.heebh.st (GitLab Pages, cargo doc)
+- CI/CD: GitLab CI on gitlab.heebh.st and gitlab.cee.redhat.com
 
 ## Compliance
 - RFC 7030 (EST), RFC 8951 (EST clarifications), RFC 5272 (CMC)

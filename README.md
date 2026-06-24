@@ -2,31 +2,62 @@
 
 An EST (RFC 7030) enrollment server with Multi-CA High Availability, HSM support,
 and NIAP CA Protection Profile compliance. Built in Rust on the
-[Synta](https://codeberg.org/abbra/synta) ASN.1/X.509 library.
+[Synta](https://codeberg.org/abbra/synta) ASN.1/X.509 library. Architecture
+inspired by the [Akamu](https://codeberg.org/abbra/akamu) ACME server.
 
 > **kipuka** (Hawaiian): an area of older land surrounded by younger lava flows --
 > an island of stability. Like a kipuka preserves established growth amid change,
 > this server provides a stable certificate enrollment service amid evolving
 > security requirements.
 
+| | |
+|---|---|
+| **Container image** | `registry.heebh.st/heebus/kipuka` |
+| **API docs** | [kipuka.heebh.st](https://kipuka.heebh.st) (cargo doc) |
+| **CI/CD** | GitLab CI on `gitlab.heebh.st` and `gitlab.cee.redhat.com` |
+
 ## Features
 
 - **All six RFC 7030 EST operations**: `/cacerts`, `/simpleenroll`, `/simplereenroll`,
   `/fullcmc`, `/serverkeygen`, `/csrattrs`
-- **Multi-CA with HA failover**: active-passive, round-robin, and weighted strategies
+- **Multi-CA with HA failover**: active-passive, round-robin, weighted, and
+  latency-based strategies
 - **HSM support**: Entrust nShield, Utimaco CryptoServer, Kryoptic (dev/test),
   Thales Luna (CSP11/TCT)
+- **Dogtag PKI integration**: REST API client for Red Hat Certificate System
+  (enrollment, revocation, KRA server-side key generation)
 - **OTP authentication**: one-time passwords for initial enrollment with
   configurable expiration, use limits, and per-profile binding
 - **mTLS client authentication**: certificate-based re-enrollment
 - **GSSAPI/Kerberos authentication**: enterprise SSO integration
 - **EST labels**: multiple certificate profiles via path-based label routing
-- **PQC-ready**: architecture supports post-quantum algorithm migration
-  via Synta and PKCS#11
+- **PQC-ready**: ML-DSA signing (FIPS 204), ML-KEM key encapsulation (FIPS 203),
+  and composite hybrid algorithms via Synta and PKCS#11
 - **Audit logging**: NIAP FAU_GEN.1 compliant event recording
-- **Multiple database backends**: SQLite, PostgreSQL, MariaDB
+- **Multiple database backends**: SQLite, PostgreSQL, MariaDB (via sqlx Any driver)
+- **idm-ci integration**: Beaker-based testing with Dogtag PKI on RHEL 10
 
 ## Quick Start
+
+### Container (fastest)
+
+```bash
+# Pull the container image
+podman pull registry.heebh.st/heebus/kipuka:latest        # x86_64
+podman pull registry.heebh.st/heebus/kipuka:latest-arm64   # arm64
+
+# Verify the image
+podman run --rm registry.heebh.st/heebus/kipuka:latest --version
+
+# Run with a configuration file
+podman run --rm \
+  -v ./kipuka.toml:/etc/kipuka/kipuka.toml:ro \
+  -v ./certs:/etc/kipuka/certs:ro \
+  -p 9443:9443 \
+  registry.heebh.st/heebus/kipuka:latest
+```
+
+### Build from source
 
 ```bash
 # Build
@@ -98,6 +129,8 @@ detailed per-vendor configuration and known limitations.
 
 ## Architecture
 
+Cargo workspace with 6 internal crates:
+
 ```
                           Clients
                             |
@@ -111,15 +144,63 @@ detailed per-vendor configuration and known limitations.
               |             |             |
          kipuka-otp    kipuka-hsm    kipuka-util
          OTP lifecycle  PKCS#11      shared types
-              |         HSM ops
+              |         HSM ops         & config
               |             |
-         +----+----+   +---+---+
-         |   sqlx  |   | HSM   |
-         | sqlite  |   | PKCS  |
-         | postgres|   | #11   |
-         | mariadb |   +-------+
+              |        kipuka-dogtag
+              |         Dogtag PKI
+              |         REST client
+              |
+         +----+----+       kipuka-coap
+         |   sqlx  |       CoAP transport
+         | sqlite  |       (RFC 7252)
+         | postgres|
+         | mariadb |
          +---------+
 ```
+
+See [`docs/architecture.md`](docs/architecture.md) for detailed component diagrams,
+EST operation data flows, and HSM integration points.
+
+## Development
+
+```bash
+# Build (debug)
+cargo build
+
+# Build (release)
+cargo build --release
+
+# Run tests
+cargo test
+
+# Lint
+cargo clippy --all-features -- -D warnings
+
+# Format check
+cargo fmt --all -- --check
+
+# Run with config
+cargo run -- --config kipuka.toml
+```
+
+See [`docs/PROJECT.md`](docs/PROJECT.md) for EST protocol testing with `curl` and
+`openssl`, HSM development setup with Kryoptic, and database migration procedures.
+
+## CI/CD
+
+GitLab CI pipelines run on both `gitlab.heebh.st` and `gitlab.cee.redhat.com`.
+Pipeline configuration lives in [`.gitlab-ci.yml`](.gitlab-ci.yml) with stage
+definitions in [`.gitlab/ci/`](.gitlab/ci/).
+
+| Stage | Jobs |
+|-------|------|
+| **lint** | `rustfmt`, `clippy`, license audit, shell lint |
+| **build** | Debug build, release build, `cargo doc` |
+| **test** | Unit tests, protocol-specific tests |
+| **security** | `cargo audit`, license compliance, FIPS validation |
+| **integration** | Dogtag PKI end-to-end, EST interop (idm-ci / Beaker) |
+| **package** | OCI container image (`registry.heebh.st/heebus/kipuka`), RPM (placeholder) |
+| **deploy** | Beaker hardware tests, GitLab Pages ([kipuka.heebh.st](https://kipuka.heebh.st)) |
 
 ## Requirements Tracking
 
