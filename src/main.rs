@@ -21,6 +21,7 @@
 
 use std::sync::Arc;
 
+use base64::Engine as _;
 use clap::Parser;
 use indexmap::IndexMap;
 use tracing_subscriber::EnvFilter;
@@ -104,13 +105,33 @@ async fn run() -> Result<(), String> {
     for ca_cfg in &config.cas {
         tracing::info!(ca_id = %ca_cfg.id, "initializing CA");
 
-        // Placeholder CaState — actual key loading will be implemented
-        // in the CA module.
+        let cert_pem = std::fs::read_to_string(&ca_cfg.cert_file)
+            .map_err(|e| format!("failed to read CA cert {}: {e}", ca_cfg.cert_file))?;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let mut cert_chain_der: Vec<Vec<u8>> = Vec::new();
+        let mut rest = cert_pem.as_str();
+        while let Some(start) = rest.find("-----BEGIN CERTIFICATE-----") {
+            let after = &rest[start + 27..];
+            if let Some(end) = after.find("-----END CERTIFICATE-----") {
+                let encoded: String = after[..end].chars().filter(|c| !c.is_whitespace()).collect();
+                let der = b64.decode(&encoded)
+                    .map_err(|e| format!("invalid base64 in CA cert: {e}"))?;
+                cert_chain_der.push(der);
+                rest = &after[end + 25..];
+            } else {
+                break;
+            }
+        }
+        if cert_chain_der.is_empty() {
+            return Err(format!("no certificates found in {}", ca_cfg.cert_file));
+        }
+        let cert_der = cert_chain_der[0].clone();
+
         let ca_state = Arc::new(CaState {
             id: ca_cfg.id.clone(),
             key_type: ca_cfg.key_type.clone(),
-            cert_der: Vec::new(),
-            cert_chain: Vec::new(),
+            cert_der,
+            cert_chain: cert_chain_der,
             hash_algorithm: ca_cfg.hash_algorithm.clone(),
             validity_days: ca_cfg.validity_days,
             crl_url: ca_cfg.crl_url.clone(),
