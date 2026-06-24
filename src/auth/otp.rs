@@ -195,11 +195,13 @@ async fn validate_otp(app: &Arc<AppState>, entity_id: &str, otp_value: &str) -> 
     }
 
     // Atomically increment current_uses.
-    sqlx::query(crate::db::pg_sql("UPDATE otp_tokens SET current_uses = current_uses + 1 WHERE id = ?"))
-        .bind(row.id)
-        .execute(&app.db)
-        .await
-        .map_err(|e| format!("failed to increment OTP usage: {e}"))?;
+    sqlx::query(crate::db::pg_sql(
+        "UPDATE otp_tokens SET current_uses = current_uses + 1 WHERE id = ?",
+    ))
+    .bind(row.id)
+    .execute(&app.db)
+    .await
+    .map_err(|e| format!("failed to increment OTP usage: {e}"))?;
 
     debug!(
         entity_id = %entity_id,

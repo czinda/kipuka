@@ -289,7 +289,8 @@ pub fn issue_certificate(
 
     // Basic Constraints: CA:FALSE (critical, per CA/B Forum BR §7.1.2.7).
     if let Some(bc_der) = synta_certificate::encode_basic_constraints(false, None) {
-        builder = builder.add_extension_oid(synta_certificate::oids::BASIC_CONSTRAINTS, true, &bc_der);
+        builder =
+            builder.add_extension_oid(synta_certificate::oids::BASIC_CONSTRAINTS, true, &bc_der);
     }
 
     // Key Usage (critical, per CA/B Forum BR §7.1.2.1).
@@ -415,9 +416,8 @@ fn chrono_to_synta_time(dt: DateTime<Utc>) -> Result<synta_certificate::Time, St
             .map_err(|e| format!("UtcTime creation failed: {e}"))?;
         Ok(synta_certificate::Time::UtcTime(utc_time))
     } else {
-        let gen_time =
-            synta::GeneralizedTime::new(year, month, day, hour, minute, second, None)
-                .map_err(|e| format!("GeneralizedTime creation failed: {e}"))?;
+        let gen_time = synta::GeneralizedTime::new(year, month, day, hour, minute, second, None)
+            .map_err(|e| format!("GeneralizedTime creation failed: {e}"))?;
         Ok(synta_certificate::Time::GeneralTime(gen_time))
     }
 }
@@ -507,7 +507,11 @@ fn check_key_size(csr_der: &[u8], profile: &EnrollmentProfile) -> Result<(), Iss
 
         match &pk_info {
             synta_certificate::PublicKeyInfo::Rsa { bit_count, .. } => {
-                debug!(algorithm = "RSA", key_bits = bit_count, "CSR public key info");
+                debug!(
+                    algorithm = "RSA",
+                    key_bits = bit_count,
+                    "CSR public key info"
+                );
                 if (*bit_count as u32) < profile.min_rsa_bits {
                     return Err(IssuanceError::KeyTooSmall {
                         algorithm: "RSA".into(),
@@ -522,7 +526,12 @@ fn check_key_size(csr_der: &[u8], profile: &EnrollmentProfile) -> Result<(), Iss
                 ..
             } => {
                 let curve_name = curve_nist_name.unwrap_or("unknown");
-                debug!(algorithm = "EC", curve = curve_name, key_bits = bit_count, "CSR public key info");
+                debug!(
+                    algorithm = "EC",
+                    curve = curve_name,
+                    key_bits = bit_count,
+                    "CSR public key info"
+                );
                 let min_bits: usize = match profile.min_ecdsa_curve.as_str() {
                     "P-256" => 256,
                     "P-384" => 384,
@@ -537,7 +546,11 @@ fn check_key_size(csr_der: &[u8], profile: &EnrollmentProfile) -> Result<(), Iss
                     });
                 }
             }
-            synta_certificate::PublicKeyInfo::Unknown { alg_name, bit_count, .. } => {
+            synta_certificate::PublicKeyInfo::Unknown {
+                alg_name,
+                bit_count,
+                ..
+            } => {
                 debug!(
                     algorithm = %alg_name,
                     key_bits = bit_count,

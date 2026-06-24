@@ -250,14 +250,14 @@ pub async fn record(pool: &sqlx::AnyPool, state: &AuditState, event: AuditEvent)
          VALUES (?, ?, ?, ?, ?, ?)",
     );
     let result = sqlx::query(sql)
-    .bind(event.event_type.as_str())
-    .bind(&event.operator)
-    .bind(&event.subject)
-    .bind(&event.detail)
-    .bind(&event.client_addr)
-    .bind(&event.ca_id)
-    .execute(pool)
-    .await;
+        .bind(event.event_type.as_str())
+        .bind(&event.operator)
+        .bind(&event.subject)
+        .bind(&event.detail)
+        .bind(&event.client_addr)
+        .bind(&event.ca_id)
+        .execute(pool)
+        .await;
 
     if let Err(e) = result {
         tracing::error!(

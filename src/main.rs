@@ -113,8 +113,12 @@ async fn run() -> Result<(), String> {
         while let Some(start) = rest.find("-----BEGIN CERTIFICATE-----") {
             let after = &rest[start + 27..];
             if let Some(end) = after.find("-----END CERTIFICATE-----") {
-                let encoded: String = after[..end].chars().filter(|c| !c.is_whitespace()).collect();
-                let der = b64.decode(&encoded)
+                let encoded: String = after[..end]
+                    .chars()
+                    .filter(|c| !c.is_whitespace())
+                    .collect();
+                let der = b64
+                    .decode(&encoded)
                     .map_err(|e| format!("invalid base64 in CA cert: {e}"))?;
                 cert_chain_der.push(der);
                 rest = &after[end + 25..];
