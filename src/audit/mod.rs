@@ -265,7 +265,7 @@ pub async fn record(pool: &sqlx::AnyPool, state: &AuditState, event: AuditEvent)
         .bind(&event.subject)
         .bind(&detail_json)
         .bind(&event.client_addr)
-        .bind(&event.ca_id)
+        .bind(None::<String>)
         .execute(pool)
         .await;
 

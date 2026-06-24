@@ -28,6 +28,7 @@ use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 use tracing::{debug, warn};
 
 use super::{AuthMethod, AuthResult};
@@ -146,21 +147,6 @@ struct OtpValidationRow {
     max_uses: i64,
 }
 
-/// Constant-time comparison of two equal-length byte slices.
-///
-/// Returns `true` iff the slices are identical.  Runs in time
-/// proportional to `a.len()` regardless of where the first difference
-/// occurs, preventing timing side-channels (RHELBU-3536 R8).
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut acc: u8 = 0;
-    for (x, y) in a.iter().zip(b.iter()) {
-        acc |= x ^ y;
-    }
-    acc == 0
-}
 
 /// Validate an OTP value against the configured backend.
 ///
@@ -188,12 +174,15 @@ async fn validate_otp(app: &Arc<AppState>, entity_id: &str, otp_value: &str) -> 
 
     let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
 
-    // Phase 1: SELECT the stored hash for timing-safe comparison (read pool).
+    // Phase 1: SELECT with token_hash in WHERE to find the exact matching
+    // token. The DB comparison is not timing-safe, but we verify with a
+    // constant-time compare as belt-and-suspenders (Phase 2).
     let row: OtpValidationRow = sqlx::query_as(crate::db::pg_sql(
         "SELECT id, token_hash, current_uses, max_uses FROM otp_tokens \
-         WHERE entity_id = ? AND revoked = ? AND expires_at > ? AND current_uses < max_uses",
+         WHERE entity_id = ? AND token_hash = ? AND revoked = ? AND expires_at > ? AND current_uses < max_uses",
     ))
     .bind(entity_id)
+    .bind(&incoming_hash)
     .bind(false)
     .bind(&now)
     .fetch_optional(&app.db_ro)
@@ -201,8 +190,11 @@ async fn validate_otp(app: &Arc<AppState>, entity_id: &str, otp_value: &str) -> 
     .map_err(|e| format!("database error: {e}"))?
     .ok_or_else(|| "no valid OTP found for this entity".to_string())?;
 
-    // Phase 2: Constant-time comparison in application code (RHELBU-3536 R8).
-    if !constant_time_eq(incoming_hash.as_bytes(), row.token_hash.as_bytes()) {
+    // Phase 2: Constant-time verification in application code (RHELBU-3536 R8).
+    // Belt-and-suspenders: even though the DB matched token_hash in WHERE,
+    // we verify here with a timing-safe comparison to prevent any DB-layer
+    // timing side-channel from leaking hash information.
+    if incoming_hash.as_bytes().ct_eq(row.token_hash.as_bytes()).unwrap_u8() == 0 {
         return Err("no valid OTP found for this entity".to_string());
     }
 
