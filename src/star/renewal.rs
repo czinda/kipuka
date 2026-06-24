@@ -20,6 +20,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::audit::{AuditEvent, AuditEventType, AuditState};
 use crate::ca::issue::{self, EnrollmentProfile};
+use crate::config::CaConfig;
 use crate::star::{StarCertificate, StarManager, StarOrderStatus};
 use crate::state::CaState;
 
@@ -39,6 +40,7 @@ pub async fn spawn_renewal_task(
     star_manager: Arc<StarManager>,
     db: sqlx::AnyPool,
     cas: Arc<indexmap::IndexMap<String, Arc<CaState>>>,
+    ca_configs: Arc<Vec<CaConfig>>,
     audit: Arc<AuditState>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -46,7 +48,7 @@ pub async fn spawn_renewal_task(
 
         loop {
             interval.tick().await;
-            renewal_cycle(&star_manager, &db, &cas, &audit).await;
+            renewal_cycle(&star_manager, &db, &cas, &ca_configs, &audit).await;
         }
     })
 }
@@ -56,6 +58,7 @@ async fn renewal_cycle(
     star_manager: &StarManager,
     db: &sqlx::AnyPool,
     cas: &indexmap::IndexMap<String, Arc<CaState>>,
+    ca_configs: &[CaConfig],
     audit: &AuditState,
 ) {
     let span = tracing::info_span!("star_renewal_cycle");
@@ -114,8 +117,41 @@ async fn renewal_cycle(
             ..EnrollmentProfile::default()
         };
 
+        // Load the CA private key PEM for signing.
+        let ca_cfg = ca_configs.iter().find(|c| c.id == order.ca_id);
+        let ca_key_pem = match ca_cfg {
+            Some(cfg) => match std::fs::read(&cfg.key_file) {
+                Ok(pem) => pem,
+                Err(e) => {
+                    warn!(
+                        order_id = %id,
+                        ca_id = %order.ca_id,
+                        error = %e,
+                        "failed to read CA key for STAR renewal — skipping"
+                    );
+                    failed += 1;
+                    continue;
+                }
+            },
+            None => {
+                warn!(
+                    order_id = %id,
+                    ca_id = %order.ca_id,
+                    "CA config not found for STAR renewal — skipping"
+                );
+                failed += 1;
+                continue;
+            }
+        };
+
         // Issue the renewed certificate.
-        match issue::issue_certificate(&order.csr_der, &profile, &ca.cert_der) {
+        match issue::issue_certificate(
+            &order.csr_der,
+            &profile,
+            &ca.cert_der,
+            &ca_key_pem,
+            &ca.hash_algorithm,
+        ) {
             Ok(result) => {
                 let cert = StarCertificate {
                     serial_number: result.serial_number.clone(),

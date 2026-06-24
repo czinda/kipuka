@@ -27,6 +27,7 @@ use axum::http::request::Parts;
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
+use sha2::{Digest, Sha256};
 use tracing::{debug, warn};
 
 use super::{AuthMethod, AuthResult};
@@ -154,22 +155,67 @@ async fn validate_otp(app: &Arc<AppState>, entity_id: &str, otp_value: &str) -> 
         return Err("OTP authentication is not enabled".into());
     }
 
-    // Look up the OTP in the database.
-    // In a full implementation this calls into `kipuka_otp::validate_and_consume`.
-    let _entity_id = entity_id;
-    let _otp_value = otp_value;
+    // Hash the incoming OTP value with SHA-256 (RHELBU-3536 R11).
+    let incoming_hash = hex::encode(Sha256::digest(otp_value.as_bytes()));
 
-    // TODO: Implement actual OTP lookup and consumption.
-    //
-    // The implementation should:
-    // 1. Query the OTP store (DB or LDAP) for `entity_id`
-    // 2. Verify the OTP value matches (constant-time comparison)
-    // 3. Check expiry: `created_at + ttl_seconds > now`
-    // 4. Check usage count: `usage_count < max_usage`
-    // 5. Atomically increment `usage_count`
-    // 6. Return Ok(()) on success
-    //
-    // kipuka_otp::OtpStore::validate_and_consume(entity_id, otp_value).await
+    // Query for a valid (non-revoked, non-expired, under usage limit) token
+    // matching this entity and hash.
+    let now = chrono::Utc::now().to_rfc3339();
 
-    Err("OTP validation not yet implemented".into())
+    let row: Option<OtpValidationRow> = sqlx::query_as(
+        "SELECT id, token_hash, usage_count, max_usage \
+         FROM otp_tokens \
+         WHERE identity = ? AND revoked = 0 AND expires_at > ? AND usage_count < max_usage",
+    )
+    .bind(entity_id)
+    .bind(&now)
+    .fetch_optional(&app.db_ro)
+    .await
+    .map_err(|e| format!("database error: {e}"))?;
+
+    let row = row.ok_or_else(|| "no valid OTP found for this entity".to_string())?;
+
+    // Constant-time comparison of the hash to prevent timing attacks
+    // (RHELBU-3536 R8).  Both are hex-encoded SHA-256 digests (64 bytes).
+    let stored_bytes = row.token_hash.as_bytes();
+    let incoming_bytes = incoming_hash.as_bytes();
+
+    if stored_bytes.len() != incoming_bytes.len() {
+        return Err("OTP hash mismatch".into());
+    }
+
+    let mut diff: u8 = 0;
+    for (a, b) in stored_bytes.iter().zip(incoming_bytes.iter()) {
+        diff |= a ^ b;
+    }
+
+    if diff != 0 {
+        return Err("OTP token does not match".into());
+    }
+
+    // Atomically increment usage_count.
+    sqlx::query("UPDATE otp_tokens SET usage_count = usage_count + 1 WHERE id = ?")
+        .bind(row.id)
+        .execute(&app.db)
+        .await
+        .map_err(|e| format!("failed to increment OTP usage: {e}"))?;
+
+    debug!(
+        entity_id = %entity_id,
+        otp_id = row.id,
+        new_usage = row.usage_count + 1,
+        max_usage = row.max_usage,
+        "OTP validated and consumed"
+    );
+
+    Ok(())
+}
+
+/// Internal row type for OTP validation queries.
+#[derive(sqlx::FromRow)]
+struct OtpValidationRow {
+    id: i64,
+    token_hash: String,
+    usage_count: i64,
+    max_usage: i64,
 }

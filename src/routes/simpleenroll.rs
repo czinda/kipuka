@@ -109,31 +109,74 @@ pub async fn post_simpleenroll(
     }
 
     // Look up the CA backend.
-    let _ca = state.get_ca(ca_id).ok_or(KipukaError::NotFound)?;
+    let ca = state.get_ca(ca_id).ok_or(KipukaError::NotFound)?;
 
-    // Forward the CSR to the CA for signing.
-    //
-    // TODO: Implement actual certificate issuance via `kipuka_est::issue`.
-    //
-    // The implementation should:
-    // 1. Parse the CSR and extract the public key and requested extensions
-    // 2. Apply the enrollment profile (from label config)
-    // 3. Build the TBSCertificate with the CA's issuer DN
-    // 4. Sign with the CA's private key
-    // 5. Return the DER-encoded certificate
-    //
-    // let cert_der = kipuka_est::issue::sign_csr(ca, &csr_der, &label).await?;
-    let cert_der: Vec<u8> = Vec::new(); // Placeholder
+    // Look up the CA config to get the key_file path.
+    let ca_cfg = state
+        .config
+        .cas
+        .iter()
+        .find(|c| c.id == ca_id)
+        .ok_or_else(|| KipukaError::Ca(format!("CA config not found for id={ca_id}")))?;
 
-    if cert_der.is_empty() {
-        return Err(KipukaError::Ca(
-            "certificate issuance not yet implemented".into(),
-        ));
+    // Read the CA private key PEM from disk.
+    let ca_key_pem = tokio::fs::read(&ca_cfg.key_file)
+        .await
+        .map_err(|e| KipukaError::Ca(format!("failed to read CA key {}: {e}", ca_cfg.key_file)))?;
+
+    // Build the enrollment profile (use defaults for now; a full implementation
+    // would load a named profile from the label config).
+    let profile = crate::ca::issue::EnrollmentProfile {
+        max_validity_days: ca.validity_days.min(398),
+        ..crate::ca::issue::EnrollmentProfile::default()
+    };
+
+    // Issue the certificate.
+    let result = crate::ca::issue::issue_certificate(
+        &csr_der,
+        &profile,
+        &ca.cert_der,
+        &ca_key_pem,
+        &ca.hash_algorithm,
+    )
+    .map_err(|e| KipukaError::Ca(format!("certificate issuance failed: {e}")))?;
+
+    // Store the issued certificate in the database for audit trail.
+    let serial = &result.serial_number;
+    let subject_dn = &result.subject_dn;
+    let issuer_dn = synta_certificate::format_dn(
+        &synta_certificate::Certificate::from_der(&ca.cert_der)
+            .map(|c| c.tbs_certificate.subject.0.to_vec())
+            .unwrap_or_default(),
+    );
+    let not_before_str = result.not_before.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let not_after_str = result.not_after.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+
+    if let Err(e) = sqlx::query(
+        "INSERT INTO certificates (serial, subject_dn, issuer_dn, not_before, not_after, der_encoded, ca_id, profile, status) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active')"
+    )
+    .bind(serial)
+    .bind(subject_dn)
+    .bind(&issuer_dn)
+    .bind(&not_before_str)
+    .bind(&not_after_str)
+    .bind(&result.certificate_der)
+    .bind(ca_id)
+    .bind(&profile.name)
+    .execute(&state.db)
+    .await
+    {
+        // Log but do not fail the enrollment — the certificate was already signed.
+        tracing::error!(error = %e, serial = %serial, "failed to store issued certificate in DB");
     }
 
-    // Wrap the certificate in a PKCS#7 certs-only response.
-    // In a full implementation: kipuka_est::pkcs7::build_certs_only(&[cert_der, ca.cert_der])
-    let pkcs7_der = cert_der; // Placeholder
+    let cert_der = result.certificate_der;
+
+    // Return the DER-encoded certificate directly (base64-wrapped).
+    // A full implementation would wrap in PKCS#7 certs-only:
+    // let pkcs7_der = kipuka_est::pkcs7::build_certs_only(&[cert_der, ca.cert_der]);
+    let pkcs7_der = cert_der;
 
     let body = encode_est_base64(&pkcs7_der);
 

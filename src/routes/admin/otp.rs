@@ -10,7 +10,12 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use rand::RngCore;
+use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use super::AdminAuth;
 use crate::state::AppState;
@@ -135,24 +140,44 @@ pub async fn generate_otp(
     let ttl = req.ttl_seconds.unwrap_or(otp_config.ttl_seconds);
     let max_usage = req.max_usage.unwrap_or(otp_config.max_usage);
 
-    // Generate the OTP token.
-    //
-    // TODO: Generate a cryptographically random OTP with the configured
-    // entropy bits via `kipuka_otp::generate`.
-    //
-    // let otp = kipuka_otp::generate(otp_config.entropy_bits)?;
-    //
-    // Store in the configured backend (DB or LDAP):
-    // kipuka_otp::store::insert(&state.db, &req.entity_id, &otp, ttl, max_usage).await?;
+    // Generate the OTP token with configured entropy.
+    let entropy_bytes = (otp_config.entropy_bits / 8) as usize;
+    let mut raw = vec![0u8; entropy_bytes];
+    OsRng.fill_bytes(&mut raw);
+    let token = URL_SAFE_NO_PAD.encode(&raw);
 
-    let _entropy_bits = otp_config.entropy_bits;
-    let token = "placeholder-otp-token".to_string(); // Placeholder
+    // Hash the token with SHA-256 before storing (RHELBU-3536 R11).
+    let token_hash = hex::encode(Sha256::digest(token.as_bytes()));
 
     let expires_at = {
         let now = chrono::Utc::now();
         let expiry = now + chrono::Duration::seconds(ttl as i64);
         expiry.to_rfc3339()
     };
+
+    // Insert the hashed token into the database.
+    let insert_result = sqlx::query(
+        "INSERT INTO otp_tokens (token_hash, identity, usage_count, max_usage, expires_at) \
+         VALUES (?, ?, 0, ?, ?)",
+    )
+    .bind(&token_hash)
+    .bind(&req.entity_id)
+    .bind(max_usage as i64)
+    .bind(&expires_at)
+    .execute(&state.db)
+    .await;
+
+    if let Err(e) = insert_result {
+        tracing::error!(error = %e, "failed to store OTP token");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": "storage_error",
+                "detail": "Failed to store OTP token"
+            })),
+        )
+            .into_response();
+    }
 
     // Audit log the OTP generation.
     state
@@ -188,10 +213,41 @@ pub async fn list_otps(_admin: AdminAuth, State(state): State<Arc<AppState>>) ->
             .into_response();
     }
 
-    // TODO: Query the OTP store for active (non-expired, non-consumed) OTPs.
-    //
-    // let otps = kipuka_otp::store::list_active(&state.db).await?;
-    let otps: Vec<OtpSummary> = Vec::new(); // Placeholder
+    let now = chrono::Utc::now().to_rfc3339();
+
+    let rows: Vec<OtpRow> = match sqlx::query_as(
+        "SELECT id, identity, expires_at, max_usage, usage_count, created_at \
+         FROM otp_tokens WHERE revoked = 0 AND expires_at > ?",
+    )
+    .bind(&now)
+    .fetch_all(&state.db_ro)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to list OTP tokens");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "storage_error",
+                    "detail": "Failed to query OTP tokens"
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let otps: Vec<OtpSummary> = rows
+        .into_iter()
+        .map(|r| OtpSummary {
+            id: r.id.to_string(),
+            entity_id: r.identity.unwrap_or_default(),
+            expires_at: r.expires_at,
+            max_usage: r.max_usage as u32,
+            usage_count: r.usage_count as u32,
+            created_at: r.created_at,
+        })
+        .collect();
 
     (StatusCode::OK, Json(otps)).into_response()
 }
@@ -216,13 +272,50 @@ pub async fn revoke_otp(
             .into_response();
     }
 
-    // TODO: Delete or mark the OTP as revoked in the store.
-    //
-    // match kipuka_otp::store::revoke(&state.db, &id).await {
-    //     Ok(true) => { /* deleted */ },
-    //     Ok(false) => return (StatusCode::NOT_FOUND, "OTP not found").into_response(),
-    //     Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    // }
+    // Parse the ID as an integer for the database lookup.
+    let otp_id: i64 = match id.parse() {
+        Ok(v) => v,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "invalid_id",
+                    "detail": "OTP id must be a valid integer"
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let result = sqlx::query("UPDATE otp_tokens SET revoked = 1 WHERE id = ?")
+        .bind(otp_id)
+        .execute(&state.db)
+        .await;
+
+    match result {
+        Ok(r) if r.rows_affected() == 0 => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": "not_found",
+                    "detail": "OTP not found"
+                })),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "failed to revoke OTP");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "storage_error",
+                    "detail": "Failed to revoke OTP"
+                })),
+            )
+                .into_response();
+        }
+        _ => {}
+    }
 
     state
         .record_audit_event("otp_revoked", &format!("otp_id={id}"))
@@ -231,4 +324,15 @@ pub async fn revoke_otp(
     tracing::info!(otp_id = %id, "OTP revoked");
 
     StatusCode::NO_CONTENT.into_response()
+}
+
+/// Internal row type for reading OTP records from the database.
+#[derive(sqlx::FromRow)]
+struct OtpRow {
+    id: i64,
+    identity: Option<String>,
+    expires_at: String,
+    max_usage: i64,
+    usage_count: i64,
+    created_at: String,
 }

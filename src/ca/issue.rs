@@ -3,6 +3,9 @@
 //! Implements RFC 7030 §4.2 enrollment and applies profile-based
 //! constraints. Validates CSR contents against CA/B Forum Baseline
 //! Requirements before signing.
+//!
+//! Certificate signing uses the `synta-certificate` `CertificateBuilder`
+//! with `OpensslCertificateSigner` for the actual cryptographic operations.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -178,6 +181,9 @@ pub const TLS_FEATURE_MUST_STAPLE_DER: &[u8] = &[0x30, 0x03, 0x02, 0x01, 0x05];
 /// RFC 7633 Section 4: 1.3.6.1.5.5.7.1.24
 pub const OID_TLS_FEATURE: &str = "1.3.6.1.5.5.7.1.24";
 
+/// OID components for the TLS Feature Extension.
+const OID_TLS_FEATURE_COMPONENTS: &[u32] = &[1, 3, 6, 1, 5, 5, 7, 1, 24];
+
 /// Issue a certificate from a CSR.
 ///
 /// Performs CA/B Forum compliance checks before signing:
@@ -190,7 +196,9 @@ pub const OID_TLS_FEATURE: &str = "1.3.6.1.5.5.7.1.24";
 ///
 /// * `csr_der` - DER-encoded PKCS#10 Certificate Signing Request
 /// * `profile` - Enrollment profile with constraints to apply
-/// * `ca_cert_der` - DER-encoded CA certificate (for AKI)
+/// * `ca_cert_der` - DER-encoded CA certificate (for issuer DN and AKI)
+/// * `ca_key_pem` - PEM-encoded CA private key for signing
+/// * `hash_algorithm` - Hash algorithm name (e.g. "sha256")
 ///
 /// # Returns
 ///
@@ -198,7 +206,9 @@ pub const OID_TLS_FEATURE: &str = "1.3.6.1.5.5.7.1.24";
 pub fn issue_certificate(
     csr_der: &[u8],
     profile: &EnrollmentProfile,
-    _ca_cert_der: &[u8],
+    ca_cert_der: &[u8],
+    ca_key_pem: &[u8],
+    hash_algorithm: &str,
 ) -> Result<IssuanceResult, IssuanceError> {
     // Step 1: Parse and validate CSR.
     validate_csr(csr_der)?;
@@ -212,7 +222,55 @@ pub fn issue_certificate(
     // Step 4: Verify required extensions will be present.
     check_required_extensions(profile)?;
 
-    // Step 5: Build certificate template with profile constraints.
+    // Step 5: Parse the CSR to extract subject and public key.
+    let csr = synta_certificate::csr::CertificationRequest::from_der(csr_der)
+        .map_err(|e| IssuanceError::InvalidCsr(format!("CSR parse failed: {e}")))?;
+
+    let csr_subject_der = csr
+        .certification_request_info
+        .subject
+        .to_der()
+        .map_err(|e| IssuanceError::InvalidCsr(format!("CSR subject encode failed: {e}")))?;
+
+    let csr_spki_der = csr
+        .certification_request_info
+        .subject_pkinfo
+        .to_der()
+        .map_err(|e| IssuanceError::InvalidCsr(format!("CSR SPKI encode failed: {e}")))?;
+
+    // Step 6: Parse the CA certificate to extract issuer DN and SPKI (for AKI).
+    let ca_cert = synta_certificate::Certificate::from_der(ca_cert_der)
+        .map_err(|e| IssuanceError::SigningError(format!("CA cert parse failed: {e}")))?;
+
+    let ca_subject_der = ca_cert.tbs_certificate.subject.0;
+    let ca_spki_der = ca_cert
+        .tbs_certificate
+        .subject_public_key_info
+        .to_der()
+        .map_err(|e| IssuanceError::SigningError(format!("CA SPKI encode failed: {e}")))?;
+
+    // Step 7: Load the CA private key from PEM.
+    let ca_pkey = synta_certificate::BackendPrivateKey::from_pem(ca_key_pem, None)
+        .map_err(|e| IssuanceError::SigningError(format!("CA key parse failed: {e}")))?;
+
+    debug!("loaded CA private key from PEM");
+
+    // Step 8: Generate serial number — 20 bytes of random data (RFC 5280 §4.1.2.2
+    // recommends at least 64 bits of entropy; we use 159 bits with leading 0 for positive).
+    let serial_bytes = generate_serial_bytes();
+    let serial = synta::Integer::from_unsigned_bytes(&serial_bytes);
+    let serial_hex = hex::encode(&serial_bytes);
+
+    // Step 9: Compute validity period.
+    let now = Utc::now();
+    let not_after_chrono = now + chrono::Duration::days(profile.max_validity_days as i64);
+
+    let not_before_time = chrono_to_synta_time(now)
+        .map_err(|e| IssuanceError::SigningError(format!("not_before time conversion: {e}")))?;
+    let not_after_time = chrono_to_synta_time(not_after_chrono)
+        .map_err(|e| IssuanceError::SigningError(format!("not_after time conversion: {e}")))?;
+
+    // Step 10: Build extensions.
     debug!(
         profile = %profile.name,
         max_days = profile.max_validity_days,
@@ -221,46 +279,194 @@ pub fn issue_certificate(
         "building certificate from CSR"
     );
 
-    // Step 5a: RFC 7633 — include TLS Feature Extension (must-staple) when
-    // the profile requests it.  The extension value is a DER-encoded
-    // SEQUENCE { INTEGER 5 } indicating the server MUST staple an OCSP
-    // response during the TLS handshake.
+    let mut builder = synta_certificate::CertificateBuilder::new()
+        .issuer_name(ca_subject_der)
+        .subject_name(&csr_subject_der)
+        .public_key_der(&csr_spki_der)
+        .serial_number(serial)
+        .not_valid_before(not_before_time)
+        .not_valid_after(not_after_time);
+
+    // Basic Constraints: CA:FALSE (critical, per CA/B Forum BR §7.1.2.7).
+    if let Some(bc_der) = synta_certificate::encode_basic_constraints(false, None) {
+        builder = builder.add_extension_oid(synta_certificate::oids::BASIC_CONSTRAINTS, true, &bc_der);
+    }
+
+    // Key Usage (critical, per CA/B Forum BR §7.1.2.1).
+    let ku_bits = profile_key_usage_bits(profile);
+    if let Some(ku_der) = synta_certificate::encode_key_usage(ku_bits) {
+        builder = builder.add_extension_oid(synta_certificate::oids::KEY_USAGE, true, &ku_der);
+    }
+
+    // Extended Key Usage (non-critical).
+    let eku_der = profile_extended_key_usage(profile);
+    if let Some(eku) = eku_der {
+        builder =
+            builder.add_extension_oid(synta_certificate::oids::EXTENDED_KEY_USAGE, false, &eku);
+    }
+
+    // Subject Key Identifier (non-critical, per CA/B Forum BR §7.1.2.7.2).
+    if profile.include_ski {
+        let hasher = synta_certificate::OpensslKeyIdHasher;
+        if let Some(ski_der) = synta_certificate::encode_subject_key_identifier(
+            &csr_spki_der,
+            synta_certificate::KeyIdMethod::Rfc5280Sha1,
+            &hasher,
+        ) {
+            builder = builder.add_extension_oid(
+                synta_certificate::oids::SUBJECT_KEY_IDENTIFIER,
+                false,
+                &ski_der,
+            );
+        }
+    }
+
+    // Authority Key Identifier (non-critical, per CA/B Forum BR §7.1.2.7.3).
+    if profile.include_aki {
+        let hasher = synta_certificate::OpensslKeyIdHasher;
+        if let Some(aki_der) = synta_certificate::encode_authority_key_identifier(
+            &ca_spki_der,
+            synta_certificate::KeyIdMethod::Rfc5280Sha1,
+            &hasher,
+        ) {
+            builder = builder.add_extension_oid(
+                synta_certificate::oids::AUTHORITY_KEY_IDENTIFIER,
+                false,
+                &aki_der,
+            );
+        }
+    }
+
+    // TLS Feature Extension (must-staple) per RFC 7633 §4.
     if profile.must_staple {
         debug!(
             oid = OID_TLS_FEATURE,
             "including TLS Feature Extension (must-staple) per RFC 7633 §4"
         );
-        // TODO: when synta-certificate integration lands, add:
-        //   template.add_extension(OID_TLS_FEATURE, false, TLS_FEATURE_MUST_STAPLE_DER);
-        // The extension is non-critical so clients that do not understand it
-        // will ignore it, but TLS stacks that do (e.g., modern browsers)
-        // will enforce OCSP stapling.
+        builder = builder.add_extension_oid(
+            OID_TLS_FEATURE_COMPONENTS,
+            false,
+            TLS_FEATURE_MUST_STAPLE_DER,
+        );
     }
 
-    // Step 6: Sign certificate with CA key.
-    // TODO: integrate with synta-certificate for actual X.509 construction
-    // and signing. For now, return a placeholder result.
-    let now = Utc::now();
-    let not_after = now + chrono::Duration::days(profile.max_validity_days as i64);
-    let serial = uuid::Uuid::new_v4().to_string().replace('-', "");
+    // Step 11: Sign the certificate with the CA private key.
+    use synta_certificate::PrivateKey as _;
+    let signer = ca_pkey.as_signer(hash_algorithm);
+    let cert_der = builder
+        .sign(&signer)
+        .map_err(|e| IssuanceError::SigningError(format!("certificate signing failed: {e}")))?;
+
+    // Step 12: Format subject DN for logging and DB storage.
+    let subject_dn = synta_certificate::format_dn(&csr_subject_der);
 
     info!(
-        serial = %serial,
+        serial = %serial_hex,
         profile = %profile.name,
-        not_after = %not_after,
-        "certificate issued (signing integration pending)"
+        subject = %subject_dn,
+        not_after = %not_after_chrono,
+        cert_len = cert_der.len(),
+        "certificate issued"
     );
 
-    // Step 7: Store issued cert in database with audit log.
-    // TODO: database integration.
-
     Ok(IssuanceResult {
-        certificate_der: csr_der.to_vec(), // Placeholder: actual cert DER
-        serial_number: serial,
-        subject_dn: "CN=pending".into(), // Extracted from CSR
+        certificate_der: cert_der,
+        serial_number: serial_hex,
+        subject_dn,
         not_before: now,
-        not_after,
+        not_after: not_after_chrono,
     })
+}
+
+/// Generate a 20-byte random serial number suitable for RFC 5280 §4.1.2.2.
+///
+/// The first byte is masked to 0x7F to guarantee the integer is positive
+/// (no leading 0x00 padding needed).  This gives 159 bits of entropy,
+/// well above the 64-bit minimum recommended by CA/B Forum.
+fn generate_serial_bytes() -> Vec<u8> {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let mut bytes = vec![0u8; 20];
+    rng.fill(&mut bytes[..]);
+    // Ensure positive by clearing the high bit.
+    bytes[0] &= 0x7F;
+    // Ensure non-zero first byte.
+    if bytes[0] == 0 {
+        bytes[0] = 1;
+    }
+    bytes
+}
+
+/// Convert a chrono DateTime<Utc> to a synta_certificate::Time.
+///
+/// Per RFC 5280 §4.1.2.5:
+/// - Dates before 2050: use UTCTime (YYMMDDHHMMSSZ)
+/// - Dates from 2050 onward: use GeneralizedTime (YYYYMMDDHHMMSSZ)
+fn chrono_to_synta_time(dt: DateTime<Utc>) -> Result<synta_certificate::Time, String> {
+    let year = dt.format("%Y").to_string().parse::<u16>().unwrap_or(2024);
+    let month = dt.format("%m").to_string().parse::<u8>().unwrap_or(1);
+    let day = dt.format("%d").to_string().parse::<u8>().unwrap_or(1);
+    let hour = dt.format("%H").to_string().parse::<u8>().unwrap_or(0);
+    let minute = dt.format("%M").to_string().parse::<u8>().unwrap_or(0);
+    let second = dt.format("%S").to_string().parse::<u8>().unwrap_or(0);
+
+    if year < 2050 {
+        let utc_time = synta::UtcTime::new(year, month, day, hour, minute, second)
+            .map_err(|e| format!("UtcTime creation failed: {e}"))?;
+        Ok(synta_certificate::Time::UtcTime(utc_time))
+    } else {
+        let gen_time =
+            synta::GeneralizedTime::new(year, month, day, hour, minute, second, None)
+                .map_err(|e| format!("GeneralizedTime creation failed: {e}"))?;
+        Ok(synta_certificate::Time::GeneralTime(gen_time))
+    }
+}
+
+/// Convert profile key usage strings to a bitmask for `encode_key_usage`.
+fn profile_key_usage_bits(profile: &EnrollmentProfile) -> u16 {
+    use synta_certificate::{
+        KEY_USAGE_DATA_ENCIPHERMENT, KEY_USAGE_DIGITAL_SIGNATURE, KEY_USAGE_KEY_AGREEMENT,
+        KEY_USAGE_KEY_ENCIPHERMENT, KEY_USAGE_NON_REPUDIATION,
+    };
+
+    let mut bits: u16 = 0;
+    for ku in &profile.key_usage {
+        match ku.as_str() {
+            "digitalSignature" => bits |= 1 << KEY_USAGE_DIGITAL_SIGNATURE,
+            "nonRepudiation" | "contentCommitment" => bits |= 1 << KEY_USAGE_NON_REPUDIATION,
+            "keyEncipherment" => bits |= 1 << KEY_USAGE_KEY_ENCIPHERMENT,
+            "dataEncipherment" => bits |= 1 << KEY_USAGE_DATA_ENCIPHERMENT,
+            "keyAgreement" => bits |= 1 << KEY_USAGE_KEY_AGREEMENT,
+            other => {
+                warn!(key_usage = %other, "unknown key usage flag in profile; skipping");
+            }
+        }
+    }
+    bits
+}
+
+/// Build Extended Key Usage DER from profile strings.
+fn profile_extended_key_usage(profile: &EnrollmentProfile) -> Option<Vec<u8>> {
+    if profile.extended_key_usage.is_empty() {
+        return None;
+    }
+
+    let mut builder = synta_certificate::ExtendedKeyUsageBuilder::new();
+    for eku in &profile.extended_key_usage {
+        builder = match eku.as_str() {
+            "serverAuth" => builder.server_auth(),
+            "clientAuth" => builder.client_auth(),
+            "codeSigning" => builder.code_signing(),
+            "emailProtection" => builder.email_protection(),
+            "timeStamping" => builder.time_stamping(),
+            "OCSPSigning" | "ocspSigning" => builder.ocsp_signing(),
+            other => {
+                warn!(eku = %other, "unknown extended key usage in profile; skipping");
+                builder
+            }
+        };
+    }
+    builder.build().ok()
 }
 
 /// Validate CSR structure.
@@ -276,21 +482,71 @@ fn validate_csr(csr_der: &[u8]) -> Result<(), IssuanceError> {
         ));
     }
 
-    // TODO: full PKCS#10 parsing with synta crate.
-    debug!(len = csr_der.len(), "CSR structure validated (basic check)");
+    // Verify the CSR can be parsed.
+    synta_certificate::csr::CertificationRequest::from_der(csr_der)
+        .map_err(|e| IssuanceError::InvalidCsr(format!("PKCS#10 parse failed: {e}")))?;
+
+    debug!(len = csr_der.len(), "CSR structure validated");
     Ok(())
 }
 
 /// Check key size from CSR against profile minimums.
 fn check_key_size(csr_der: &[u8], profile: &EnrollmentProfile) -> Result<(), IssuanceError> {
-    // TODO: extract actual key type and size from CSR using synta.
-    // For now, log the check and pass.
-    debug!(
-        csr_len = csr_der.len(),
-        min_rsa = profile.min_rsa_bits,
-        min_ec = %profile.min_ecdsa_curve,
-        "key size check (pending synta integration)"
-    );
+    // Parse the CSR to extract the public key info.
+    if let Ok(csr) = synta_certificate::csr::CertificationRequest::from_der(csr_der) {
+        let spki = &csr.certification_request_info.subject_pkinfo;
+        let alg_oid = spki.algorithm.algorithm.components();
+        let key_bits = spki.subject_public_key.bit_len();
+
+        let pk_info = synta_certificate::decode_public_key_info(
+            &spki.algorithm.algorithm,
+            spki.algorithm.parameters.as_ref(),
+            spki.subject_public_key.as_bytes(),
+            key_bits,
+        );
+
+        match &pk_info {
+            synta_certificate::PublicKeyInfo::Rsa { bit_count, .. } => {
+                debug!(algorithm = "RSA", key_bits = bit_count, "CSR public key info");
+                if (*bit_count as u32) < profile.min_rsa_bits {
+                    return Err(IssuanceError::KeyTooSmall {
+                        algorithm: "RSA".into(),
+                        bits: *bit_count as u32,
+                        min_bits: profile.min_rsa_bits,
+                    });
+                }
+            }
+            synta_certificate::PublicKeyInfo::Ec {
+                bit_count,
+                curve_nist_name,
+                ..
+            } => {
+                let curve_name = curve_nist_name.unwrap_or("unknown");
+                debug!(algorithm = "EC", curve = curve_name, key_bits = bit_count, "CSR public key info");
+                let min_bits: usize = match profile.min_ecdsa_curve.as_str() {
+                    "P-256" => 256,
+                    "P-384" => 384,
+                    "P-521" => 521,
+                    _ => 256,
+                };
+                if *bit_count < min_bits {
+                    return Err(IssuanceError::KeyTooSmall {
+                        algorithm: format!("EC {curve_name}"),
+                        bits: *bit_count as u32,
+                        min_bits: min_bits as u32,
+                    });
+                }
+            }
+            synta_certificate::PublicKeyInfo::Unknown { alg_name, bit_count, .. } => {
+                debug!(
+                    algorithm = %alg_name,
+                    key_bits = bit_count,
+                    alg_oid = ?alg_oid,
+                    "CSR public key: unknown algorithm (skipping size check)"
+                );
+            }
+        }
+    }
     Ok(())
 }
 
