@@ -13,6 +13,7 @@
 #     agent-key.pem   — agent private key
 #
 # Idempotent: skips generation if certs already exist.
+# Use --clean to remove existing certs and regenerate from scratch.
 # ────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
@@ -20,6 +21,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CA_DIR="${SCRIPT_DIR}/ca"
 TLS_DIR="${SCRIPT_DIR}/tls"
+
+# ── Handle --clean flag ────────────────────────────────────────────────
+if [[ "${1:-}" == "--clean" ]] || [[ "${1:-}" == "-c" ]]; then
+    echo "Cleaning existing certificates..."
+    rm -rf "${CA_DIR}" "${TLS_DIR}"
+    echo "Cleaned. Regenerating..."
+fi
 
 # ── Colors (if terminal) ────────────────────────────────────────────────
 if [ -t 1 ]; then
