@@ -136,22 +136,39 @@ pub async fn post_simplereenroll(
     // ).await?;
 
     // Look up the CA backend.
-    let _ca = state.get_ca(ca_id).ok_or(KipukaError::NotFound)?;
+    let ca = state.get_ca(ca_id).ok_or(KipukaError::NotFound)?;
+
+    // Look up the CA config to get the key_file path.
+    let ca_cfg = state
+        .config
+        .cas
+        .iter()
+        .find(|c| c.id == ca_id)
+        .ok_or_else(|| KipukaError::Ca(format!("CA config not found for id={ca_id}")))?;
+
+    // Read the CA private key PEM from disk.
+    let ca_key_pem = tokio::fs::read(&ca_cfg.key_file)
+        .await
+        .map_err(|e| KipukaError::Ca(format!("failed to read CA key {}: {e}", ca_cfg.key_file)))?;
+
+    // Build the enrollment profile.
+    let profile = crate::ca::issue::EnrollmentProfile {
+        max_validity_days: ca.validity_days.min(398),
+        ..crate::ca::issue::EnrollmentProfile::default()
+    };
 
     // Issue the renewed certificate.
-    //
-    // TODO: Implement certificate issuance via `kipuka_est::issue`.
-    // let cert_der = kipuka_est::issue::sign_csr(ca, &csr_der, &label).await?;
-    let cert_der: Vec<u8> = Vec::new(); // Placeholder
+    let result = crate::ca::issue::issue_certificate(
+        &csr_der,
+        &profile,
+        &ca.cert_der,
+        &ca_key_pem,
+        &ca.hash_algorithm,
+    )
+    .map_err(|e| KipukaError::Ca(format!("certificate re-issuance failed: {e}")))?;
 
-    if cert_der.is_empty() {
-        return Err(KipukaError::Ca(
-            "certificate re-issuance not yet implemented".into(),
-        ));
-    }
-
-    // Wrap in PKCS#7 certs-only.
-    let pkcs7_der = cert_der; // Placeholder
+    let cert_der = result.certificate_der;
+    let pkcs7_der = cert_der;
 
     let body = encode_est_base64(&pkcs7_der);
 
