@@ -14,11 +14,14 @@ KEY_TYPE="${KEY_TYPE:-rsa:3072}"
 MODULE="/usr/lib/pkcs11/libkryoptic_pkcs11.so"
 TOKEN_DIR="/var/lib/kryoptic"
 
-# Write Kryoptic configuration — must exist before any PKCS#11 call
+# Write Kryoptic configuration — must exist before any PKCS#11 call.
+# Kryoptic requires [[slots]] entries to expose PKCS#11 slots.
 mkdir -p "${TOKEN_DIR}/tokens"
 cat > "${TOKEN_DIR}/token.conf" << EOF
-[global]
-token_dir = ${TOKEN_DIR}/tokens
+[[slots]]
+slot = 0
+dbtype = "sqlite"
+dbargs = "${TOKEN_DIR}/tokens/slot0.db"
 EOF
 
 export KRYOPTIC_CONF="${TOKEN_DIR}/token.conf"
