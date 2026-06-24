@@ -12,9 +12,10 @@ inspired by the [Akamu](https://codeberg.org/abbra/akamu) ACME server.
 
 | | |
 |---|---|
-| **Container image** | `codeberg.org/czinda/kipuka` |
-| **API docs** | [kipuka.dev](https://kipuka.dev) (cargo doc) |
-| **CI/CD** | GitLab CI on `codeberg.org` and `gitlab.cee.redhat.com` |
+| **Container image** | `registry.kipuka.dev/kipuka` |
+| **API docs** | [kipuka.dev/api/](https://kipuka.dev/api/) |
+| **Project site** | [kipuka.dev](https://kipuka.dev) |
+| **CI/CD** | GitLab CI on `gitlab.heebh.st` and `gitlab.cee.redhat.com` |
 
 ## Features
 
@@ -42,19 +43,19 @@ inspired by the [Akamu](https://codeberg.org/abbra/akamu) ACME server.
 ### Container (fastest)
 
 ```bash
-# Pull the container image
-podman pull codeberg.org/czinda/kipuka:latest        # x86_64
-podman pull codeberg.org/czinda/kipuka:latest-arm64   # arm64
+# Pull the container image (no login required)
+podman pull registry.kipuka.dev/kipuka:latest        # x86_64
+podman pull registry.kipuka.dev/kipuka:latest-arm64   # arm64
 
 # Verify the image
-podman run --rm codeberg.org/czinda/kipuka:latest --version
+podman run --rm registry.kipuka.dev/kipuka:latest --version
 
 # Run with a configuration file
 podman run --rm \
   -v ./kipuka.toml:/etc/kipuka/kipuka.toml:ro \
   -v ./certs:/etc/kipuka/certs:ro \
   -p 9443:9443 \
-  codeberg.org/czinda/kipuka:latest
+  registry.kipuka.dev/kipuka:latest
 ```
 
 ### Build from source
@@ -199,7 +200,7 @@ definitions in [`.gitlab/ci/`](.gitlab/ci/).
 | **test** | Unit tests, protocol-specific tests |
 | **security** | `cargo audit`, license compliance, FIPS validation |
 | **integration** | Dogtag PKI end-to-end, EST interop (idm-ci / Beaker) |
-| **package** | OCI container image (`codeberg.org/czinda/kipuka`), RPM (placeholder) |
+| **package** | OCI container image (`registry.kipuka.dev/kipuka`), RPM (placeholder) |
 | **deploy** | Beaker hardware tests, GitLab Pages ([kipuka.dev](https://kipuka.dev)) |
 
 ## Requirements Tracking

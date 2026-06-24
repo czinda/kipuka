@@ -245,12 +245,13 @@ pub async fn record(pool: &sqlx::AnyPool, state: &AuditState, event: AuditEvent)
         return;
     }
 
-    // Pack ca_id into detail_json alongside the detail text so that
-    // ca_id does not get incorrectly mapped to the session_id column.
+    // Pack detail into detail_json with proper JSON escaping (no
+    // format!() interpolation that could allow injection via quotes or
+    // backslashes in detail/ca_id values).
     let detail_json = match (&event.detail, &event.ca_id) {
-        (Some(d), Some(ca)) => Some(format!(r#"{{"detail":"{}","ca_id":"{}"}}"#, d, ca)),
-        (Some(d), None) => Some(format!(r#"{{"detail":"{}"}}"#, d)),
-        (None, Some(ca)) => Some(format!(r#"{{"ca_id":"{}"}}"#, ca)),
+        (Some(d), Some(ca)) => Some(serde_json::json!({"detail": d, "ca_id": ca}).to_string()),
+        (Some(d), None) => Some(serde_json::json!({"detail": d}).to_string()),
+        (None, Some(ca)) => Some(serde_json::json!({"ca_id": ca}).to_string()),
         (None, None) => None,
     };
 
@@ -264,7 +265,7 @@ pub async fn record(pool: &sqlx::AnyPool, state: &AuditState, event: AuditEvent)
         .bind(&event.subject)
         .bind(&detail_json)
         .bind(&event.client_addr)
-        .bind(None::<String>)
+        .bind(&event.ca_id)
         .execute(pool)
         .await;
 

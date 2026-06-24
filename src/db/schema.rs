@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS otp_tokens (
 
 CREATE INDEX IF NOT EXISTS idx_otp_tokens_entity_id ON otp_tokens (entity_id);
 CREATE INDEX IF NOT EXISTS idx_otp_tokens_expires_at ON otp_tokens (expires_at);
+CREATE INDEX IF NOT EXISTS idx_otp_tokens_hash ON otp_tokens (entity_id, token_hash);
 
 -- Audit event trail (NIAP CA PP FAU_GEN.1)
 CREATE TABLE IF NOT EXISTS audit_events (
@@ -243,6 +244,7 @@ CREATE TABLE IF NOT EXISTS otp_tokens (
 
 CREATE INDEX IF NOT EXISTS idx_otp_tokens_entity_id ON otp_tokens (entity_id);
 CREATE INDEX IF NOT EXISTS idx_otp_tokens_expires_at ON otp_tokens (expires_at);
+CREATE INDEX IF NOT EXISTS idx_otp_tokens_hash ON otp_tokens (entity_id, token_hash);
 
 -- Audit event trail
 CREATE TABLE IF NOT EXISTS audit_events (
@@ -389,6 +391,7 @@ CREATE TABLE IF NOT EXISTS otp_tokens (
 
 CREATE INDEX IF NOT EXISTS idx_otp_tokens_entity_id ON otp_tokens (entity_id);
 CREATE INDEX IF NOT EXISTS idx_otp_tokens_expires_at ON otp_tokens (expires_at);
+CREATE INDEX IF NOT EXISTS idx_otp_tokens_hash ON otp_tokens (entity_id, token_hash);
 
 -- Audit event trail
 CREATE TABLE IF NOT EXISTS audit_events (

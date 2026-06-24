@@ -150,7 +150,8 @@ pub async fn generate_otp(
     let token_hash = hex::encode(Sha256::digest(token.as_bytes()));
 
     let now = chrono::Utc::now();
-    let expires_at = (now + chrono::Duration::seconds(ttl as i64)).to_rfc3339();
+    let expires_at = (now + chrono::Duration::seconds(ttl as i64))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
 
     // Insert the hashed token into the database.
     let insert_result = sqlx::query(crate::db::pg_sql(
@@ -210,7 +211,7 @@ pub async fn list_otps(_admin: AdminAuth, State(state): State<Arc<AppState>>) ->
             .into_response();
     }
 
-    let now = chrono::Utc::now().to_rfc3339();
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
 
     let rows: Vec<OtpRow> = match sqlx::query_as(crate::db::pg_sql(
         "SELECT id, entity_id, expires_at, max_uses, current_uses, created_at \
@@ -286,9 +287,10 @@ pub async fn revoke_otp(
     };
 
     let result = sqlx::query(crate::db::pg_sql(
-        "UPDATE otp_tokens SET revoked = ? WHERE id = ?",
+        "UPDATE otp_tokens SET revoked = ?, revoked_at = ? WHERE id = ?",
     ))
     .bind(true)
+    .bind(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
     .bind(otp_id)
     .execute(&state.db)
     .await;

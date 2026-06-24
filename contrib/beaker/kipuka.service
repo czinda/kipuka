@@ -1,6 +1,6 @@
 [Unit]
 Description=Kipuka EST Enrollment Server
-Documentation=https://codeberg.org/czinda/kipuka
+Documentation=https://kipuka.dev
 After=network-online.target pki-tomcatd@pki-tomcat.service
 Wants=network-online.target
 

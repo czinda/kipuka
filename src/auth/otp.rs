@@ -137,17 +137,45 @@ fn unauthorized_response(detail: &str) -> Response {
     resp
 }
 
+/// Row returned by the SELECT used for timing-safe OTP validation.
+#[derive(sqlx::FromRow)]
+struct OtpValidationRow {
+    id: i64,
+    token_hash: String,
+    current_uses: i64,
+    max_uses: i64,
+}
+
+/// Constant-time comparison of two equal-length byte slices.
+///
+/// Returns `true` iff the slices are identical.  Runs in time
+/// proportional to `a.len()` regardless of where the first difference
+/// occurs, preventing timing side-channels (RHELBU-3536 R8).
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut acc: u8 = 0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        acc |= x ^ y;
+    }
+    acc == 0
+}
+
 /// Validate an OTP value against the configured backend.
 ///
-/// On success, the OTP is atomically marked as consumed (usage count
-/// incremented).  The OTP is rejected if:
+/// Uses a two-phase approach that preserves both timing safety and
+/// atomicity:
 ///
-/// - It does not exist for the given entity-id
-/// - It has expired (past `ttl_seconds`)
-/// - It has reached `max_usage` count
+/// 1. Hash the incoming OTP value with SHA-256.
+/// 2. SELECT the stored token_hash for this entity (read pool).
+/// 3. Constant-time compare the hashes in application code.
+/// 4. If match: atomic UPDATE (write pool) with token_hash in WHERE
+///    to consume the token — preventing TOCTOU races.
+/// 5. If no match: return error.
 ///
-/// RHELBU-3536 R9: OTP tokens are single-use by default.  The admin
-/// can configure `max_usage > 1` for retry scenarios.
+/// RHELBU-3536 R8: timing-safe comparison.
+/// RHELBU-3536 R9: OTP tokens are single-use by default.
 async fn validate_otp(app: &Arc<AppState>, entity_id: &str, otp_value: &str) -> Result<(), String> {
     // Check that OTP authentication is enabled.
     let otp_config = &app.config.otp;
@@ -158,12 +186,28 @@ async fn validate_otp(app: &Arc<AppState>, entity_id: &str, otp_value: &str) -> 
     // Hash the incoming OTP value with SHA-256 (RHELBU-3536 R11).
     let incoming_hash = hex::encode(Sha256::digest(otp_value.as_bytes()));
 
-    // Atomically validate and consume the OTP in a single UPDATE on the
-    // write pool.  This eliminates the TOCTOU race between SELECT and
-    // UPDATE — if rows_affected() == 1, the OTP was valid and is now
-    // consumed; if 0, it was invalid/expired/already consumed.
-    let now = chrono::Utc::now().to_rfc3339();
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
 
+    // Phase 1: SELECT the stored hash for timing-safe comparison (read pool).
+    let row: OtpValidationRow = sqlx::query_as(crate::db::pg_sql(
+        "SELECT id, token_hash, current_uses, max_uses FROM otp_tokens \
+         WHERE entity_id = ? AND revoked = ? AND expires_at > ? AND current_uses < max_uses",
+    ))
+    .bind(entity_id)
+    .bind(false)
+    .bind(&now)
+    .fetch_optional(&app.db_ro)
+    .await
+    .map_err(|e| format!("database error: {e}"))?
+    .ok_or_else(|| "no valid OTP found for this entity".to_string())?;
+
+    // Phase 2: Constant-time comparison in application code (RHELBU-3536 R8).
+    if !constant_time_eq(incoming_hash.as_bytes(), row.token_hash.as_bytes()) {
+        return Err("no valid OTP found for this entity".to_string());
+    }
+
+    // Phase 3: Atomic UPDATE on the write pool with token_hash in WHERE
+    // to consume the token — prevents TOCTOU races between SELECT and UPDATE.
     let result = sqlx::query(crate::db::pg_sql(
         "UPDATE otp_tokens SET current_uses = current_uses + 1 \
          WHERE entity_id = ? AND token_hash = ? AND revoked = ? AND expires_at > ? AND current_uses < max_uses",
@@ -177,11 +221,14 @@ async fn validate_otp(app: &Arc<AppState>, entity_id: &str, otp_value: &str) -> 
     .map_err(|e| format!("database error: {e}"))?;
 
     if result.rows_affected() == 0 {
-        return Err("no valid OTP found for this entity".to_string());
+        return Err("OTP was consumed by a concurrent request".to_string());
     }
 
     debug!(
         entity_id = %entity_id,
+        otp_id = row.id,
+        current_uses = row.current_uses + 1,
+        max_uses = row.max_uses,
         "OTP validated and consumed"
     );
 
