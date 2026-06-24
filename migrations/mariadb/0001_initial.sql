@@ -6,15 +6,15 @@ CREATE TABLE IF NOT EXISTS certificates (
     serial            VARCHAR(255) NOT NULL UNIQUE,
     subject_dn        TEXT         NOT NULL,
     issuer_dn         TEXT         NOT NULL,
-    not_before        DATETIME(6)  NOT NULL,
-    not_after         DATETIME(6)  NOT NULL,
+    not_before        TEXT  NOT NULL,
+    not_after         TEXT  NOT NULL,
     der_encoded       LONGBLOB     NOT NULL,
     ca_id             VARCHAR(255) NOT NULL,
     profile           VARCHAR(255),
     status            ENUM('active', 'revoked', 'expired') NOT NULL DEFAULT 'active',
     revocation_reason VARCHAR(255),
-    revocation_time   DATETIME(6),
-    created_at        DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
+    revocation_time   TEXT,
+    created_at        TEXT  NOT NULL DEFAULT (DATE_FORMAT(NOW(6), '%Y-%m-%dT%H:%i:%S.%fZ'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE INDEX idx_certificates_serial ON certificates (serial);
@@ -29,12 +29,12 @@ CREATE TABLE IF NOT EXISTS otp_tokens (
     entity_id       VARCHAR(255) NOT NULL,
     label           VARCHAR(255),
     profile         VARCHAR(255),
-    created_at      DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
-    expires_at      DATETIME(6)  NOT NULL,
+    created_at      TEXT  NOT NULL DEFAULT (DATE_FORMAT(NOW(6), '%Y-%m-%dT%H:%i:%S.%fZ')),
+    expires_at      TEXT  NOT NULL,
     max_uses        INT          NOT NULL DEFAULT 1,
     current_uses    INT          NOT NULL DEFAULT 0,
     revoked         BOOLEAN      NOT NULL DEFAULT FALSE,
-    revoked_at      DATETIME(6)
+    revoked_at      TEXT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE INDEX idx_otp_tokens_entity_id ON otp_tokens (entity_id);
@@ -42,7 +42,7 @@ CREATE INDEX idx_otp_tokens_expires_at ON otp_tokens (expires_at);
 
 CREATE TABLE IF NOT EXISTS audit_events (
     id              BIGINT       AUTO_INCREMENT PRIMARY KEY,
-    timestamp       DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    timestamp       TEXT  NOT NULL DEFAULT (DATE_FORMAT(NOW(6), '%Y-%m-%dT%H:%i:%S.%fZ')),
     event_type      VARCHAR(255) NOT NULL,
     actor           VARCHAR(255),
     target          VARCHAR(255),
@@ -59,9 +59,9 @@ CREATE TABLE IF NOT EXISTS ca_health (
     id                    BIGINT       AUTO_INCREMENT PRIMARY KEY,
     ca_id                 VARCHAR(255) NOT NULL UNIQUE,
     status                ENUM('healthy', 'unhealthy', 'unknown') NOT NULL DEFAULT 'unknown',
-    last_check            DATETIME(6),
-    last_success          DATETIME(6),
-    last_failure          DATETIME(6),
+    last_check            TEXT,
+    last_success          TEXT,
+    last_failure          TEXT,
     consecutive_failures  INT          NOT NULL DEFAULT 0,
     response_latency_ms   INT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -78,8 +78,8 @@ CREATE TABLE IF NOT EXISTS enrollment_requests (
     entity_id       VARCHAR(255),
     status          ENUM('pending', 'issued', 'rejected') NOT NULL DEFAULT 'pending',
     certificate_id  BIGINT,
-    created_at      DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
-    completed_at    DATETIME(6),
+    created_at      TEXT  NOT NULL DEFAULT (DATE_FORMAT(NOW(6), '%Y-%m-%dT%H:%i:%S.%fZ')),
+    completed_at    TEXT,
     CONSTRAINT fk_enrollment_certificate
         FOREIGN KEY (certificate_id) REFERENCES certificates(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -96,7 +96,7 @@ CREATE TABLE IF NOT EXISTS server_generated_keys (
     key_size        INT          NOT NULL,
     archived        BOOLEAN      NOT NULL DEFAULT FALSE,
     archive_id      VARCHAR(255),
-    created_at      DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    created_at      TEXT  NOT NULL DEFAULT (DATE_FORMAT(NOW(6), '%Y-%m-%dT%H:%i:%S.%fZ')),
     CONSTRAINT fk_sgk_enrollment
         FOREIGN KEY (enrollment_id) REFERENCES enrollment_requests(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -112,15 +112,15 @@ CREATE TABLE IF NOT EXISTS star_orders (
     key_type              VARCHAR(255) NOT NULL,
     profile               VARCHAR(255) NOT NULL,
     renewal_interval_secs INT          NOT NULL,
-    lifetime_end          DATETIME(6)  NOT NULL,
+    lifetime_end          TEXT  NOT NULL,
     max_renewals          INT          NOT NULL,
     current_renewals      INT          NOT NULL DEFAULT 0,
     status                ENUM('active', 'cancelled', 'completed', 'expired') NOT NULL DEFAULT 'active',
     requestor_dn          TEXT,
     ca_id                 VARCHAR(255) NOT NULL,
     csr_der               LONGBLOB     NOT NULL,
-    created_at            DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
-    cancelled_at          DATETIME(6)
+    created_at            TEXT  NOT NULL DEFAULT (DATE_FORMAT(NOW(6), '%Y-%m-%dT%H:%i:%S.%fZ')),
+    cancelled_at          TEXT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS star_certificates (
@@ -128,10 +128,10 @@ CREATE TABLE IF NOT EXISTS star_certificates (
     star_order_id   VARCHAR(255) NOT NULL,
     serial_number   VARCHAR(255) NOT NULL,
     certificate_der LONGBLOB     NOT NULL,
-    not_before      DATETIME(6)  NOT NULL,
-    not_after       DATETIME(6)  NOT NULL,
+    not_before      TEXT  NOT NULL,
+    not_after       TEXT  NOT NULL,
     renewal_number  INT          NOT NULL,
-    created_at      DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    created_at      TEXT  NOT NULL DEFAULT (DATE_FORMAT(NOW(6), '%Y-%m-%dT%H:%i:%S.%fZ')),
     CONSTRAINT fk_star_certs_order
         FOREIGN KEY (star_order_id) REFERENCES star_orders(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
