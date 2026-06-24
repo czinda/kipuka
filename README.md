@@ -12,9 +12,9 @@ inspired by the [Akamu](https://codeberg.org/abbra/akamu) ACME server.
 
 | | |
 |---|---|
-| **Container image** | `registry.heebh.st/heebus/kipuka` |
-| **API docs** | [kipuka.heebh.st](https://kipuka.heebh.st) (cargo doc) |
-| **CI/CD** | GitLab CI on `gitlab.heebh.st` and `gitlab.cee.redhat.com` |
+| **Container image** | `codeberg.org/czinda/kipuka` |
+| **API docs** | [kipuka.dev](https://kipuka.dev) (cargo doc) |
+| **CI/CD** | GitLab CI on `codeberg.org` and `gitlab.cee.redhat.com` |
 
 ## Features
 
@@ -43,18 +43,18 @@ inspired by the [Akamu](https://codeberg.org/abbra/akamu) ACME server.
 
 ```bash
 # Pull the container image
-podman pull registry.heebh.st/heebus/kipuka:latest        # x86_64
-podman pull registry.heebh.st/heebus/kipuka:latest-arm64   # arm64
+podman pull codeberg.org/czinda/kipuka:latest        # x86_64
+podman pull codeberg.org/czinda/kipuka:latest-arm64   # arm64
 
 # Verify the image
-podman run --rm registry.heebh.st/heebus/kipuka:latest --version
+podman run --rm codeberg.org/czinda/kipuka:latest --version
 
 # Run with a configuration file
 podman run --rm \
   -v ./kipuka.toml:/etc/kipuka/kipuka.toml:ro \
   -v ./certs:/etc/kipuka/certs:ro \
   -p 9443:9443 \
-  registry.heebh.st/heebus/kipuka:latest
+  codeberg.org/czinda/kipuka:latest
 ```
 
 ### Build from source
@@ -188,7 +188,7 @@ See [`docs/PROJECT.md`](docs/PROJECT.md) for EST protocol testing with `curl` an
 
 ## CI/CD
 
-GitLab CI pipelines run on both `gitlab.heebh.st` and `gitlab.cee.redhat.com`.
+GitLab CI pipelines run on both `codeberg.org` and `gitlab.cee.redhat.com`.
 Pipeline configuration lives in [`.gitlab-ci.yml`](.gitlab-ci.yml) with stage
 definitions in [`.gitlab/ci/`](.gitlab/ci/).
 
@@ -199,8 +199,8 @@ definitions in [`.gitlab/ci/`](.gitlab/ci/).
 | **test** | Unit tests, protocol-specific tests |
 | **security** | `cargo audit`, license compliance, FIPS validation |
 | **integration** | Dogtag PKI end-to-end, EST interop (idm-ci / Beaker) |
-| **package** | OCI container image (`registry.heebh.st/heebus/kipuka`), RPM (placeholder) |
-| **deploy** | Beaker hardware tests, GitLab Pages ([kipuka.heebh.st](https://kipuka.heebh.st)) |
+| **package** | OCI container image (`codeberg.org/czinda/kipuka`), RPM (placeholder) |
+| **deploy** | Beaker hardware tests, GitLab Pages ([kipuka.dev](https://kipuka.dev)) |
 
 ## Requirements Tracking
 

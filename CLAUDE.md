@@ -20,9 +20,9 @@ Built on the Synta ASN.1/X.509 library. Architecture inspired by Akamu ACME serv
 - Dogtag PKI integration (enrollment, revocation, KRA key generation)
 - OTP, mTLS, and GSSAPI/Kerberos authentication for enrollment
 - SQLite/PostgreSQL/MariaDB database backends (via sqlx Any driver)
-- Container image: registry.heebh.st/heebus/kipuka (x86_64 latest, arm64 latest-arm64)
-- API docs: kipuka.heebh.st (GitLab Pages, cargo doc)
-- CI/CD: GitLab CI on gitlab.heebh.st and gitlab.cee.redhat.com
+- Container image: codeberg.org/czinda/kipuka (x86_64 latest, arm64 latest-arm64)
+- API docs: kipuka.dev (GitLab Pages, cargo doc)
+- CI/CD: GitLab CI on codeberg.org and gitlab.cee.redhat.com
 
 ## Compliance
 - RFC 7030 (EST), RFC 8951 (EST clarifications), RFC 5272 (CMC)
