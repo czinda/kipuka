@@ -375,16 +375,16 @@ CREATE INDEX idx_certificates_not_after ON certificates (not_after);
 -- OTP storage
 CREATE TABLE IF NOT EXISTS otp_tokens (
     id              BIGINT       AUTO_INCREMENT PRIMARY KEY,
-    token_hash      TEXT         NOT NULL,
+    token_hash      VARCHAR(512)         NOT NULL,
     entity_id       VARCHAR(255) NOT NULL,
     label           VARCHAR(255),
     profile         VARCHAR(255),
-    created_at      TEXT  NOT NULL DEFAULT (DATE_FORMAT(NOW(6), '%Y-%m-%dT%H:%i:%S.%fZ')),
-    expires_at      TEXT  NOT NULL,
+    created_at      VARCHAR(64)  NOT NULL DEFAULT (DATE_FORMAT(NOW(6), '%Y-%m-%dT%H:%i:%S.%fZ')),
+    expires_at      VARCHAR(64)  NOT NULL,
     max_uses        INT          NOT NULL DEFAULT 1,
     current_uses    INT          NOT NULL DEFAULT 0,
     revoked         BOOLEAN      NOT NULL DEFAULT FALSE,
-    revoked_at      TEXT
+    revoked_at      VARCHAR(64)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE INDEX idx_otp_tokens_entity_id ON otp_tokens (entity_id);
