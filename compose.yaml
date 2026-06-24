@@ -18,6 +18,9 @@
 #   MariaDB:
 #     podman compose --profile mariadb up
 #
+#   HSM (Kryoptic PKCS#11 software token):
+#     podman compose --profile hsm up
+#
 # Only one backend can run at a time (all kipuka variants bind port 9443).
 #
 # ── Quick test ─────────────────────────────────────────────────────────
@@ -50,6 +53,7 @@ services:
       - ./contrib/local-dev/kipuka-local.toml:/etc/kipuka/kipuka.toml:ro,Z
       - ./contrib/local-dev/tls:/etc/kipuka/tls:ro,Z
       - ./contrib/local-dev/ca:/etc/kipuka/ca:ro,Z
+      - ./web:/var/www/kipuka/web:ro,Z
       - kipuka-data:/var/lib/kipuka
     environment:
       - RUST_LOG=info
@@ -85,6 +89,7 @@ services:
       - ./contrib/local-dev/kipuka-postgres.toml:/etc/kipuka/kipuka.toml:ro,Z
       - ./contrib/local-dev/tls:/etc/kipuka/tls:ro,Z
       - ./contrib/local-dev/ca:/etc/kipuka/ca:ro,Z
+      - ./web:/var/www/kipuka/web:ro,Z
       - kipuka-data:/var/lib/kipuka
     environment:
       - RUST_LOG=info
@@ -124,6 +129,7 @@ services:
       - ./contrib/local-dev/kipuka-mariadb.toml:/etc/kipuka/kipuka.toml:ro,Z
       - ./contrib/local-dev/tls:/etc/kipuka/tls:ro,Z
       - ./contrib/local-dev/ca:/etc/kipuka/ca:ro,Z
+      - ./web:/var/www/kipuka/web:ro,Z
       - kipuka-data:/var/lib/kipuka
     environment:
       - RUST_LOG=info
@@ -132,7 +138,56 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # ── Kryoptic HSM backend ──────────────────────────────────────────────
+  kryoptic:
+    build:
+      context: ./contrib/kryoptic
+      dockerfile: Containerfile
+    container_name: kipuka-kryoptic
+    profiles: [hsm]
+    environment:
+      TOKEN_LABEL: kipuka-hsm
+      SO_PIN: "12345678"
+      USER_PIN: "1234"
+      KEY_LABEL: kipuka-ca-key
+      KEY_TYPE: "rsa:3072"
+    volumes:
+      - kryoptic-lib:/usr/lib/pkcs11
+      - kryoptic-data:/var/lib/kryoptic
+    healthcheck:
+      test: ["CMD-SHELL", "pkcs11-tool --module /usr/lib/pkcs11/libkryoptic_pkcs11.so --list-token-slots 2>/dev/null | grep -q kipuka-hsm"]
+      interval: 5s
+      timeout: 10s
+      retries: 10
+    restart: unless-stopped
+
+  kipuka-hsm:
+    image: registry.heebh.st/heebus/kipuka:latest-arm64
+    # image: registry.heebh.st/heebus/kipuka:latest-amd64
+    container_name: kipuka-est-hsm
+    profiles: [hsm]
+    user: "0:0"
+    ports:
+      - "9443:9443"
+    volumes:
+      - ./contrib/local-dev/kipuka-hsm.toml:/etc/kipuka/kipuka.toml:ro,Z
+      - ./contrib/local-dev/tls:/etc/kipuka/tls:ro,Z
+      - ./contrib/local-dev/ca:/etc/kipuka/ca:ro,Z
+      - ./web:/var/www/kipuka/web:ro,Z
+      - kipuka-data:/var/lib/kipuka
+      - kryoptic-lib:/usr/lib/pkcs11:ro
+      - kryoptic-data:/var/lib/kryoptic:ro
+    environment:
+      - RUST_LOG=info
+      - KIPUKA_HSM_PIN=1234
+    depends_on:
+      kryoptic:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   kipuka-data:
   kipuka-pgdata:
   kipuka-mydata:
+  kryoptic-lib:
+  kryoptic-data:

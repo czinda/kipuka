@@ -28,9 +28,10 @@ use std::sync::Arc;
 use axum::Router;
 use axum::extract::{FromRef, FromRequestParts, Path};
 use axum::http::request::Parts;
-use axum::response::{IntoResponse, Response};
-use axum::routing::post;
+use axum::response::{IntoResponse, Redirect, Response};
+use axum::routing::{get, post};
 use tower_http::limit::RequestBodyLimitLayer;
+use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 
 use crate::error::KipukaError;
@@ -95,6 +96,12 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .nest("/.well-known/est/star", star::star_router())
         // CMP v3 endpoint (RFC 9810).
         .route("/.well-known/cmp", post(cmp::post_cmp))
+        // Web dashboard (static files).
+        .route("/", get(|| async { Redirect::permanent("/dashboard/") }))
+        .nest_service(
+            "/dashboard",
+            ServeDir::new("/var/www/kipuka/web").append_index_html_on_directories(true),
+        )
         .layer(RequestBodyLimitLayer::new(max_body))
         .layer(
             TraceLayer::new_for_http()

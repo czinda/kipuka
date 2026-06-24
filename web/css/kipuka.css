@@ -1,0 +1,339 @@
+/* ── Kipuka EST Server — Admin Dashboard Styles ─────────────────────── */
+
+:root {
+  --kipuka-brand: #0066cc;
+  --kipuka-brand-dark: #004080;
+  --kipuka-bg: #f0f0f0;
+  --kipuka-sidebar-width: 260px;
+}
+
+/* ── Login Overlay ──────────────────────────────────────────────────── */
+
+.kipuka-login-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #1b1d21 0%, #2a2d33 50%, #1b1d21 100%);
+}
+
+.kipuka-login-card {
+  width: 100%;
+  max-width: 420px;
+  margin: 1rem;
+}
+
+.kipuka-login-logo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  justify-content: center;
+  padding: 0.5rem 0;
+}
+
+.kipuka-login-logo .kipuka-icon {
+  color: var(--kipuka-brand);
+}
+
+.kipuka-login-logo .pf-v5-c-title {
+  margin: 0;
+  color: var(--pf-v5-global--Color--100, #151515);
+}
+
+/* ── Masthead ───────────────────────────────────────────────────────── */
+
+.pf-v5-c-masthead {
+  --pf-v5-c-masthead--BackgroundColor: #1b1d21;
+}
+
+.pf-v5-c-masthead__brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+}
+
+.kipuka-brand-text {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #fff;
+  letter-spacing: 0.02em;
+}
+
+.kipuka-icon {
+  color: #73bcf7;
+  flex-shrink: 0;
+}
+
+.kipuka-masthead-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+}
+
+#version-label {
+  color: #d2d2d2;
+  border-color: #6a6e73;
+}
+
+/* ── Sidebar ────────────────────────────────────────────────────────── */
+
+.pf-v5-c-page__sidebar {
+  --pf-v5-c-page__sidebar--Width: var(--kipuka-sidebar-width);
+}
+
+/* ── Main Content ───────────────────────────────────────────────────── */
+
+.pf-v5-c-page__main-section {
+  background-color: var(--kipuka-bg);
+  min-height: calc(100vh - 76px);
+}
+
+/* ── Page Header ────────────────────────────────────────────────────── */
+
+.kipuka-page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1.5rem;
+}
+
+.kipuka-page-header h1 {
+  margin: 0;
+}
+
+/* ── Health Cards Grid ──────────────────────────────────────────────── */
+
+.kipuka-health-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1rem;
+}
+
+.kipuka-health-card .pf-v5-c-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.kipuka-health-card .kipuka-card-metric {
+  font-size: 2rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.kipuka-health-card .kipuka-card-label {
+  font-size: 0.85rem;
+  color: var(--pf-v5-global--Color--200, #6a6e73);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.kipuka-card-metric.status-healthy { color: #3e8635; }
+.kipuka-card-metric.status-degraded { color: #f0ab00; }
+.kipuka-card-metric.status-unhealthy { color: #c9190b; }
+
+/* ── Status Labels ──────────────────────────────────────────────────── */
+
+.kipuka-status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.kipuka-status-dot.healthy,
+.kipuka-status-dot.active,
+.kipuka-status-dot.Healthy { background: #3e8635; }
+
+.kipuka-status-dot.degraded,
+.kipuka-status-dot.Degraded { background: #f0ab00; }
+
+.kipuka-status-dot.unhealthy,
+.kipuka-status-dot.revoked,
+.kipuka-status-dot.Unhealthy { background: #c9190b; }
+
+.kipuka-status-dot.unknown,
+.kipuka-status-dot.expired { background: #8a8d90; }
+
+/* ── Tables ─────────────────────────────────────────────────────────── */
+
+.kipuka-table-wrapper {
+  background: #fff;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.pf-v5-c-table tbody tr {
+  cursor: default;
+}
+
+.pf-v5-c-table tbody tr.kipuka-clickable:hover {
+  background-color: #f0f0f0;
+  cursor: pointer;
+}
+
+/* ── OTP Form Section ───────────────────────────────────────────────── */
+
+.kipuka-otp-form-card {
+  margin-bottom: 1.5rem;
+}
+
+.kipuka-otp-form-row {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+
+.kipuka-otp-form-row .pf-v5-c-form__group {
+  flex: 1;
+  min-width: 160px;
+}
+
+.kipuka-otp-form-row .kipuka-form-action {
+  flex: 0 0 auto;
+  padding-bottom: 2px;
+}
+
+/* ── Modal ──────────────────────────────────────────────────────────── */
+
+.kipuka-modal-wrapper {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.kipuka-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.kipuka-modal-content {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 500px;
+  margin: 1rem;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+
+/* ── CA Detail Panel ────────────────────────────────────────────────── */
+
+.kipuka-detail-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 400px;
+  max-width: 90vw;
+  z-index: 5000;
+  background: #fff;
+  box-shadow: -4px 0 16px rgba(0, 0, 0, 0.15);
+  overflow-y: auto;
+}
+
+.kipuka-detail-panel-content {
+  padding: 1.5rem;
+}
+
+.kipuka-detail-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1.5rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid #d2d2d2;
+}
+
+.kipuka-detail-panel-header h2 {
+  margin: 0;
+}
+
+.kipuka-dl-grid {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 0.5rem 1rem;
+  font-size: 0.9rem;
+}
+
+.kipuka-dl-grid dt {
+  font-weight: 600;
+  color: var(--pf-v5-global--Color--200, #6a6e73);
+}
+
+.kipuka-dl-grid dd {
+  margin: 0;
+  word-break: break-all;
+}
+
+/* ── Alert Banner ───────────────────────────────────────────────────── */
+
+.kipuka-alert-banner {
+  margin-bottom: 1rem;
+}
+
+/* ── Spinner ────────────────────────────────────────────────────────── */
+
+.kipuka-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4rem 0;
+}
+
+/* ── Empty State ────────────────────────────────────────────────────── */
+
+.kipuka-empty-state {
+  padding: 3rem;
+  text-align: center;
+}
+
+/* ── EST Endpoints Table ────────────────────────────────────────────── */
+
+.kipuka-est-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+/* ── Responsive ─────────────────────────────────────────────────────── */
+
+@media (max-width: 768px) {
+  .kipuka-health-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .kipuka-otp-form-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .kipuka-detail-panel {
+    width: 100%;
+  }
+
+  .kipuka-dl-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── Utility ────────────────────────────────────────────────────────── */
+
+.kipuka-mono {
+  font-family: 'Red Hat Mono', 'Liberation Mono', monospace;
+  font-size: 0.85em;
+}
+
+.kipuka-mt-0 { margin-top: 0; }
+.kipuka-mb-sm { margin-bottom: 0.5rem; }
+.kipuka-mb-md { margin-bottom: 1rem; }
+.kipuka-mb-lg { margin-bottom: 1.5rem; }

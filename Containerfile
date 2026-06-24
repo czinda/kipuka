@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y \
     && useradd -r -s /sbin/nologin kipuka
 
 COPY --from=builder /build/target/release/kipuka /usr/local/bin/kipuka
+COPY web/ /var/www/kipuka/web/
 
 USER kipuka
 EXPOSE 9443

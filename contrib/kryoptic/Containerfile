@@ -1,0 +1,33 @@
+# Kryoptic PKCS#11 Software Token
+# Builds libkryoptic_pkcs11.so and initializes a test token.
+#
+# Usage:
+#   podman build -t kryoptic -f contrib/kryoptic/Containerfile contrib/kryoptic/
+#   podman run --rm -v kryoptic-lib:/usr/lib/pkcs11 -v kryoptic-data:/var/lib/kryoptic kryoptic
+
+FROM rust:1.88-bookworm AS builder
+
+RUN apt-get update && apt-get install -y \
+    libssl-dev pkg-config opensc sqlite3 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+RUN git clone --depth 1 https://github.com/latchset/kryoptic.git . \
+    && cargo build --release -p kryoptic_pkcs11
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y \
+    ca-certificates libssl3 opensc sqlite3 p11-kit \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /build/target/release/libkryoptic_pkcs11.so /usr/lib/pkcs11/libkryoptic_pkcs11.so
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+ENV KRYOPTIC_CONF=/var/lib/kryoptic/token.conf
+ENV KRYOPTIC_TOKEN_DIR=/var/lib/kryoptic
+
+RUN mkdir -p /var/lib/kryoptic
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
