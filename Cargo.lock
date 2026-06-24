@@ -1310,6 +1310,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sqlx",
+ "subtle",
  "synta",
  "synta-certificate",
  "tempfile",

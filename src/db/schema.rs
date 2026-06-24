@@ -14,7 +14,7 @@ use crate::db::DbKind;
 use crate::error::KipukaError;
 
 /// Current schema version.  Increment this when adding new migrations.
-pub const SCHEMA_VERSION: i32 = 1;
+pub const SCHEMA_VERSION: i32 = 2;
 
 // ---------------------------------------------------------------------------
 // SQLite migration v1
@@ -539,6 +539,23 @@ pub async fn run_migrations(pool: &sqlx::AnyPool, kind: DbKind) -> Result<(), Ki
             .map_err(|e| KipukaError::Db(format!("recording schema version: {e}")))?;
 
         tracing::info!("migration v1 applied successfully");
+    }
+
+    if current < 2 {
+        tracing::info!("applying migration v2 (OTP hash index)");
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_otp_tokens_hash ON otp_tokens (entity_id, token_hash)",
+        )
+        .execute(pool)
+        .await
+        .map_err(|e| KipukaError::Db(format!("migration v2 failed: {e}")))?;
+
+        sqlx::query("INSERT INTO schema_version (version) VALUES (2)")
+            .execute(pool)
+            .await
+            .map_err(|e| KipukaError::Db(format!("recording schema version: {e}")))?;
+
+        tracing::info!("migration v2 applied successfully");
     }
 
     Ok(())

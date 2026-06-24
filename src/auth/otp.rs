@@ -147,7 +147,6 @@ struct OtpValidationRow {
     max_uses: i64,
 }
 
-
 /// Validate an OTP value against the configured backend.
 ///
 /// Uses a two-phase approach that preserves both timing safety and
@@ -172,7 +171,7 @@ async fn validate_otp(app: &Arc<AppState>, entity_id: &str, otp_value: &str) -> 
     // Hash the incoming OTP value with SHA-256 (RHELBU-3536 R11).
     let incoming_hash = hex::encode(Sha256::digest(otp_value.as_bytes()));
 
-    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
 
     // Phase 1: SELECT with token_hash in WHERE to find the exact matching
     // token. The DB comparison is not timing-safe, but we verify with a
@@ -194,7 +193,12 @@ async fn validate_otp(app: &Arc<AppState>, entity_id: &str, otp_value: &str) -> 
     // Belt-and-suspenders: even though the DB matched token_hash in WHERE,
     // we verify here with a timing-safe comparison to prevent any DB-layer
     // timing side-channel from leaking hash information.
-    if incoming_hash.as_bytes().ct_eq(row.token_hash.as_bytes()).unwrap_u8() == 0 {
+    if incoming_hash
+        .as_bytes()
+        .ct_eq(row.token_hash.as_bytes())
+        .unwrap_u8()
+        == 0
+    {
         return Err("no valid OTP found for this entity".to_string());
     }
 
