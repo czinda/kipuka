@@ -95,17 +95,19 @@ openssl req -new -nodes -newkey rsa:2048 \
   -keyout "$TMPDIR/kipuka-test-client.key" \
   -out "$TMPDIR/kipuka-test-client.csr" \
   -subj "/CN=test-client.kipuka.test/O=Kipuka Test" 2>/dev/null
+openssl req -in "$TMPDIR/kipuka-test-client.csr" -outform DER -out "$TMPDIR/kipuka-test-client.der" 2>/dev/null
 echo "  PASS (CSR generated)"
 ((passed++))
 
 # ── 8. POST /simpleenroll ─────────────────────────────────────────────
 echo "8. Simple Enroll (OTP auth)"
 if [[ -n "$OTP" ]]; then
+    B64_CSR=$(base64 < "$TMPDIR/kipuka-test-client.der")
     code=$(curl -sk --cacert "$CA_CERT" \
       -u "test-client:${OTP}" \
       -X POST "$EST_URL/simpleenroll" \
       -H "Content-Type: application/pkcs10" \
-      --data-binary @"$TMPDIR/kipuka-test-client.csr" \
+      -d "$B64_CSR" \
       -o "$TMPDIR/kipuka-test-client.p7" \
       -w "%{http_code}")
     check "simpleenroll" "$code"
