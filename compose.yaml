@@ -9,8 +9,8 @@
 #
 # ── Database backends ──────────────────────────────────────────────────
 #
-#   SQLite (default — no profile needed):
-#     podman compose up
+#   SQLite:
+#     podman compose --profile sqlite up
 #
 #   PostgreSQL:
 #     podman compose --profile postgres up
@@ -46,6 +46,7 @@ services:
     # x86_64 — uncomment if running on Intel/AMD:
     # image: registry.heebh.st/heebus/kipuka:latest-amd64
     container_name: kipuka-est
+    profiles: [sqlite]
     user: "0:0"
     ports:
       - "9443:9443"

@@ -152,10 +152,10 @@ pub async fn post_simpleenroll(
     let not_before_str = result.not_before.format("%Y-%m-%dT%H:%M:%SZ").to_string();
     let not_after_str = result.not_after.format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
-    if let Err(e) = sqlx::query(
+    if let Err(e) = sqlx::query(crate::db::pg_sql(
         "INSERT INTO certificates (serial, subject_dn, issuer_dn, not_before, not_after, der_encoded, ca_id, profile, status) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')"
-    )
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')",
+    ))
     .bind(serial)
     .bind(subject_dn)
     .bind(&issuer_dn)

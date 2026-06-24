@@ -245,16 +245,17 @@ pub async fn record(pool: &sqlx::AnyPool, state: &AuditState, event: AuditEvent)
         return;
     }
 
-    let result = sqlx::query(
-        "INSERT INTO audit_events (event_type, ca_id, subject, detail, client_addr, operator) \
+    let sql = crate::db::pg_sql(
+        "INSERT INTO audit_events (event_type, actor, target, detail_json, source_ip, session_id) \
          VALUES (?, ?, ?, ?, ?, ?)",
-    )
+    );
+    let result = sqlx::query(sql)
     .bind(event.event_type.as_str())
-    .bind(&event.ca_id)
+    .bind(&event.operator)
     .bind(&event.subject)
     .bind(&event.detail)
     .bind(&event.client_addr)
-    .bind(&event.operator)
+    .bind(&event.ca_id)
     .execute(pool)
     .await;
 

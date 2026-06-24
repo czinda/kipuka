@@ -162,11 +162,11 @@ async fn validate_otp(app: &Arc<AppState>, entity_id: &str, otp_value: &str) -> 
     // matching this entity and hash.
     let now = chrono::Utc::now().to_rfc3339();
 
-    let row: Option<OtpValidationRow> = sqlx::query_as(
+    let row: Option<OtpValidationRow> = sqlx::query_as(crate::db::pg_sql(
         "SELECT id, token_hash, current_uses, max_uses \
          FROM otp_tokens \
          WHERE entity_id = ? AND revoked = 0 AND expires_at > ? AND current_uses < max_uses",
-    )
+    ))
     .bind(entity_id)
     .bind(&now)
     .fetch_optional(&app.db_ro)
@@ -194,7 +194,7 @@ async fn validate_otp(app: &Arc<AppState>, entity_id: &str, otp_value: &str) -> 
     }
 
     // Atomically increment current_uses.
-    sqlx::query("UPDATE otp_tokens SET current_uses = current_uses + 1 WHERE id = ?")
+    sqlx::query(crate::db::pg_sql("UPDATE otp_tokens SET current_uses = current_uses + 1 WHERE id = ?"))
         .bind(row.id)
         .execute(&app.db)
         .await
