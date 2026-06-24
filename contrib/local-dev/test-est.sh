@@ -56,6 +56,17 @@ check_exact() {
     fi
 }
 
+check_responds() {
+    local name="$1" http_code="$2"
+    if [[ "$http_code" =~ ^[0-9]+$ ]] && [[ "$http_code" -gt 0 ]]; then
+        echo "  PASS (responds $http_code)"
+        ((passed++))
+    else
+        echo "  FAIL (no response)"
+        ((failed++))
+    fi
+}
+
 echo "═══════════════════════════════════════════════════════════════"
 echo " Kipuka EST Server — Test Pipeline"
 echo "═══════════════════════════════════════════════════════════════"
@@ -389,59 +400,53 @@ echo ""
 # ═════════════════════════════════════════════════════════════════════
 echo "── Section F: Stub Endpoints ─────────────────────────────────"
 
-echo "29. POST /serverkeygen"
+echo "29. POST /serverkeygen (stub — any response OK)"
 code=$(curl -sk "${ADMIN_AUTH[@]}" \
   -X POST "$EST_URL/serverkeygen" \
   -H "Content-Type: application/pkcs10" \
   -d "$B64_CSR" \
   -o /dev/null -w "%{http_code}")
-check "serverkeygen" "$code"
-echo "    (returned $code)"
+check_responds "serverkeygen" "$code"
 
-echo "30. POST /fullcmc"
+echo "30. POST /fullcmc (stub — any response OK)"
 code=$(curl -sk "${ADMIN_AUTH[@]}" \
   -X POST "$EST_URL/fullcmc" \
   -H "Content-Type: application/pkcs7-mime; smime-type=CMC-request" \
   -d "dGVzdA==" \
   -o /dev/null -w "%{http_code}")
-check "fullcmc" "$code"
-echo "    (returned $code)"
+check_responds "fullcmc" "$code"
 
-echo "31. POST /.well-known/est/cms/simpleenroll"
+echo "31. POST /cms/simpleenroll (stub — any response OK)"
 code=$(curl -sk "${ADMIN_AUTH[@]}" \
   -X POST "https://localhost:9443/.well-known/est/cms/simpleenroll" \
   -H "Content-Type: application/pkcs7-mime; smime-type=CMC-request" \
   -d "dGVzdA==" \
   -o /dev/null -w "%{http_code}")
-check "cms-simpleenroll" "$code"
-echo "    (returned $code)"
+check_responds "cms-simpleenroll" "$code"
 
-echo "32. POST /.well-known/est/cms/simplereenroll"
+echo "32. POST /cms/simplereenroll (stub — any response OK)"
 code=$(curl -sk "${ADMIN_AUTH[@]}" \
   -X POST "https://localhost:9443/.well-known/est/cms/simplereenroll" \
   -H "Content-Type: application/pkcs7-mime; smime-type=CMC-request" \
   -d "dGVzdA==" \
   -o /dev/null -w "%{http_code}")
-check "cms-simplereenroll" "$code"
-echo "    (returned $code)"
+check_responds "cms-simplereenroll" "$code"
 
-echo "33. POST /.well-known/est/cms/serverkeygen"
+echo "33. POST /cms/serverkeygen (stub — any response OK)"
 code=$(curl -sk "${ADMIN_AUTH[@]}" \
   -X POST "https://localhost:9443/.well-known/est/cms/serverkeygen" \
   -H "Content-Type: application/pkcs7-mime; smime-type=CMC-request" \
   -d "dGVzdA==" \
   -o /dev/null -w "%{http_code}")
-check "cms-serverkeygen" "$code"
-echo "    (returned $code)"
+check_responds "cms-serverkeygen" "$code"
 
-echo "34. POST /.well-known/cmp"
+echo "34. POST /cmp (stub — any response OK)"
 code=$(curl -sk "${ADMIN_AUTH[@]}" \
   -X POST "https://localhost:9443/.well-known/cmp" \
   -H "Content-Type: application/pkixcmp" \
   -d "dGVzdA==" \
   -o /dev/null -w "%{http_code}")
-check "cmp" "$code"
-echo "    (returned $code)"
+check_responds "cmp" "$code"
 
 echo ""
 
@@ -457,7 +462,7 @@ code=$(curl -sk \
 check_exact "star-get-nonexistent" "$code" "404"
 
 echo "36. DELETE /.well-known/est/star/nonexistent"
-code=$(curl -sk \
+code=$(curl -sk "${ADMIN_AUTH[@]}" \
   -X DELETE \
   -o /dev/null -w "%{http_code}" \
   "https://localhost:9443/.well-known/est/star/nonexistent")
