@@ -366,11 +366,11 @@ CREATE TABLE IF NOT EXISTS certificates (
     created_at        TEXT  NOT NULL DEFAULT (DATE_FORMAT(NOW(6), '%Y-%m-%dT%H:%i:%S.%fZ'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE INDEX idx_certificates_serial ON certificates (serial);
-CREATE INDEX idx_certificates_subject_dn ON certificates (subject_dn(255));
-CREATE INDEX idx_certificates_ca_id ON certificates (ca_id);
-CREATE INDEX idx_certificates_status ON certificates (status);
-CREATE INDEX idx_certificates_not_after ON certificates (not_after);
+CREATE INDEX IF NOT EXISTS idx_certificates_serial ON certificates (serial);
+CREATE INDEX IF NOT EXISTS idx_certificates_subject_dn ON certificates (subject_dn(255));
+CREATE INDEX IF NOT EXISTS idx_certificates_ca_id ON certificates (ca_id);
+CREATE INDEX IF NOT EXISTS idx_certificates_status ON certificates (status);
+CREATE INDEX IF NOT EXISTS idx_certificates_not_after ON certificates (not_after);
 
 -- OTP storage
 CREATE TABLE IF NOT EXISTS otp_tokens (
@@ -387,8 +387,8 @@ CREATE TABLE IF NOT EXISTS otp_tokens (
     revoked_at      VARCHAR(64)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE INDEX idx_otp_tokens_entity_id ON otp_tokens (entity_id);
-CREATE INDEX idx_otp_tokens_expires_at ON otp_tokens (expires_at);
+CREATE INDEX IF NOT EXISTS idx_otp_tokens_entity_id ON otp_tokens (entity_id);
+CREATE INDEX IF NOT EXISTS idx_otp_tokens_expires_at ON otp_tokens (expires_at);
 
 -- Audit event trail
 CREATE TABLE IF NOT EXISTS audit_events (
@@ -402,9 +402,9 @@ CREATE TABLE IF NOT EXISTS audit_events (
     session_id      VARCHAR(255)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE INDEX idx_audit_events_timestamp ON audit_events (timestamp);
-CREATE INDEX idx_audit_events_event_type ON audit_events (event_type);
-CREATE INDEX idx_audit_events_actor ON audit_events (actor);
+CREATE INDEX IF NOT EXISTS idx_audit_events_timestamp ON audit_events (timestamp);
+CREATE INDEX IF NOT EXISTS idx_audit_events_event_type ON audit_events (event_type);
+CREATE INDEX IF NOT EXISTS idx_audit_events_actor ON audit_events (actor);
 
 -- CA health tracking
 CREATE TABLE IF NOT EXISTS ca_health (
@@ -418,7 +418,7 @@ CREATE TABLE IF NOT EXISTS ca_health (
     response_latency_ms   INT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE INDEX idx_ca_health_ca_id ON ca_health (ca_id);
+CREATE INDEX IF NOT EXISTS idx_ca_health_ca_id ON ca_health (ca_id);
 
 -- Enrollment request log
 CREATE TABLE IF NOT EXISTS enrollment_requests (
@@ -437,10 +437,10 @@ CREATE TABLE IF NOT EXISTS enrollment_requests (
         FOREIGN KEY (certificate_id) REFERENCES certificates(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE INDEX idx_enrollment_requests_status ON enrollment_requests (status);
-CREATE INDEX idx_enrollment_requests_ca_id ON enrollment_requests (ca_id);
-CREATE INDEX idx_enrollment_requests_entity_id ON enrollment_requests (entity_id);
-CREATE INDEX idx_enrollment_requests_csr_hash ON enrollment_requests (csr_hash);
+CREATE INDEX IF NOT EXISTS idx_enrollment_requests_status ON enrollment_requests (status);
+CREATE INDEX IF NOT EXISTS idx_enrollment_requests_ca_id ON enrollment_requests (ca_id);
+CREATE INDEX IF NOT EXISTS idx_enrollment_requests_entity_id ON enrollment_requests (entity_id);
+CREATE INDEX IF NOT EXISTS idx_enrollment_requests_csr_hash ON enrollment_requests (csr_hash);
 
 -- Server-generated keys
 CREATE TABLE IF NOT EXISTS server_generated_keys (
@@ -455,7 +455,7 @@ CREATE TABLE IF NOT EXISTS server_generated_keys (
         FOREIGN KEY (enrollment_id) REFERENCES enrollment_requests(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE INDEX idx_server_generated_keys_enrollment_id ON server_generated_keys (enrollment_id);
+CREATE INDEX IF NOT EXISTS idx_server_generated_keys_enrollment_id ON server_generated_keys (enrollment_id);
 
 -- STAR (Short-Term Automatic Renewal) tables (RFC 8739)
 CREATE TABLE IF NOT EXISTS star_orders (
@@ -488,7 +488,7 @@ CREATE TABLE IF NOT EXISTS star_certificates (
         FOREIGN KEY (star_order_id) REFERENCES star_orders(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE INDEX idx_star_certs_order ON star_certificates(star_order_id, renewal_number DESC);
+CREATE INDEX IF NOT EXISTS idx_star_certs_order ON star_certificates(star_order_id, renewal_number DESC);
 "#;
 
 /// Run all pending migrations.

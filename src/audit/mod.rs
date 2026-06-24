@@ -245,6 +245,15 @@ pub async fn record(pool: &sqlx::AnyPool, state: &AuditState, event: AuditEvent)
         return;
     }
 
+    // Pack ca_id into detail_json alongside the detail text so that
+    // ca_id does not get incorrectly mapped to the session_id column.
+    let detail_json = match (&event.detail, &event.ca_id) {
+        (Some(d), Some(ca)) => Some(format!(r#"{{"detail":"{}","ca_id":"{}"}}"#, d, ca)),
+        (Some(d), None) => Some(format!(r#"{{"detail":"{}"}}"#, d)),
+        (None, Some(ca)) => Some(format!(r#"{{"ca_id":"{}"}}"#, ca)),
+        (None, None) => None,
+    };
+
     let sql = crate::db::pg_sql(
         "INSERT INTO audit_events (event_type, actor, target, detail_json, source_ip, session_id) \
          VALUES (?, ?, ?, ?, ?, ?)",
@@ -253,9 +262,9 @@ pub async fn record(pool: &sqlx::AnyPool, state: &AuditState, event: AuditEvent)
         .bind(event.event_type.as_str())
         .bind(&event.operator)
         .bind(&event.subject)
-        .bind(&event.detail)
+        .bind(&detail_json)
         .bind(&event.client_addr)
-        .bind(&event.ca_id)
+        .bind(None::<String>)
         .execute(pool)
         .await;
 

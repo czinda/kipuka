@@ -286,8 +286,9 @@ pub async fn revoke_otp(
     };
 
     let result = sqlx::query(crate::db::pg_sql(
-        "UPDATE otp_tokens SET revoked = 1 WHERE id = ?",
+        "UPDATE otp_tokens SET revoked = ? WHERE id = ?",
     ))
+    .bind(true)
     .bind(otp_id)
     .execute(&state.db)
     .await;

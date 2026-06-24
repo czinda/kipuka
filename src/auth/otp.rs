@@ -158,67 +158,32 @@ async fn validate_otp(app: &Arc<AppState>, entity_id: &str, otp_value: &str) -> 
     // Hash the incoming OTP value with SHA-256 (RHELBU-3536 R11).
     let incoming_hash = hex::encode(Sha256::digest(otp_value.as_bytes()));
 
-    // Query for a valid (non-revoked, non-expired, under usage limit) token
-    // matching this entity and hash.
+    // Atomically validate and consume the OTP in a single UPDATE on the
+    // write pool.  This eliminates the TOCTOU race between SELECT and
+    // UPDATE — if rows_affected() == 1, the OTP was valid and is now
+    // consumed; if 0, it was invalid/expired/already consumed.
     let now = chrono::Utc::now().to_rfc3339();
 
-    let row: Option<OtpValidationRow> = sqlx::query_as(crate::db::pg_sql(
-        "SELECT id, token_hash, current_uses, max_uses \
-         FROM otp_tokens \
-         WHERE entity_id = ? AND revoked = ? AND expires_at > ? AND current_uses < max_uses",
+    let result = sqlx::query(crate::db::pg_sql(
+        "UPDATE otp_tokens SET current_uses = current_uses + 1 \
+         WHERE entity_id = ? AND token_hash = ? AND revoked = ? AND expires_at > ? AND current_uses < max_uses",
     ))
     .bind(entity_id)
+    .bind(&incoming_hash)
     .bind(false)
     .bind(&now)
-    .fetch_optional(&app.db_ro)
+    .execute(&app.db)
     .await
     .map_err(|e| format!("database error: {e}"))?;
 
-    let row = row.ok_or_else(|| "no valid OTP found for this entity".to_string())?;
-
-    // Constant-time comparison of the hash to prevent timing attacks
-    // (RHELBU-3536 R8).  Both are hex-encoded SHA-256 digests (64 bytes).
-    let stored_bytes = row.token_hash.as_bytes();
-    let incoming_bytes = incoming_hash.as_bytes();
-
-    if stored_bytes.len() != incoming_bytes.len() {
-        return Err("OTP hash mismatch".into());
+    if result.rows_affected() == 0 {
+        return Err("no valid OTP found for this entity".to_string());
     }
-
-    let mut diff: u8 = 0;
-    for (a, b) in stored_bytes.iter().zip(incoming_bytes.iter()) {
-        diff |= a ^ b;
-    }
-
-    if diff != 0 {
-        return Err("OTP token does not match".into());
-    }
-
-    // Atomically increment current_uses.
-    sqlx::query(crate::db::pg_sql(
-        "UPDATE otp_tokens SET current_uses = current_uses + 1 WHERE id = ?",
-    ))
-    .bind(row.id)
-    .execute(&app.db)
-    .await
-    .map_err(|e| format!("failed to increment OTP usage: {e}"))?;
 
     debug!(
         entity_id = %entity_id,
-        otp_id = row.id,
-        new_usage = row.current_uses + 1,
-        max_uses = row.max_uses,
         "OTP validated and consumed"
     );
 
     Ok(())
-}
-
-/// Internal row type for OTP validation queries.
-#[derive(sqlx::FromRow)]
-struct OtpValidationRow {
-    id: i64,
-    token_hash: String,
-    current_uses: i64,
-    max_uses: i64,
 }

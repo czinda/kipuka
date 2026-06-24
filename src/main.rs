@@ -21,7 +21,6 @@
 
 use std::sync::Arc;
 
-use base64::Engine as _;
 use clap::Parser;
 use indexmap::IndexMap;
 use tracing_subscriber::EnvFilter;
@@ -105,27 +104,15 @@ async fn run() -> Result<(), String> {
     for ca_cfg in &config.cas {
         tracing::info!(ca_id = %ca_cfg.id, "initializing CA");
 
-        let cert_pem = std::fs::read_to_string(&ca_cfg.cert_file)
-            .map_err(|e| format!("failed to read CA cert {}: {e}", ca_cfg.cert_file))?;
-        let b64 = base64::engine::general_purpose::STANDARD;
-        let mut cert_chain_der: Vec<Vec<u8>> = Vec::new();
-        let mut rest = cert_pem.as_str();
-        while let Some(start) = rest.find("-----BEGIN CERTIFICATE-----") {
-            let after = &rest[start + 27..];
-            if let Some(end) = after.find("-----END CERTIFICATE-----") {
-                let encoded: String = after[..end]
-                    .chars()
-                    .filter(|c| !c.is_whitespace())
-                    .collect();
-                let der = b64
-                    .decode(&encoded)
-                    .map_err(|e| format!("invalid base64 in CA cert: {e}"))?;
-                cert_chain_der.push(der);
-                rest = &after[end + 25..];
-            } else {
-                break;
-            }
-        }
+        let cert_file = std::fs::File::open(&ca_cfg.cert_file)
+            .map_err(|e| format!("failed to open CA cert {}: {e}", ca_cfg.cert_file))?;
+        let mut reader = std::io::BufReader::new(cert_file);
+        let cert_chain_der: Vec<Vec<u8>> = rustls_pemfile::certs(&mut reader)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("failed to parse CA cert {}: {e}", ca_cfg.cert_file))?
+            .into_iter()
+            .map(|c| c.to_vec())
+            .collect();
         if cert_chain_der.is_empty() {
             return Err(format!("no certificates found in {}", ca_cfg.cert_file));
         }

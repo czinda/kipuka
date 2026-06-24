@@ -493,71 +493,73 @@ fn validate_csr(csr_der: &[u8]) -> Result<(), IssuanceError> {
 /// Check key size from CSR against profile minimums.
 fn check_key_size(csr_der: &[u8], profile: &EnrollmentProfile) -> Result<(), IssuanceError> {
     // Parse the CSR to extract the public key info.
-    if let Ok(csr) = synta_certificate::csr::CertificationRequest::from_der(csr_der) {
-        let spki = &csr.certification_request_info.subject_pkinfo;
-        let alg_oid = spki.algorithm.algorithm.components();
-        let key_bits = spki.subject_public_key.bit_len();
+    let csr = synta_certificate::csr::CertificationRequest::from_der(csr_der).map_err(|e| {
+        IssuanceError::InvalidCsr(format!("CSR parse failed in key size check: {e}"))
+    })?;
 
-        let pk_info = synta_certificate::decode_public_key_info(
-            &spki.algorithm.algorithm,
-            spki.algorithm.parameters.as_ref(),
-            spki.subject_public_key.as_bytes(),
-            key_bits,
-        );
+    let spki = &csr.certification_request_info.subject_pkinfo;
+    let alg_oid = spki.algorithm.algorithm.components();
+    let key_bits = spki.subject_public_key.bit_len();
 
-        match &pk_info {
-            synta_certificate::PublicKeyInfo::Rsa { bit_count, .. } => {
-                debug!(
-                    algorithm = "RSA",
-                    key_bits = bit_count,
-                    "CSR public key info"
-                );
-                if (*bit_count as u32) < profile.min_rsa_bits {
-                    return Err(IssuanceError::KeyTooSmall {
-                        algorithm: "RSA".into(),
-                        bits: *bit_count as u32,
-                        min_bits: profile.min_rsa_bits,
-                    });
-                }
+    let pk_info = synta_certificate::decode_public_key_info(
+        &spki.algorithm.algorithm,
+        spki.algorithm.parameters.as_ref(),
+        spki.subject_public_key.as_bytes(),
+        key_bits,
+    );
+
+    match &pk_info {
+        synta_certificate::PublicKeyInfo::Rsa { bit_count, .. } => {
+            debug!(
+                algorithm = "RSA",
+                key_bits = bit_count,
+                "CSR public key info"
+            );
+            if (*bit_count as u32) < profile.min_rsa_bits {
+                return Err(IssuanceError::KeyTooSmall {
+                    algorithm: "RSA".into(),
+                    bits: *bit_count as u32,
+                    min_bits: profile.min_rsa_bits,
+                });
             }
-            synta_certificate::PublicKeyInfo::Ec {
-                bit_count,
-                curve_nist_name,
-                ..
-            } => {
-                let curve_name = curve_nist_name.unwrap_or("unknown");
-                debug!(
-                    algorithm = "EC",
-                    curve = curve_name,
-                    key_bits = bit_count,
-                    "CSR public key info"
-                );
-                let min_bits: usize = match profile.min_ecdsa_curve.as_str() {
-                    "P-256" => 256,
-                    "P-384" => 384,
-                    "P-521" => 521,
-                    _ => 256,
-                };
-                if *bit_count < min_bits {
-                    return Err(IssuanceError::KeyTooSmall {
-                        algorithm: format!("EC {curve_name}"),
-                        bits: *bit_count as u32,
-                        min_bits: min_bits as u32,
-                    });
-                }
+        }
+        synta_certificate::PublicKeyInfo::Ec {
+            bit_count,
+            curve_nist_name,
+            ..
+        } => {
+            let curve_name = curve_nist_name.unwrap_or("unknown");
+            debug!(
+                algorithm = "EC",
+                curve = curve_name,
+                key_bits = bit_count,
+                "CSR public key info"
+            );
+            let min_bits: usize = match profile.min_ecdsa_curve.as_str() {
+                "P-256" => 256,
+                "P-384" => 384,
+                "P-521" => 521,
+                _ => 256,
+            };
+            if *bit_count < min_bits {
+                return Err(IssuanceError::KeyTooSmall {
+                    algorithm: format!("EC {curve_name}"),
+                    bits: *bit_count as u32,
+                    min_bits: min_bits as u32,
+                });
             }
-            synta_certificate::PublicKeyInfo::Unknown {
-                alg_name,
-                bit_count,
-                ..
-            } => {
-                debug!(
-                    algorithm = %alg_name,
-                    key_bits = bit_count,
-                    alg_oid = ?alg_oid,
-                    "CSR public key: unknown algorithm (skipping size check)"
-                );
-            }
+        }
+        synta_certificate::PublicKeyInfo::Unknown {
+            alg_name,
+            bit_count,
+            ..
+        } => {
+            debug!(
+                algorithm = %alg_name,
+                key_bits = bit_count,
+                alg_oid = ?alg_oid,
+                "CSR public key: unknown algorithm (skipping size check)"
+            );
         }
     }
     Ok(())

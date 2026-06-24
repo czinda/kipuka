@@ -167,6 +167,36 @@ pub async fn post_simplereenroll(
     )
     .map_err(|e| KipukaError::Ca(format!("certificate re-issuance failed: {e}")))?;
 
+    // Store the re-enrolled certificate in the database for audit trail.
+    let serial = &result.serial_number;
+    let subject_dn = &result.subject_dn;
+    let issuer_dn = synta_certificate::format_dn(
+        &synta_certificate::Certificate::from_der(&ca.cert_der)
+            .map(|c| c.tbs_certificate.subject.0.to_vec())
+            .unwrap_or_default(),
+    );
+    let not_before_str = result.not_before.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let not_after_str = result.not_after.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+
+    if let Err(e) = sqlx::query(crate::db::pg_sql(
+        "INSERT INTO certificates (serial, subject_dn, issuer_dn, not_before, not_after, der_encoded, ca_id, profile, status) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')",
+    ))
+    .bind(serial)
+    .bind(subject_dn)
+    .bind(&issuer_dn)
+    .bind(&not_before_str)
+    .bind(&not_after_str)
+    .bind(&result.certificate_der)
+    .bind(ca_id)
+    .bind(&profile.name)
+    .execute(&state.db)
+    .await
+    {
+        // Log but do not fail the re-enrollment — the certificate was already signed.
+        tracing::error!(error = %e, serial = %serial, "failed to store re-enrolled certificate in DB");
+    }
+
     let cert_der = result.certificate_der;
     let pkcs7_der = cert_der;
 
