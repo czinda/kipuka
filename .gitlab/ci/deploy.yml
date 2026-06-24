@@ -82,6 +82,7 @@ pages:
   image: alpine:latest
   script:
     - mv target/doc/ public/
+    - echo '<html><head><meta http-equiv="refresh" content="0;url=kipuka/"></head></html>' > public/index.html
   artifacts:
     paths:
       - public
