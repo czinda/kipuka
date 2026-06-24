@@ -131,7 +131,7 @@ pub async fn run_migrations(pool: &sqlx::AnyPool) -> Result<(), KipukaError> {
         tracing::info!("applying migration v1 (initial schema)");
         // Execute migration statements one at a time (sqlx Any doesn't
         // support multi-statement execution on all backends).
-        for statement in MIGRATION_V1.split(";\n") {
+        for statement in MIGRATION_V1.split(';') {
             let trimmed = statement.trim();
             if trimmed.is_empty() || trimmed.starts_with("--") {
                 continue;
@@ -139,7 +139,7 @@ pub async fn run_migrations(pool: &sqlx::AnyPool) -> Result<(), KipukaError> {
             sqlx::query(trimmed)
                 .execute(pool)
                 .await
-                .map_err(|e| KipukaError::Db(format!("migration v1 failed: {e}")))?;
+                .map_err(|e| KipukaError::Db(format!("migration v1 failed on [{trimmed}]: {e}")))?;
         }
 
         // Record the version
