@@ -160,33 +160,73 @@ pub async fn post_star_order(
 
     let order_id = order.id.clone();
 
-    // Issue the first certificate.
-    //
-    // TODO: Implement actual certificate issuance via
-    //       `crate::ca::issue::issue_certificate`.
-    //
-    // let profile = crate::ca::issue::EnrollmentProfile::default();
-    // let ca = state.get_ca(ca_id).ok_or(KipukaError::NotFound)?;
-    // let result = crate::ca::issue::issue_certificate(&csr_der, &profile, &ca.cert_der)?;
-    let cert_der: Vec<u8> = Vec::new(); // Placeholder
+    // Issue the first certificate using the same pattern as simpleenroll.
 
-    if cert_der.is_empty() {
-        return Err(KipukaError::Ca(
-            "STAR certificate issuance not yet implemented".into(),
-        ));
-    }
+    // Look up the CA backend.
+    let ca = state.get_ca(ca_id).ok_or(KipukaError::NotFound)?;
+
+    // Look up the CA config to get key material path or PKCS#11 URI.
+    let ca_cfg = state
+        .config
+        .cas
+        .iter()
+        .find(|c| c.id == ca_id)
+        .ok_or_else(|| KipukaError::Ca(format!("CA config not found for id={ca_id}")))?;
+
+    // Resolve key material — variables must outlive the signing_key borrow.
+    let ca_key_pem: Vec<u8>;
+    let key_label_owned: String;
+
+    let signing_key = if ca_cfg.is_hsm_backed() {
+        let hsm_ctx = state
+            .hsm
+            .as_ref()
+            .ok_or_else(|| KipukaError::Ca("HSM not configured but CA has pkcs11_uri".into()))?;
+        key_label_owned =
+            crate::routes::simpleenroll::parse_pkcs11_object_label(
+                ca_cfg.pkcs11_uri.as_deref().unwrap(),
+            )
+            .map_err(|e| KipukaError::Ca(format!("invalid pkcs11_uri: {e}")))?;
+        crate::ca::issue::CaSigningKey::Hsm {
+            context: hsm_ctx,
+            key_label: &key_label_owned,
+        }
+    } else {
+        ca_key_pem = tokio::fs::read(&ca_cfg.key_file).await.map_err(|e| {
+            KipukaError::Ca(format!("failed to read CA key {}: {e}", ca_cfg.key_file))
+        })?;
+        crate::ca::issue::CaSigningKey::Pem(&ca_key_pem)
+    };
+
+    // Build an enrollment profile scoped to the STAR renewal interval.
+    // STAR certificates are short-lived: validity = renewal_interval.
+    let validity_days = (renewal_interval_secs as u32 / 86400).max(1);
+    let profile = crate::ca::issue::EnrollmentProfile {
+        max_validity_days: validity_days,
+        ..crate::ca::issue::EnrollmentProfile::default()
+    };
+
+    // Issue the first certificate.
+    let result = crate::ca::issue::issue_certificate(
+        &csr_der,
+        &profile,
+        &ca.cert_der,
+        signing_key,
+        &ca.hash_algorithm,
+    )
+    .map_err(|e| KipukaError::Ca(format!("STAR certificate issuance failed: {e}")))?;
 
     // Store the first certificate in the order.
     let first_cert = StarCertificate {
-        certificate_der: cert_der.clone(),
-        serial_number: String::new(), // Populated by actual issuance
-        not_before: chrono::Utc::now(),
-        not_after: chrono::Utc::now() + chrono::Duration::seconds(renewal_interval_secs as i64),
+        certificate_der: result.certificate_der.clone(),
+        serial_number: result.serial_number.clone(),
+        not_before: result.not_before,
+        not_after: result.not_after,
         renewal_number: 0,
         star_order_id: order_id.clone(),
     };
     star_manager
-        .store_renewed_certificate(&order_id, first_cert)
+        .store_renewed_certificate(&order_id, first_cert.clone())
         .map_err(star_error_to_kipuka)?;
 
     // Persist order to database.
@@ -209,15 +249,34 @@ pub async fn post_star_order(
     .execute(&state.db)
     .await?;
 
+    // Persist the first certificate to the star_certificates table.
+    sqlx::query(
+        "INSERT INTO star_certificates \
+         (star_order_id, serial_number, certificate_der, not_before, not_after, renewal_number) \
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&order_id)
+    .bind(&first_cert.serial_number)
+    .bind(&first_cert.certificate_der)
+    .bind(first_cert.not_before.to_rfc3339())
+    .bind(first_cert.not_after.to_rfc3339())
+    .bind(first_cert.renewal_number as i64)
+    .execute(&state.db)
+    .await?;
+
     state
         .record_audit_event(
             "star_order_created",
-            &format!("order_id={order_id}, ca_id={ca_id}, identity={identity}"),
+            &format!(
+                "order_id={order_id}, ca_id={ca_id}, identity={identity}, serial={}",
+                result.serial_number
+            ),
         )
         .await;
 
-    // Build the response: 201 Created with Star-Order-ID header.
-    let pkcs7_der = cert_der; // Placeholder — wrap in PKCS#7 certs-only
+    // Wrap the issued certificate in PKCS#7 certs-only (RFC 7030 §4.2.3).
+    let pkcs7_der =
+        crate::routes::cacerts::build_certs_only_pkcs7(&result.certificate_der)?;
     let response_body = encode_est_base64(&pkcs7_der);
 
     let mut resp = (StatusCode::CREATED, response_body).into_response();
@@ -273,7 +332,10 @@ pub async fn get_star_certificate(
     // Fetch the current certificate (handles status checks internally).
     match star_manager.get_current_certificate(&order_id) {
         Ok(cert) => {
-            let response_body = encode_est_base64(&cert.certificate_der);
+            // Wrap in PKCS#7 certs-only per RFC 7030 §4.2.3.
+            let pkcs7_der =
+                crate::routes::cacerts::build_certs_only_pkcs7(&cert.certificate_der)?;
+            let response_body = encode_est_base64(&pkcs7_der);
 
             let mut resp = (StatusCode::OK, response_body).into_response();
             resp.headers_mut().insert(

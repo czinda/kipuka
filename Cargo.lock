@@ -1316,6 +1316,7 @@ dependencies = [
  "synta 0.2.6 (git+https://codeberg.org/abbra/synta.git?branch=main)",
  "synta-certificate 0.2.6 (git+https://codeberg.org/abbra/synta.git?branch=main)",
  "synta-cmc",
+ "synta-krb5",
  "tempfile",
  "thiserror",
  "tokio",
@@ -2765,6 +2766,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "synta-krb5"
+version = "0.2.6"
+source = "git+https://codeberg.org/abbra/synta.git?branch=main#3d649b801252375d68ccf51918adbb71f7a2229b"
+dependencies = [
+ "synta 0.2.6 (git+https://codeberg.org/abbra/synta.git?branch=main)",
+ "synta-codegen 0.2.6 (git+https://codeberg.org/abbra/synta.git?branch=main)",
+ "synta-derive 0.2.6 (git+https://codeberg.org/abbra/synta.git?branch=main)",
 ]
 
 [[package]]

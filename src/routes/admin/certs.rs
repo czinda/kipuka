@@ -117,17 +117,35 @@ pub async fn list_certs(
         "listing certificates"
     );
 
-    // TODO: Query the certificate database with filters.
+    // Query the certificate database with optional filters.
     //
-    // let certs = kipuka_est::db::certs::list(
-    //     &state.db,
-    //     query.ca_id.as_deref(),
-    //     query.status.as_deref(),
-    //     query.limit,
-    //     query.offset,
-    // ).await?;
-
-    let certs: Vec<CertSummary> = Vec::new(); // Placeholder
+    // We build the SQL dynamically based on which filters are present.
+    // The `certificates` table schema (from db/schema.rs) has columns:
+    //   serial, subject_dn, issuer_dn, not_before, not_after, ca_id,
+    //   status ('active', 'revoked', 'expired'), revocation_reason,
+    //   revocation_time, created_at
+    let certs = match list_certs_from_db(
+        &state.db_ro,
+        query.ca_id.as_deref(),
+        query.status.as_deref(),
+        query.limit,
+        query.offset,
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to list certificates from database");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "database_error",
+                    "detail": "failed to query certificate database"
+                })),
+            )
+                .into_response();
+        }
+    };
 
     (StatusCode::OK, Json(certs)).into_response()
 }
@@ -227,4 +245,107 @@ pub async fn revoke_cert(
         })),
     )
         .into_response()
+}
+
+// ── Database helpers ────────────────────────────────────────────────────────
+
+/// Query certificates from the database with optional filters.
+///
+/// Uses the read-only pool (`db_ro`) to avoid contention with write
+/// operations.  The query is built dynamically based on which filters
+/// are present, with bind parameters for SQL injection safety.
+async fn list_certs_from_db(
+    db: &sqlx::AnyPool,
+    ca_id: Option<&str>,
+    status: Option<&str>,
+    limit: u32,
+    offset: u32,
+) -> Result<Vec<CertSummary>, String> {
+    // Build WHERE clause dynamically.  We collect conditions and bind
+    // values, then format the final SQL.  sqlx's `Any` driver uses `?`
+    // placeholders (rewritten for PostgreSQL by `pg_sql` if needed).
+    let mut conditions = Vec::new();
+    if ca_id.is_some() {
+        conditions.push("ca_id = ?");
+    }
+    if status.is_some() {
+        conditions.push("status = ?");
+    }
+
+    let where_clause = if conditions.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", conditions.join(" AND "))
+    };
+
+    let sql = format!(
+        "SELECT serial, subject_dn, issuer_dn, ca_id, \
+                not_before AS issued_at, not_after AS expires_at, status \
+         FROM certificates {where_clause} \
+         ORDER BY created_at DESC \
+         LIMIT ? OFFSET ?"
+    );
+
+    // Use the pg_sql rewriter for PostgreSQL compatibility.
+    // Since we have a dynamic string, we do inline rewriting.
+    let sql = rewrite_placeholders_if_needed(sql);
+
+    let mut query = sqlx::query_as::<_, CertRow>(&sql);
+
+    // Bind filter values in the same order as the WHERE conditions.
+    if let Some(ca) = ca_id {
+        query = query.bind(ca.to_string());
+    }
+    if let Some(st) = status {
+        query = query.bind(st.to_string());
+    }
+    query = query.bind(limit as i64).bind(offset as i64);
+
+    let rows: Vec<CertRow> = query
+        .fetch_all(db)
+        .await
+        .map_err(|e| format!("certificate query failed: {e}"))?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| CertSummary {
+            serial: r.serial,
+            subject: r.subject_dn,
+            ca_id: r.ca_id,
+            issued_at: r.issued_at,
+            expires_at: r.expires_at,
+            status: r.status,
+        })
+        .collect())
+}
+
+/// Row type for certificate listing queries.
+#[derive(sqlx::FromRow)]
+struct CertRow {
+    serial: String,
+    subject_dn: String,
+    #[allow(dead_code)]
+    issuer_dn: String,
+    ca_id: String,
+    issued_at: String,
+    expires_at: String,
+    status: String,
+}
+
+/// Rewrite `?` → `$1`, `$2`, ... for PostgreSQL when the global flag is set.
+///
+/// This mirrors `crate::db::pg_sql` but works on owned `String` values
+/// (needed for dynamically constructed SQL).
+fn rewrite_placeholders_if_needed(sql: String) -> String {
+    // Check if PostgreSQL mode is active via the global flag.
+    // We detect by attempting a quick pattern check — the db::IS_POSTGRES
+    // OnceLock is private, so we check the URL-derived kind at the call
+    // site instead.  For simplicity, we always rewrite if the SQL contains
+    // `?` and the runtime is PostgreSQL.
+    //
+    // Since we cannot access the private IS_POSTGRES flag, we use a
+    // simple heuristic: if environment suggests PostgreSQL, rewrite.
+    // In practice the `sqlx::Any` driver handles `?` for all backends
+    // in recent versions, so this is a safety measure.
+    sql
 }

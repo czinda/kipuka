@@ -145,22 +145,102 @@ impl HealthChecker {
 
     /// Probe a single CA backend.
     ///
-    /// In a full implementation this would issue an HTTP request to the
-    /// CA's health endpoint or attempt a lightweight certificate status
-    /// check. For now it checks whether the pool considers the CA should
-    /// be re-probed after a circuit-breaker cooldown.
+    /// Issues an HTTP GET to the CA's health endpoint to verify it is
+    /// responding.  For Dogtag CAs this hits `/ca/admin/ca/getStatus`;
+    /// for generic HTTP CAs it performs a simple connectivity check
+    /// against the configured endpoint.
+    ///
+    /// The probe respects the configured timeout ([`HealthConfig::probe_timeout`])
+    /// and returns `Err` with a human-readable reason on failure.
     async fn probe_ca(&self, id: &CaId) -> Result<(), String> {
         // If the CA is unavailable, check whether cooldown has elapsed.
-        if self.pool.should_reprobe(id) {
-            debug!(ca = %id, "cooldown elapsed, attempting re-probe");
-            // TODO: issue actual health-check request to the CA endpoint.
-            // For now, simulate success for circuit-breaker demonstration.
-            return Ok(());
+        // If cooldown hasn't elapsed yet, don't probe — report as still failed.
+        let current_snapshot = self.pool.status_snapshot();
+        let is_unavailable = current_snapshot
+            .get(id)
+            .map(|s| s.health == HealthState::Unavailable)
+            .unwrap_or(false);
+
+        if is_unavailable && !self.pool.should_reprobe(id) {
+            return Err("circuit breaker open, cooldown not elapsed".to_string());
         }
 
-        // TODO: implement actual health probe (HTTP GET to CA status endpoint,
-        // or lightweight certificate issuance test).
-        // Placeholder: always succeed for healthy/degraded CAs.
+        if is_unavailable {
+            debug!(ca = %id, "cooldown elapsed, attempting re-probe");
+        }
+
+        // Find the endpoint URL for this CA.
+        let endpoint = self
+            .pool
+            .connections()
+            .iter()
+            .find(|c| c.id == *id)
+            .map(|c| c.endpoint.clone())
+            .ok_or_else(|| format!("CA {id} not found in pool"))?;
+
+        // Build the health check URL.
+        // For Dogtag CAs (endpoint contains /ca), use the Dogtag status API.
+        // For generic CAs, try a simple GET against the endpoint root.
+        let health_url = if endpoint.contains("/ca") {
+            // Dogtag CA: use the agent status endpoint
+            format!(
+                "{}/admin/ca/getStatus",
+                endpoint.trim_end_matches('/')
+            )
+        } else {
+            // Generic CA: probe the endpoint root
+            endpoint.clone()
+        };
+
+        debug!(ca = %id, url = %health_url, "probing CA health endpoint");
+
+        let client = reqwest::Client::builder()
+            .timeout(self.config.probe_timeout)
+            // Accept self-signed certs for internal CA health checks
+            .danger_accept_invalid_certs(true)
+            .build()
+            .map_err(|e| format!("HTTP client build failed: {e}"))?;
+
+        let response = client
+            .get(&health_url)
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_timeout() {
+                    format!("health probe timed out after {:?}", self.config.probe_timeout)
+                } else if e.is_connect() {
+                    format!("health probe connection refused: {e}")
+                } else {
+                    format!("health probe failed: {e}")
+                }
+            })?;
+
+        let status = response.status();
+        if status.is_server_error() {
+            return Err(format!(
+                "CA returned server error: HTTP {status}"
+            ));
+        }
+
+        // For Dogtag, verify the response indicates the CA subsystem is
+        // running.  A 200 OK from /admin/ca/getStatus with a body
+        // containing "running" confirms the CA is operational.
+        if health_url.contains("getStatus") {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_default();
+            if body.to_lowercase().contains("error")
+                && !body.to_lowercase().contains("running")
+            {
+                return Err(format!(
+                    "Dogtag CA reports unhealthy status: {}",
+                    body.chars().take(200).collect::<String>()
+                ));
+            }
+        }
+
+        debug!(ca = %id, status = %status, "CA health probe succeeded");
         Ok(())
     }
 
