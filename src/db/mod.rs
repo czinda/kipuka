@@ -87,6 +87,30 @@ pub(crate) fn pg_sql(s: &'static str) -> &'static str {
     leaked
 }
 
+/// Rewrite `?` → `$1`, `$2`, … for PostgreSQL on a dynamically-built SQL
+/// string.  Unlike [`pg_sql`], which operates on `&'static str` literals,
+/// this accepts an owned `String` and returns an owned `String`.
+///
+/// When the backend is not PostgreSQL the input is returned unchanged.
+#[allow(dead_code)]
+pub(crate) fn pg_sql_dynamic(s: String) -> String {
+    if !IS_POSTGRES.get().copied().unwrap_or(false) {
+        return s;
+    }
+    let mut result = String::with_capacity(s.len() + 16);
+    let mut param_num = 0u32;
+    for ch in s.chars() {
+        if ch == '?' {
+            param_num += 1;
+            result.push('$');
+            result.push_str(&param_num.to_string());
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
 /// Initialize the primary (read-write) database connection pool.
 pub async fn init_pool(config: &DbConfig) -> Result<(Db, DbKind), KipukaError> {
     let url = config.resolve_url().map_err(KipukaError::Config)?;

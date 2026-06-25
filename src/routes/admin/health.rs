@@ -117,6 +117,13 @@ pub async fn get_health(_admin: AdminAuth, State(state): State<Arc<AppState>>) -
         StatusCode::OK
     };
 
+    state
+        .record_audit_event(
+            "admin_health_check",
+            &format!("status={overall_status}"),
+        )
+        .await;
+
     (status_code, Json(health)).into_response()
 }
 
@@ -131,6 +138,13 @@ pub async fn get_health_db(_admin: AdminAuth, State(state): State<Arc<AppState>>
     } else {
         StatusCode::SERVICE_UNAVAILABLE
     };
+
+    state
+        .record_audit_event(
+            "admin_health_check",
+            &format!("subsystem=database, status={}", health.status),
+        )
+        .await;
 
     (status, Json(health)).into_response()
 }
@@ -159,6 +173,13 @@ pub async fn get_health_hsm(_admin: AdminAuth, State(state): State<Arc<AppState>
     } else {
         StatusCode::SERVICE_UNAVAILABLE
     };
+
+    state
+        .record_audit_event(
+            "admin_health_check",
+            &format!("subsystem=hsm, status={}", health.status),
+        )
+        .await;
 
     (status, Json(health)).into_response()
 }
@@ -192,17 +213,33 @@ pub async fn get_health_ca(_admin: AdminAuth, State(state): State<Arc<AppState>>
         }));
     }
 
+    state
+        .record_audit_event(
+            "admin_health_check",
+            &format!("subsystem=ca, count={}", ca_health.len()),
+        )
+        .await;
+
     (StatusCode::OK, Json(ca_health)).into_response()
 }
 
 // ── Internal health check implementations ────────────────────────────────────
 
 /// Check database connectivity with a lightweight query.
+///
+/// A 2-second timeout prevents a hung database connection from stalling
+/// the health endpoint (and upstream readiness probes).
 async fn check_database_health(state: &AppState) -> SubsystemHealth {
     let start = std::time::Instant::now();
 
-    match sqlx::query("SELECT 1").execute(&state.db).await {
-        Ok(_) => {
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        sqlx::query("SELECT 1").execute(&state.db),
+    )
+    .await;
+
+    match result {
+        Ok(Ok(_)) => {
             let latency = start.elapsed().as_millis() as u64;
             SubsystemHealth {
                 name: "database".to_string(),
@@ -211,13 +248,23 @@ async fn check_database_health(state: &AppState) -> SubsystemHealth {
                 latency_ms: Some(latency),
             }
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             let latency = start.elapsed().as_millis() as u64;
             tracing::error!(error = %e, "database health check failed");
             SubsystemHealth {
                 name: "database".to_string(),
                 status: "unhealthy".to_string(),
                 detail: Some(format!("database unreachable: {e}")),
+                latency_ms: Some(latency),
+            }
+        }
+        Err(_elapsed) => {
+            let latency = start.elapsed().as_millis() as u64;
+            tracing::error!("database health check timed out after 2s");
+            SubsystemHealth {
+                name: "database".to_string(),
+                status: "unhealthy".to_string(),
+                detail: Some("database health check timed out (2s)".to_string()),
                 latency_ms: Some(latency),
             }
         }
@@ -235,7 +282,7 @@ async fn check_hsm_health(state: &AppState) -> SubsystemHealth {
                 SubsystemHealth {
                     name: "hsm".to_string(),
                     status: "healthy".to_string(),
-                    detail: Some(format!("provider: {:?}", hsm.provider)),
+                    detail: Some("HSM session active".to_string()),
                     latency_ms: Some(latency),
                 }
             }

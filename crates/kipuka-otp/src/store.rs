@@ -55,11 +55,17 @@ pub trait OtpStore: Send + Sync {
         hash: &[u8],
     ) -> impl std::future::Future<Output = OtpResult<Option<OtpRecord>>> + Send;
 
-    /// Increment the usage counter for a record.
+    /// Atomically increment the usage counter for a record.
+    ///
+    /// The increment must only succeed when `current_uses < max_uses`,
+    /// preventing double-spend races where two concurrent validators
+    /// both read the same count and both increment.  Returns
+    /// `Err(OtpError::UsageLimitExceeded)` if the OTP was already
+    /// fully consumed by a concurrent request.
     fn increment_uses(
         &self,
         id: &Uuid,
-        new_count: u32,
+        max_uses: u32,
     ) -> impl std::future::Future<Output = OtpResult<()>> + Send;
 
     /// Mark a record as revoked.
@@ -108,11 +114,14 @@ impl OtpStore for InMemoryOtpStore {
         Ok(records.values().find(|r| r.token_hash == hash).cloned())
     }
 
-    async fn increment_uses(&self, id: &Uuid, new_count: u32) -> OtpResult<()> {
+    async fn increment_uses(&self, id: &Uuid, max_uses: u32) -> OtpResult<()> {
         let mut records = self.records.write();
         match records.get_mut(id) {
             Some(r) => {
-                r.current_uses = new_count;
+                if r.current_uses >= max_uses {
+                    return Err(OtpError::UsageLimitExceeded { max_uses });
+                }
+                r.current_uses += 1;
                 Ok(())
             }
             None => Err(OtpError::NotFound),
@@ -274,7 +283,7 @@ impl OtpStore for DbOtpStore {
 
                 let created_at = chrono::DateTime::parse_from_rfc3339(&created_str)
                     .map(|dt| dt.with_timezone(&Utc))
-                    .unwrap_or_else(|_| Utc::now());
+                    .map_err(|e| OtpError::StorageError(format!("invalid created_at: {e}")))?;
 
                 let expires_at = chrono::DateTime::parse_from_rfc3339(&expires_str)
                     .map(|dt| dt.with_timezone(&Utc))
@@ -296,23 +305,29 @@ impl OtpStore for DbOtpStore {
         }
     }
 
-    async fn increment_uses(&self, id: &Uuid, new_count: u32) -> OtpResult<()> {
+    async fn increment_uses(&self, id: &Uuid, max_uses: u32) -> OtpResult<()> {
         let db_id = Self::uuid_to_id(id);
 
-        let sql = self.sql("UPDATE otp_tokens SET current_uses = ? WHERE id = ?");
+        // Atomic increment: only succeeds when current_uses < max_uses,
+        // preventing double-spend races between concurrent validators.
+        let sql = self.sql(
+            "UPDATE otp_tokens SET current_uses = current_uses + 1 \
+             WHERE id = ? AND current_uses < ?",
+        );
 
         let result = sqlx::query(&sql)
-            .bind(new_count as i32)
             .bind(db_id)
+            .bind(max_uses as i32)
             .execute(&self.pool)
             .await
             .map_err(|e| OtpError::StorageError(format!("increment_uses failed: {e}")))?;
 
         if result.rows_affected() == 0 {
-            return Err(OtpError::NotFound);
+            // The OTP was already fully consumed by a concurrent request.
+            return Err(OtpError::UsageLimitExceeded { max_uses });
         }
 
-        debug!(db_id, new_count, "OTP usage count updated");
+        debug!(db_id, max_uses, "OTP usage count atomically incremented");
         Ok(())
     }
 
@@ -397,7 +412,7 @@ impl OtpStore for DbOtpStore {
         ))
     }
 
-    async fn increment_uses(&self, _id: &Uuid, _new_count: u32) -> OtpResult<()> {
+    async fn increment_uses(&self, _id: &Uuid, _max_uses: u32) -> OtpResult<()> {
         Err(OtpError::StorageError(
             "database OTP store not compiled (enable 'db' feature)".into(),
         ))

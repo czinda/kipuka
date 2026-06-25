@@ -65,15 +65,19 @@ pub struct CertDetail {
     pub summary: CertSummary,
 
     /// Subject Alternative Names.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub sans: Vec<String>,
 
     /// Key algorithm (e.g., "EC P-256", "RSA 2048").
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub key_algorithm: String,
 
     /// Signature algorithm (e.g., "SHA256withECDSA").
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub signature_algorithm: String,
 
     /// How the client authenticated for enrollment.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub auth_method: String,
 
     /// Revocation reason (if revoked), per RFC 5280 §5.3.1.
@@ -150,6 +154,18 @@ pub async fn list_certs(
         }
     };
 
+    state
+        .record_audit_event(
+            "admin_cert_list",
+            &format!(
+                "count={}, ca_id={:?}, status={:?}",
+                certs.len(),
+                query.ca_id,
+                query.status
+            ),
+        )
+        .await;
+
     (StatusCode::OK, Json(certs)).into_response()
 }
 
@@ -222,6 +238,10 @@ pub async fn get_cert(
         revocation_reason: row.revocation_reason,
         revoked_at: row.revocation_time,
     };
+
+    state
+        .record_audit_event("admin_cert_detail", &format!("serial={serial}"))
+        .await;
 
     (StatusCode::OK, Json(detail)).into_response()
 }
@@ -307,13 +327,26 @@ pub async fn revoke_cert(
     if result.rows_affected() == 0 {
         // Either the certificate doesn't exist or is already revoked.
         // Check which case it is.
-        let exists = sqlx::query_scalar::<_, i64>(
+        let exists = match sqlx::query_scalar::<_, i64>(
             crate::db::pg_sql("SELECT COUNT(*) FROM certificates WHERE serial = ?"),
         )
         .bind(&serial)
         .fetch_one(&state.db_ro)
         .await
-        .unwrap_or(0);
+        {
+            Ok(count) => count,
+            Err(e) => {
+                tracing::error!(error = %e, serial = %serial, "failed to check certificate existence");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "error": "database_error",
+                        "detail": "failed to query certificate database"
+                    })),
+                )
+                    .into_response();
+            }
+        };
 
         if exists == 0 {
             return (
@@ -369,13 +402,13 @@ async fn list_certs_from_db(
         format!("WHERE {}", conditions.join(" AND "))
     };
 
-    let sql = format!(
+    let sql = crate::db::pg_sql_dynamic(format!(
         "SELECT serial, subject_dn, issuer_dn, ca_id, \
                 not_before AS issued_at, not_after AS expires_at, status \
          FROM certificates {where_clause} \
          ORDER BY created_at DESC \
          LIMIT ? OFFSET ?"
-    );
+    ));
 
     let mut query = sqlx::query_as::<_, CertRow>(&sql);
 

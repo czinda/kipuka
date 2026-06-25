@@ -80,23 +80,17 @@ impl<S: OtpStore> OtpValidator<S> {
             });
         }
 
-        // Check usage limit.
-        if record.current_uses >= record.max_uses {
-            warn!(
-                id = %record.id,
-                current = record.current_uses,
-                max = record.max_uses,
-                "OTP usage limit exceeded"
-            );
-            return Err(OtpError::UsageLimitExceeded {
-                max_uses: record.max_uses,
-            });
-        }
+        // Atomically consume one use.  The store enforces
+        // `current_uses < max_uses` in a single atomic operation,
+        // preventing double-spend races between concurrent validators.
+        self.store
+            .increment_uses(&record.id, record.max_uses)
+            .await?;
 
-        // Consume: increment usage counter.
+        // After a successful atomic increment the use count is
+        // `record.current_uses + 1` (the snapshot was taken before
+        // the increment).
         let new_uses = record.current_uses + 1;
-        self.store.increment_uses(&record.id, new_uses).await?;
-
         let remaining = record.max_uses - new_uses;
 
         debug!(

@@ -107,11 +107,12 @@ where
                 && let Some(ref configured_token) = admin_cfg.bearer_token
             {
                 // Constant-time comparison to prevent timing attacks.
+                // Do not pre-check lengths — ct_eq safely returns 0 for
+                // mismatched lengths, and a length guard would leak the
+                // configured token length via timing.
                 let token_bytes = token.as_bytes();
                 let configured_bytes = configured_token.as_bytes();
-                if token_bytes.len() == configured_bytes.len()
-                    && token_bytes.ct_eq(configured_bytes).into()
-                {
+                if token_bytes.ct_eq(configured_bytes).into() {
                     return Ok(AdminAuth {
                         identity: "admin".to_string(),
                     });
