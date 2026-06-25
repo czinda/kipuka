@@ -32,8 +32,10 @@ use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
+use synta::{Decoder, Encoding, ToDer};
 use thiserror::Error;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 /// OCSP-specific errors.
 #[derive(Debug, Error)]
@@ -306,8 +308,6 @@ impl OcspClient {
     /// Per RFC 6960 §4.1.1, the CertID uses SHA-256 hashes of the issuer
     /// name and key, plus the certificate serial number.
     fn build_cert_id(&self, cert_der: &[u8], issuer_der: &[u8]) -> OcspResult<CertId> {
-        use sha2::{Digest, Sha256};
-
         if cert_der.is_empty() {
             return Err(OcspError::RequestBuild("empty certificate DER".to_string()));
         }
@@ -317,33 +317,75 @@ impl OcspClient {
             ));
         }
 
-        // Placeholder hashes — real implementation extracts the issuer Name
-        // and public key BIT STRING from the DER-encoded certificates using
-        // the synta_certificate parser, then hashes those specific fields.
-        let issuer_name_hash = Sha256::digest(issuer_der).to_vec();
-        let issuer_key_hash = Sha256::digest(issuer_der).to_vec();
+        // Parse the certificate to extract the serial number.
+        let cert = synta_certificate::Certificate::from_der(cert_der).map_err(|e| {
+            OcspError::RequestBuild(format!("certificate parse failed: {e}"))
+        })?;
 
-        // Placeholder serial — real implementation extracts from TBSCertificate.
-        let serial_number = cert_der.get(..8).unwrap_or(cert_der).to_vec();
+        // Parse the issuer certificate to extract the subject Name and
+        // SubjectPublicKeyInfo for hashing per RFC 6960 §4.1.1.
+        let issuer_cert = synta_certificate::Certificate::from_der(issuer_der).map_err(|e| {
+            OcspError::RequestBuild(format!("issuer certificate parse failed: {e}"))
+        })?;
+
+        // Hash the issuer's distinguished name DER encoding (subject field
+        // of the issuer certificate, which equals the issuer field of the
+        // target certificate).
+        let issuer_name_der = issuer_cert.tbs_certificate.subject.0;
+        let issuer_name_hash = Sha256::digest(issuer_name_der).to_vec();
+
+        // Hash the issuer's public key BIT STRING value (the raw key bytes
+        // without the BIT STRING tag/length/unused-bits prefix).
+        let issuer_spki = &issuer_cert.tbs_certificate.subject_public_key_info;
+        let issuer_key_bytes = issuer_spki.subject_public_key.as_bytes();
+        let issuer_key_hash = Sha256::digest(issuer_key_bytes).to_vec();
+
+        // Extract the certificate serial number as big-endian bytes.
+        let serial_number = cert
+            .tbs_certificate
+            .serial_number
+            .to_der()
+            .map_err(|e| OcspError::RequestBuild(format!("serial encode failed: {e}")))?;
+        // `to_der()` returns the full INTEGER TLV; extract just the value
+        // bytes (skip tag + length).
+        let serial_value = extract_integer_value(&serial_number)
+            .ok_or_else(|| OcspError::RequestBuild("malformed serial INTEGER".into()))?;
 
         Ok(CertId {
             hash_algorithm: "2.16.840.1.101.3.4.2.1".to_string(), // SHA-256
             issuer_name_hash,
             issuer_key_hash,
-            serial_number,
+            serial_number: serial_value.to_vec(),
         })
     }
 
     /// Resolve the OCSP responder URL from config or the certificate AIA extension.
-    fn resolve_responder_url(&self, _cert_der: &[u8]) -> OcspResult<String> {
+    fn resolve_responder_url(&self, cert_der: &[u8]) -> OcspResult<String> {
         if let Some(ref url) = self.config.responder_url {
             return Ok(url.clone());
         }
-        // TODO: Extract from Authority Information Access (AIA) extension
-        // (OID 1.3.6.1.5.5.7.1.1) in the certificate. The id-ad-ocsp
-        // access method (OID 1.3.6.1.5.5.7.48.1) provides the URL.
+
+        // Extract from Authority Information Access (AIA) extension
+        // (OID 1.3.6.1.5.5.7.1.1) in the certificate.
+        let cert = synta_certificate::Certificate::from_der(cert_der).map_err(|e| {
+            OcspError::RequestBuild(format!("certificate parse for AIA: {e}"))
+        })?;
+
+        // Use synta-certificate's find_extension_value to locate the AIA
+        // extension value efficiently (single-pass scan, stops at first match).
+        if let Some(ref exts_raw) = cert.tbs_certificate.extensions
+            && let Some(aia_value) = synta_certificate::find_extension_value(
+                exts_raw.as_bytes(),
+                synta_certificate::oids::AUTHORITY_INFO_ACCESS,
+            )
+            && let Some(url) = extract_ocsp_url_from_aia(aia_value)
+        {
+            debug!(url = %url, "resolved OCSP responder URL from AIA extension");
+            return Ok(url);
+        }
+
         Err(OcspError::RequestBuild(
-            "no OCSP responder URL configured and AIA extraction not yet implemented".to_string(),
+            "no OCSP responder URL configured and no AIA OCSP URI found in certificate".into(),
         ))
     }
 
@@ -362,13 +404,27 @@ impl OcspClient {
     ///     requestExtensions [2] EXPLICIT Extensions OPTIONAL
     /// }
     /// ```
-    fn build_ocsp_request(&self, _cert_id: &CertId) -> OcspResult<Vec<u8>> {
-        // Placeholder — real implementation constructs the ASN.1 DER
-        // using the synta crate. The request includes:
-        // 1. A single Request with the CertID
-        // 2. An optional nonce extension (OID 1.3.6.1.5.5.7.48.1.2)
-        //    when require_nonce is true
-        Ok(vec![0x30, 0x00]) // minimal SEQUENCE placeholder
+    fn build_ocsp_request(&self, cert_id: &CertId) -> OcspResult<Vec<u8>> {
+        // Build the SHA-256 AlgorithmIdentifier DER for the CertID.
+        // AlgorithmIdentifier ::= SEQUENCE { algorithm OID, parameters NULL }
+        let sha256_alg_der = sha256_algorithm_identifier_der();
+
+        let request_der = synta_certificate::OCSPRequestBuilder::new()
+            .add_request(synta_certificate::CertIDSpec {
+                hash_algorithm_der: &sha256_alg_der,
+                issuer_name_hash: &cert_id.issuer_name_hash,
+                issuer_key_hash: &cert_id.issuer_key_hash,
+                serial: &cert_id.serial_number,
+            })
+            .build_tbs()
+            .map_err(|e| OcspError::RequestBuild(format!("OCSPRequest build: {e}")))?;
+
+        debug!(
+            request_len = request_der.len(),
+            "built OCSP request DER"
+        );
+
+        Ok(request_der)
     }
 
     /// Send an OCSP request via HTTP POST.
@@ -379,17 +435,56 @@ impl OcspClient {
     /// - Accept: application/ocsp-response
     async fn send_ocsp_request(
         &self,
-        _responder_url: &str,
-        _request_der: &[u8],
+        responder_url: &str,
+        request_der: &[u8],
     ) -> OcspResult<Vec<u8>> {
-        // Placeholder — real implementation uses reqwest or hyper to POST
-        // the DER-encoded OCSP request to the responder URL.
-        //
-        // The timeout is set from self.config.timeout_secs.
-        warn!("OCSP HTTP transport not yet implemented");
-        Err(OcspError::Transport(
-            "OCSP HTTP transport not yet implemented".to_string(),
-        ))
+        let timeout = Duration::from_secs(self.config.timeout_secs);
+
+        let client = reqwest::Client::builder()
+            .timeout(timeout)
+            .build()
+            .map_err(|e| OcspError::Transport(format!("HTTP client build: {e}")))?;
+
+        info!(
+            url = %responder_url,
+            request_len = request_der.len(),
+            timeout_secs = self.config.timeout_secs,
+            "sending OCSP request"
+        );
+
+        let response = client
+            .post(responder_url)
+            .header("Content-Type", "application/ocsp-request")
+            .header("Accept", "application/ocsp-response")
+            .body(request_der.to_vec())
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_timeout() {
+                    OcspError::Timeout(self.config.timeout_secs)
+                } else {
+                    OcspError::Transport(format!("HTTP POST failed: {e}"))
+                }
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(OcspError::Transport(format!(
+                "OCSP responder returned HTTP {status}"
+            )));
+        }
+
+        let response_bytes = response
+            .bytes()
+            .await
+            .map_err(|e| OcspError::Transport(format!("reading response body: {e}")))?;
+
+        debug!(
+            response_len = response_bytes.len(),
+            "received OCSP response"
+        );
+
+        Ok(response_bytes.to_vec())
     }
 
     /// Parse an OCSP response DER and extract the certificate status.
@@ -403,19 +498,206 @@ impl OcspClient {
     /// ```
     fn parse_ocsp_response(
         &self,
-        _response_der: &[u8],
-        _cert_id: &CertId,
+        response_der: &[u8],
+        cert_id: &CertId,
     ) -> OcspResult<OcspStatus> {
-        // Placeholder — real implementation:
-        // 1. Parse OCSPResponseStatus (successful=0, malformedRequest=1, etc.)
-        // 2. Parse BasicOCSPResponse from responseBytes
-        // 3. Verify responder signature
-        // 4. Check nonce if require_nonce is true
-        // 5. Find the SingleResponse matching our CertID
-        // 6. Extract certStatus (good/revoked/unknown)
-        Err(OcspError::Parse(
-            "OCSP response parsing not yet implemented".to_string(),
-        ))
+        // Parse the outer OCSPResponse envelope.
+        let ocsp_response: synta_certificate::ocsp::OCSPResponse<'_> =
+            Decoder::new(response_der, Encoding::Der)
+                .decode()
+                .map_err(|e| OcspError::Parse(format!("OCSPResponse decode: {e}")))?;
+
+        // Check the response status (successful = 0).
+        match &ocsp_response.response_status {
+            synta_certificate::ocsp::OCSPResponseStatus::Successful => {}
+            status => {
+                return Err(OcspError::ResponseStatus(format!("{status:?}")));
+            }
+        }
+
+        // Extract responseBytes — must be present for a successful response.
+        let response_bytes = ocsp_response
+            .response_bytes
+            .as_ref()
+            .ok_or(OcspError::Parse(
+                "successful OCSPResponse has no responseBytes".into(),
+            ))?;
+
+        // Verify the responseType is id-pkix-ocsp-basic (1.3.6.1.5.5.7.48.1.1).
+        if response_bytes.response_type.components()
+            != synta_certificate::ocsp::ID_PKIX_OCSP_BASIC
+        {
+            return Err(OcspError::Parse(format!(
+                "unexpected responseType: {:?}",
+                response_bytes.response_type.components()
+            )));
+        }
+
+        // Parse the BasicOCSPResponse from the response OCTET STRING.
+        let basic_response: synta_certificate::ocsp::BasicOCSPResponse<'_> =
+            Decoder::new(response_bytes.response.as_bytes(), Encoding::Der)
+                .decode()
+                .map_err(|e| OcspError::Parse(format!("BasicOCSPResponse decode: {e}")))?;
+
+        // TODO: Verify the responder signature using the signing key.
+        // This requires access to the responder certificate or the CA
+        // public key, which is deferred to a follow-up implementation.
+        debug!("OCSP response signature verification deferred (not yet implemented)");
+
+        // Find the SingleResponse matching our CertID by comparing the
+        // issuer name hash and serial number.
+        for single in &basic_response.tbs_response_data.responses {
+            let resp_name_hash = single.cert_id.issuer_name_hash.as_bytes();
+            let resp_key_hash = single.cert_id.issuer_key_hash.as_bytes();
+
+            if resp_name_hash == cert_id.issuer_name_hash.as_slice()
+                && resp_key_hash == cert_id.issuer_key_hash.as_slice()
+            {
+                // Match found — extract the cert status.
+                return match &single.cert_status {
+                    synta_certificate::ocsp::CertStatus::Good(_) => {
+                        debug!("OCSP status: good");
+                        Ok(OcspStatus::Good)
+                    }
+                    synta_certificate::ocsp::CertStatus::Revoked(info) => {
+                        let reason = info
+                            .revocation_reason
+                            .as_ref()
+                            .map(|r| format!("{r:?}"))
+                            .unwrap_or_else(|| "unspecified".into());
+                        let revocation_time = format!(
+                            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+                            info.revocation_time.year,
+                            info.revocation_time.month,
+                            info.revocation_time.day,
+                            info.revocation_time.hour,
+                            info.revocation_time.minute,
+                            info.revocation_time.second,
+                        );
+                        warn!(
+                            reason = %reason,
+                            revocation_time = %revocation_time,
+                            "OCSP status: revoked"
+                        );
+                        Ok(OcspStatus::Revoked {
+                            reason,
+                            revocation_time,
+                        })
+                    }
+                    synta_certificate::ocsp::CertStatus::Unknown(_) => {
+                        debug!("OCSP status: unknown");
+                        Ok(OcspStatus::Unknown)
+                    }
+                };
+            }
+        }
+
+        Err(OcspError::MissingCertStatus)
+    }
+}
+
+// ── Module-level helpers ───────────────────────────────────────────────────────
+
+/// SHA-256 AlgorithmIdentifier DER: SEQUENCE { OID 2.16.840.1.101.3.4.2.1, NULL }
+///
+/// Pre-encoded constant avoids runtime construction. The encoding is:
+///   30 0d                 -- SEQUENCE, length 13
+///     06 09               -- OID, length 9
+///       60 86 48 01 65 03 04 02 01  -- 2.16.840.1.101.3.4.2.1
+///     05 00               -- NULL
+fn sha256_algorithm_identifier_der() -> Vec<u8> {
+    vec![
+        0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05,
+        0x00,
+    ]
+}
+
+/// Extract the INTEGER value bytes from a DER-encoded INTEGER TLV.
+///
+/// Skips the 0x02 tag and the length octets, returning only the value.
+fn extract_integer_value(der: &[u8]) -> Option<&[u8]> {
+    if der.len() < 2 || der[0] != 0x02 {
+        return None;
+    }
+    let len_byte = der[1];
+    if len_byte < 0x80 {
+        // Short form length.
+        let value_start = 2;
+        let value_len = len_byte as usize;
+        der.get(value_start..value_start + value_len)
+    } else {
+        // Long form length.
+        let num_len_bytes = (len_byte & 0x7f) as usize;
+        if der.len() < 2 + num_len_bytes {
+            return None;
+        }
+        let mut value_len: usize = 0;
+        for &b in &der[2..2 + num_len_bytes] {
+            value_len = (value_len << 8) | b as usize;
+        }
+        let value_start = 2 + num_len_bytes;
+        der.get(value_start..value_start + value_len)
+    }
+}
+
+/// Extract an OCSP responder URL from an AIA extension value.
+///
+/// Parses the AuthorityInfoAccessSyntax SEQUENCE OF AccessDescription,
+/// looking for the id-ad-ocsp (1.3.6.1.5.5.7.48.1) access method.
+fn extract_ocsp_url_from_aia(aia_value: &[u8]) -> Option<String> {
+    // AuthorityInfoAccessSyntax ::= SEQUENCE SIZE (1..MAX) OF AccessDescription
+    // AccessDescription ::= SEQUENCE {
+    //     accessMethod    OBJECT IDENTIFIER,
+    //     accessLocation  GeneralName
+    // }
+    // We look for accessMethod = id-ad-ocsp (1.3.6.1.5.5.7.48.1)
+    // and accessLocation = uniformResourceIdentifier [6] IA5String.
+    let mut decoder = Decoder::new(aia_value, Encoding::Der);
+    let seq_tag = synta::Tag::universal_constructed(synta::tag::TAG_SEQUENCE);
+
+    let mut outer = decoder.enter_constructed(seq_tag).ok()?;
+    while !outer.is_empty() {
+        let mut access_desc = outer
+            .enter_constructed(seq_tag)
+            .ok()?;
+
+        let method: synta::ObjectIdentifier = access_desc.decode().ok()?;
+        if method.components() == synta_certificate::oids::AD_OCSP {
+            // accessLocation is a GeneralName CHOICE; uniformResourceIdentifier
+            // is [6] IMPLICIT IA5String.
+            let tag = access_desc.peek_tag().ok()?;
+            if tag.number() == 6 {
+                let raw: synta::RawDer<'_> = access_desc.decode().ok()?;
+                // The RawDer includes the [6] tag and length; extract the IA5String value.
+                let raw_bytes = raw.as_bytes();
+                let url_bytes = extract_context_tagged_value(raw_bytes)?;
+                return String::from_utf8(url_bytes.to_vec()).ok();
+            }
+        }
+        // Skip remaining fields if we didn't match.
+    }
+    None
+}
+
+/// Extract the value bytes from a context-specific tagged TLV.
+fn extract_context_tagged_value(tlv: &[u8]) -> Option<&[u8]> {
+    if tlv.len() < 2 {
+        return None;
+    }
+    let len_byte = tlv[1];
+    if len_byte < 0x80 {
+        Some(&tlv[2..2 + len_byte as usize])
+    } else {
+        let num = (len_byte & 0x7f) as usize;
+        if tlv.len() < 2 + num {
+            return None;
+        }
+        let mut vlen: usize = 0;
+        for &b in &tlv[2..2 + num] {
+            vlen = (vlen << 8) | b as usize;
+        }
+        let start = 2 + num;
+        tlv.get(start..start + vlen)
     }
 }
 

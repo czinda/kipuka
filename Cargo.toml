@@ -70,6 +70,9 @@ anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
 time = "0.3"
 
+# HTTP client
+reqwest = { version = "0.12", features = ["rustls-tls"] }
+
 # Misc
 clap = { version = "4", features = ["derive"] }
 indexmap = { version = "2", features = ["serde"] }
@@ -140,6 +143,7 @@ uuid.workspace = true
 bytes.workspace = true
 parking_lot.workspace = true
 dashmap.workspace = true
+reqwest.workspace = true
 
 [features]
 default = ["backend-sqlite"]
@@ -148,5 +152,5 @@ backend-postgres = []
 backend-mariadb = []
 
 [dev-dependencies]
-reqwest = { version = "0.12", features = ["rustls-tls", "json"] }
+reqwest = { version = "0.12", features = ["rustls-tls", "json"] }  # json feature only for tests
 tempfile = "3"

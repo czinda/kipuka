@@ -52,14 +52,10 @@ pub async fn try_extract_mtls(parts: &Parts, _app: &Arc<AppState>) -> Option<Aut
 
     debug!("mTLS client certificate present, extracting identity");
 
-    // Parse the DER-encoded certificate to extract subject DN, SANs, and EKU.
-    //
-    // In a full implementation this would use `synta_certificate` or `x509-cert`
-    // to parse the certificate.  For now we extract a placeholder identity
-    // from the raw DER.
+    // Parse the DER-encoded certificate via synta_certificate to extract
+    // subject DN, SANs, and EKU for identity resolution and authorization.
     let cert_der = &peer_cert.0;
 
-    // Extract subject DN (placeholder — real implementation uses ASN.1 parsing).
     let subject_dn = extract_subject_dn(cert_der);
     let sans = extract_subject_alt_names(cert_der);
     let ekus = extract_extended_key_usage(cert_der);
@@ -214,33 +210,118 @@ pub fn validate_cert_attributes(
 
 /// Extract the subject DN from a DER-encoded certificate.
 ///
-/// TODO: Replace with real ASN.1 parsing via `synta_certificate`.
+/// Parses the X.509 TBSCertificate via `synta_certificate` and formats
+/// the subject Name as an RFC 4514 distinguished name string.
 fn extract_subject_dn(cert_der: &[u8]) -> Option<String> {
-    // Placeholder: in a real implementation this would parse the X.509
-    // TBSCertificate and extract the subject field.
     if cert_der.is_empty() {
+        return None;
+    }
+    let cert = synta_certificate::Certificate::from_der(cert_der).ok()?;
+    let dn = synta_certificate::format_dn(cert.tbs_certificate.subject.0);
+    if dn.is_empty() || dn == "<invalid>" {
         None
     } else {
-        Some("CN=placeholder,O=EST Client".to_string())
+        Some(dn)
     }
 }
 
 /// Extract Subject Alternative Names from a DER-encoded certificate.
 ///
-/// TODO: Replace with real ASN.1 parsing via `synta_certificate`.
+/// Parses the SAN extension (OID 2.5.29.17) from the X.509v3 extensions
+/// and returns human-readable strings for each GeneralName entry.
 fn extract_subject_alt_names(cert_der: &[u8]) -> Vec<String> {
-    let _ = cert_der;
-    // Placeholder: real implementation parses the SAN extension.
-    Vec::new()
+    let cert = match synta_certificate::Certificate::from_der(cert_der) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut result = Vec::new();
+    for (tag, content) in cert.subject_alt_names() {
+        let name = match tag {
+            synta_certificate::general_name::DNS_NAME => {
+                // dNSName — raw IA5String bytes
+                std::str::from_utf8(&content)
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|_| "DNS:<invalid UTF-8>".to_string())
+            }
+            synta_certificate::general_name::RFC822_NAME => {
+                // rfc822Name — email address
+                std::str::from_utf8(&content)
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|_| "email:<invalid UTF-8>".to_string())
+            }
+            synta_certificate::general_name::URI => {
+                // uniformResourceIdentifier
+                std::str::from_utf8(&content)
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|_| "URI:<invalid UTF-8>".to_string())
+            }
+            synta_certificate::general_name::IP_ADDRESS if content.len() == 4 => {
+                // IPv4 address
+                format!("{}.{}.{}.{}", content[0], content[1], content[2], content[3])
+            }
+            synta_certificate::general_name::IP_ADDRESS if content.len() == 16 => {
+                // IPv6 address
+                let addr = std::net::Ipv6Addr::new(
+                    u16::from_be_bytes([content[0], content[1]]),
+                    u16::from_be_bytes([content[2], content[3]]),
+                    u16::from_be_bytes([content[4], content[5]]),
+                    u16::from_be_bytes([content[6], content[7]]),
+                    u16::from_be_bytes([content[8], content[9]]),
+                    u16::from_be_bytes([content[10], content[11]]),
+                    u16::from_be_bytes([content[12], content[13]]),
+                    u16::from_be_bytes([content[14], content[15]]),
+                );
+                addr.to_string()
+            }
+            synta_certificate::general_name::DIRECTORY_NAME => {
+                // directoryName — format as DN
+                format!("DirName:{}", synta_certificate::format_dn(&content))
+            }
+            _ => {
+                // Other types: include tag number for diagnostics
+                format!("GeneralName(tag={tag})")
+            }
+        };
+        result.push(name);
+    }
+    result
 }
 
 /// Extract Extended Key Usage OIDs from a DER-encoded certificate.
 ///
-/// TODO: Replace with real ASN.1 parsing via `synta_certificate`.
+/// Parses the EKU extension (OID 2.5.29.37) from the X.509v3 extensions
+/// and returns each key purpose as a dotted-decimal OID string (e.g.
+/// `"1.3.6.1.5.5.7.3.28"` for id-kp-cmcRA).
 fn extract_extended_key_usage(cert_der: &[u8]) -> Vec<String> {
-    let _ = cert_der;
-    // Placeholder: real implementation parses the EKU extension.
-    Vec::new()
+    let cert = match synta_certificate::Certificate::from_der(cert_der) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    // Get the raw extensions bytes.
+    let ext_raw = match cert.tbs_certificate.extensions.as_ref() {
+        Some(r) => r,
+        None => return Vec::new(),
+    };
+
+    // Find the EKU extension value within the extensions sequence.
+    let eku_bytes = match synta_certificate::find_extension_value(
+        ext_raw.as_bytes(),
+        synta_certificate::oids::EXTENDED_KEY_USAGE,
+    ) {
+        Some(bytes) => bytes,
+        None => return Vec::new(),
+    };
+
+    // EKU is a SEQUENCE OF ObjectIdentifier.
+    let mut decoder = synta::Decoder::new(eku_bytes, synta::Encoding::Der);
+    let oids: Vec<synta::ObjectIdentifier> = match decoder.decode() {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+
+    oids.iter().map(|oid| oid.to_string()).collect()
 }
 
 /// Check certificate revocation status via OCSP or CRL.

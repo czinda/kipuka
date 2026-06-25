@@ -138,23 +138,88 @@ pub async fn get_csrattrs(
 
 /// Encode CSR attribute OID strings into DER format.
 ///
-/// TODO: Replace with proper ASN.1 construction via `synta` or `der` crate.
+/// Produces the RFC 7030 §4.5.2 `CsrAttrs` structure:
+///
+/// ```asn1
+/// CsrAttrs ::= SEQUENCE SIZE (1..MAX) OF AttrOrOID
+/// AttrOrOID ::= CHOICE {
+///     oid       OBJECT IDENTIFIER,
+///     attribute Attribute {{ ... }}
+/// }
+/// ```
+///
+/// Each configured OID string is resolved against `synta_certificate::oids`
+/// well-known constants where possible, falling back to dotted-decimal
+/// parsing for custom OIDs.
 fn encode_csr_attrs(oid_strings: &[String]) -> Result<Vec<u8>, KipukaError> {
+    use synta::{Encoding, Encoder, ObjectIdentifier, Tag, tag};
+
     if oid_strings.is_empty() {
         return Ok(Vec::new());
     }
 
-    // Placeholder: encode OID strings into a minimal DER SEQUENCE.
-    //
-    // Real implementation:
-    //   let mut seq = der::asn1::SequenceOf::<der::asn1::ObjectIdentifier, MAX>::new();
-    //   for oid_str in oid_strings {
-    //       let oid = der::asn1::ObjectIdentifier::new(oid_str)?;
-    //       seq.add(oid)?;
-    //   }
-    //   let der_bytes = seq.to_der()?;
+    let seq_tag = Tag::universal_constructed(tag::TAG_SEQUENCE);
+    let mut enc = Encoder::new(Encoding::Der);
 
-    // For now, return an empty SEQUENCE (0x30 0x00).
-    // This is technically valid ASN.1 but does not encode any OIDs.
-    Ok(vec![0x30, 0x00])
+    // CsrAttrs SEQUENCE
+    enc.start_constructed_no_guard(seq_tag)
+        .map_err(|e| KipukaError::Internal(format!("CsrAttrs SEQUENCE: {e}")))?;
+
+    for oid_str in oid_strings {
+        // Resolve the OID string to components. Try well-known OIDs first,
+        // then fall back to dotted-decimal parsing.
+        let components = resolve_oid_components(oid_str)?;
+        let oid = ObjectIdentifier::new(&components).map_err(|e| {
+            KipukaError::Internal(format!("invalid OID '{oid_str}': {e}"))
+        })?;
+
+        enc.encode(&oid)
+            .map_err(|e| KipukaError::Internal(format!("OID encode '{oid_str}': {e}")))?;
+    }
+
+    // Close CsrAttrs SEQUENCE
+    enc.end_constructed()
+        .map_err(|e| KipukaError::Internal(format!("CsrAttrs end: {e}")))?;
+
+    let der_bytes = enc
+        .finish()
+        .map_err(|e| KipukaError::Internal(format!("CsrAttrs DER finish: {e}")))?;
+
+    tracing::debug!(
+        num_oids = oid_strings.len(),
+        der_len = der_bytes.len(),
+        "encoded CSR attributes"
+    );
+
+    Ok(der_bytes)
+}
+
+/// Resolve an OID string to its component integers.
+///
+/// First checks known OID constants from `synta_certificate::oids` (avoids
+/// hardcoding), then falls back to parsing the dotted-decimal string.
+fn resolve_oid_components(oid_str: &str) -> Result<Vec<u32>, KipukaError> {
+    // Map well-known OID strings to synta-certificate constants.
+    let components: &[u32] = match oid_str {
+        oids::CHALLENGE_PASSWORD => synta_certificate::oids::PKCS9_CHALLENGE_PASSWORD,
+        oids::EXTENSION_REQUEST => synta_certificate::oids::PKCS9_EXTENSION_REQUEST,
+        oids::EC_PUBLIC_KEY => synta_certificate::oids::EC_PUBLIC_KEY,
+        oids::RSA_ENCRYPTION => synta_certificate::oids::RSA_ENCRYPTION,
+        oids::KEY_USAGE => synta_certificate::oids::KEY_USAGE,
+        oids::EXT_KEY_USAGE => synta_certificate::oids::EXTENDED_KEY_USAGE,
+        oids::SUBJECT_ALT_NAME => synta_certificate::oids::SUBJECT_ALT_NAME,
+        oids::SECP256R1 => synta_certificate::oids::EC_CURVE_P256,
+        oids::SECP384R1 => synta_certificate::oids::EC_CURVE_P384,
+        _ => {
+            // Fall back to parsing dotted-decimal OID string.
+            let parts: Result<Vec<u32>, _> =
+                oid_str.split('.').map(|s| s.parse::<u32>()).collect();
+            return parts.map_err(|e| {
+                KipukaError::Internal(format!(
+                    "invalid OID string '{oid_str}': {e}"
+                ))
+            });
+        }
+    };
+    Ok(components.to_vec())
 }

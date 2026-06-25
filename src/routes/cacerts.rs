@@ -97,19 +97,112 @@ pub async fn get_cacerts(
     Ok(resp)
 }
 
-/// Build a minimal PKCS#7 certs-only SignedData containing the given
-/// DER-encoded certificates.
+/// Build a PKCS#7 certs-only SignedData containing the given DER-encoded
+/// certificate(s).
 ///
-/// TODO: Replace with proper ASN.1 construction via `synta` or `cms` crate.
+/// Produces the RFC 5652 §5.1 degenerate (certs-only) SignedData structure:
+///
+/// ```text
+/// ContentInfo ::= SEQUENCE {
+///     contentType  OBJECT IDENTIFIER (id-signedData),
+///     content [0]  EXPLICIT SignedData
+/// }
+/// SignedData ::= SEQUENCE {
+///     version             INTEGER (1),
+///     digestAlgorithms    SET (empty),
+///     encapContentInfo    SEQUENCE { contentType OID (id-data) },
+///     certificates   [0]  IMPLICIT SET OF Certificate,
+///     signerInfos         SET (empty)
+/// }
+/// ```
 fn build_certs_only_pkcs7(cert_der: &[u8]) -> Result<Vec<u8>, KipukaError> {
+    use synta::{Encoding, Encoder, ObjectIdentifier, Tag, tag};
+
     if cert_der.is_empty() {
         return Err(KipukaError::Ca("CA certificate DER is empty".into()));
     }
 
-    // Placeholder: in a real implementation this would construct a proper
-    // PKCS#7 SignedData ASN.1 structure using the `cms` or `synta` crate.
-    //
-    // For now, return a degenerate SignedData that wraps the raw cert.
-    // Real implementation: kipuka_est::pkcs7::build_certs_only(certs)
-    Ok(cert_der.to_vec())
+    // OID constants from synta-certificate.
+    let oid_signed_data = ObjectIdentifier::new(synta_certificate::oids::CMS_SIGNED_DATA)
+        .map_err(|e| KipukaError::Ca(format!("id-signedData OID: {e}")))?;
+    let oid_data = ObjectIdentifier::new(synta_certificate::oids::CMS_DATA)
+        .map_err(|e| KipukaError::Ca(format!("id-data OID: {e}")))?;
+
+    let seq_tag = Tag::universal_constructed(tag::TAG_SEQUENCE);
+    let set_tag = Tag::universal_constructed(tag::TAG_SET);
+    let ctx0_tag = Tag::context_specific_constructed(0);
+
+    let mut enc = Encoder::new(Encoding::Der);
+
+    // ContentInfo SEQUENCE
+    enc.start_constructed_no_guard(seq_tag)
+        .map_err(|e| KipukaError::Ca(format!("ContentInfo SEQUENCE: {e}")))?;
+
+    // contentType: id-signedData
+    enc.encode(&oid_signed_data)
+        .map_err(|e| KipukaError::Ca(format!("contentType OID: {e}")))?;
+
+    // content [0] EXPLICIT
+    enc.start_constructed_no_guard(ctx0_tag)
+        .map_err(|e| KipukaError::Ca(format!("[0] EXPLICIT: {e}")))?;
+
+    // SignedData SEQUENCE
+    enc.start_constructed_no_guard(seq_tag)
+        .map_err(|e| KipukaError::Ca(format!("SignedData SEQUENCE: {e}")))?;
+
+    // version INTEGER 1
+    let version = synta::Integer::from_i64(1);
+    enc.encode(&version)
+        .map_err(|e| KipukaError::Ca(format!("version INTEGER: {e}")))?;
+
+    // digestAlgorithms SET (empty)
+    enc.start_constructed_no_guard(set_tag)
+        .map_err(|e| KipukaError::Ca(format!("digestAlgorithms SET: {e}")))?;
+    enc.end_constructed()
+        .map_err(|e| KipukaError::Ca(format!("digestAlgorithms end: {e}")))?;
+
+    // encapContentInfo SEQUENCE { contentType: id-data }
+    enc.start_constructed_no_guard(seq_tag)
+        .map_err(|e| KipukaError::Ca(format!("encapContentInfo SEQUENCE: {e}")))?;
+    enc.encode(&oid_data)
+        .map_err(|e| KipukaError::Ca(format!("id-data OID: {e}")))?;
+    enc.end_constructed()
+        .map_err(|e| KipukaError::Ca(format!("encapContentInfo end: {e}")))?;
+
+    // certificates [0] IMPLICIT SET OF Certificate
+    enc.start_constructed_no_guard(ctx0_tag)
+        .map_err(|e| KipukaError::Ca(format!("certificates [0]: {e}")))?;
+    enc.write_bytes(cert_der);
+    enc.end_constructed()
+        .map_err(|e| KipukaError::Ca(format!("certificates end: {e}")))?;
+
+    // signerInfos SET (empty)
+    enc.start_constructed_no_guard(set_tag)
+        .map_err(|e| KipukaError::Ca(format!("signerInfos SET: {e}")))?;
+    enc.end_constructed()
+        .map_err(|e| KipukaError::Ca(format!("signerInfos end: {e}")))?;
+
+    // Close SignedData SEQUENCE
+    enc.end_constructed()
+        .map_err(|e| KipukaError::Ca(format!("SignedData end: {e}")))?;
+
+    // Close [0] EXPLICIT
+    enc.end_constructed()
+        .map_err(|e| KipukaError::Ca(format!("[0] end: {e}")))?;
+
+    // Close ContentInfo SEQUENCE
+    enc.end_constructed()
+        .map_err(|e| KipukaError::Ca(format!("ContentInfo end: {e}")))?;
+
+    let pkcs7_der = enc
+        .finish()
+        .map_err(|e| KipukaError::Ca(format!("PKCS#7 DER finish: {e}")))?;
+
+    tracing::debug!(
+        pkcs7_len = pkcs7_der.len(),
+        cert_len = cert_der.len(),
+        "built PKCS#7 certs-only SignedData"
+    );
+
+    Ok(pkcs7_der)
 }

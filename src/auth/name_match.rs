@@ -162,8 +162,7 @@ pub fn validate_identity(cert_der: &[u8], expected: &str) -> Result<bool, String
         return Err("empty expected identity".into());
     }
 
-    // Extract SANs from the certificate.
-    // TODO: Replace with real X.509 parsing via `x509-cert` or `synta_certificate`.
+    // Extract SANs from the certificate via synta_certificate.
     let sans = extract_sans(cert_der);
 
     if !sans.is_empty() {
@@ -206,21 +205,64 @@ enum SanEntry {
 
 /// Extract Subject Alternative Name entries from a DER-encoded certificate.
 ///
-/// TODO: Replace with real ASN.1 parsing.  This is a placeholder that
-/// returns an empty list; the real implementation needs to parse the
-/// SAN extension (OID 2.5.29.17) from the TBSCertificate extensions.
-fn extract_sans(_cert_der: &[u8]) -> Vec<SanEntry> {
-    // Placeholder — real implementation parses X.509 SAN extension.
-    Vec::new()
+/// Parses the SAN extension (OID 2.5.29.17) from the TBSCertificate using
+/// `synta_certificate::Certificate::subject_alt_names()`, which returns
+/// `(tag_number, content_bytes)` pairs per RFC 5280 §4.2.1.6.
+fn extract_sans(cert_der: &[u8]) -> Vec<SanEntry> {
+    let cert = match synta_certificate::Certificate::from_der(cert_der) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    cert.subject_alt_names()
+        .into_iter()
+        .filter_map(|(tag, content)| match tag {
+            synta_certificate::general_name::DNS_NAME => {
+                // dNSName [2] — raw IA5String bytes (DNS hostname).
+                std::str::from_utf8(&content)
+                    .ok()
+                    .map(|s| SanEntry::Dns(s.to_string()))
+            }
+            synta_certificate::general_name::RFC822_NAME => {
+                // rfc822Name [1] — raw IA5String bytes (email address).
+                std::str::from_utf8(&content)
+                    .ok()
+                    .map(|s| SanEntry::Email(s.to_string()))
+            }
+            synta_certificate::general_name::IP_ADDRESS => {
+                // iPAddress [7] — 4 bytes (IPv4) or 16 bytes (IPv6).
+                match content.len() {
+                    4 => Some(SanEntry::Ip(IpAddr::from(
+                        <[u8; 4]>::try_from(&content[..]).unwrap(),
+                    ))),
+                    16 => Some(SanEntry::Ip(IpAddr::from(
+                        <[u8; 16]>::try_from(&content[..]).unwrap(),
+                    ))),
+                    _ => None, // malformed iPAddress
+                }
+            }
+            _ => None, // otherName, directoryName, URI, etc. — not used for identity matching
+        })
+        .collect()
 }
 
 /// Extract the subject Common Name from a DER-encoded certificate.
 ///
-/// TODO: Replace with real ASN.1 parsing.
-fn extract_subject_cn(_cert_der: &[u8]) -> Option<String> {
-    // Placeholder — real implementation parses the subject RDN sequence
-    // and extracts the CN attribute (OID 2.5.4.3).
-    None
+/// Parses the certificate subject RDN sequence using
+/// `synta_certificate::parse_name_attrs()` and returns the value of the
+/// CN attribute (OID 2.5.4.3).  If multiple CN attributes are present,
+/// returns the last one (matching RFC 4519 / LDAP convention for multi-valued RDNs).
+fn extract_subject_cn(cert_der: &[u8]) -> Option<String> {
+    let cert = synta_certificate::Certificate::from_der(cert_der).ok()?;
+    let subject_bytes = cert.tbs_certificate.subject.0;
+    let attrs = synta_certificate::parse_name_attrs(subject_bytes);
+
+    // OID 2.5.4.3 = commonName (CN).
+    attrs
+        .into_iter()
+        .rev()
+        .find(|(oid, _)| oid == "2.5.4.3")
+        .map(|(_, value)| value)
 }
 
 /// Check a list of SAN entries against an expected identity.
