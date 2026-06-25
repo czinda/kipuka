@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <job>
-  <whiteboard>kipuka EST + FreeIPA GSSAPI/Kerberos integration test - RHEL 10.0</whiteboard>
+  <whiteboard>kipuka EST + FreeIPA GSSAPI/Kerberos integration test - RHEL 10.2 nightly</whiteboard>
   <recipeSet>
-    <recipe whiteboard="kipuka-gssapi-freeipa">
+    <recipe whiteboard="kipuka-gssapi-freeipa-rhel102">
       <distroRequires>
         <and>
-          <distro_name op="=" value="RHEL-10.0-updates-20260623.1"/>
+          <distro_name op="like" value="RHEL-10.2.0-%"/>
           <distro_variant op="=" value="BaseOS"/>
           <distro_arch op="=" value="x86_64"/>
         </and>
@@ -19,10 +19,7 @@
         </and>
       </hostRequires>
       <repos>
-        <repo name="rhel-10-crb"
-              url="http://download.eng.bos.redhat.com/rhel-10/composes/RHEL-10/RHEL-10.0-updates-20260623.1/compose/CRB/x86_64/os/"/>
-        <repo name="rhel-10-appstream"
-              url="http://download.eng.bos.redhat.com/rhel-10/composes/RHEL-10/RHEL-10.0-updates-20260623.1/compose/AppStream/x86_64/os/"/>
+        <!-- Repos auto-populated by Beaker for nightly composes -->
       </repos>
       <partitions>
         <partition name="/" size="30" type="part" fs="xfs"/>
