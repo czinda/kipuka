@@ -187,10 +187,10 @@ pub async fn post_serverkeygen(
             KipukaError::Ca("Dogtag returned complete but no certificate for keygen".into())
         })?;
 
-        // The private key from KRA — use wrapped key if available, else public key DER.
-        let private_key_der = keygen_result
-            .wrapped_private_key
-            .unwrap_or(keygen_result.public_key_der);
+        // The private key from KRA — must be the wrapped key, never the public key.
+        let private_key_der = keygen_result.wrapped_private_key.ok_or_else(|| {
+            KipukaError::Ca("KRA did not return a wrapped private key".into())
+        })?;
 
         // Build the multipart/mixed response.
         let response_body = build_multipart_response(&cert_der, &private_key_der);
@@ -271,7 +271,7 @@ pub async fn post_serverkeygen(
             .as_ref()
             .ok_or_else(|| KipukaError::Ca("HSM not configured but CA has pkcs11_uri".into()))?;
         key_label_owned = crate::routes::simpleenroll::parse_pkcs11_object_label(
-            ca_cfg.pkcs11_uri.as_deref().unwrap(),
+            ca_cfg.pkcs11_uri.as_deref().ok_or_else(|| KipukaError::Ca("CA marked as HSM-backed but pkcs11_uri not configured".into()))?,
         )
         .map_err(|e| KipukaError::Ca(format!("invalid pkcs11_uri: {e}")))?;
         crate::ca::issue::CaSigningKey::Hsm {

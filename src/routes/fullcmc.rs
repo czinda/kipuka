@@ -254,7 +254,7 @@ pub async fn post_fullcmc(
             .as_ref()
             .ok_or_else(|| KipukaError::Ca("HSM not configured but CA has pkcs11_uri".into()))?;
         key_label_owned =
-            crate::routes::simpleenroll::parse_pkcs11_object_label(ca_cfg.pkcs11_uri.as_deref().unwrap())
+            crate::routes::simpleenroll::parse_pkcs11_object_label(ca_cfg.pkcs11_uri.as_deref().ok_or_else(|| KipukaError::Ca("CA marked as HSM-backed but pkcs11_uri not configured".into()))?)
                 .map_err(|e| KipukaError::Ca(format!("invalid pkcs11_uri: {e}")))?;
         ca_key_pem = Vec::new(); // unused in HSM path
     } else {

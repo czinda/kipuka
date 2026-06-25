@@ -13,12 +13,14 @@
 //! RFC 8295 §3: The EST server MUST verify the CMS SignedData signature
 //! and extract the signer's certificate for identity verification.
 
+use sha2::Digest;
 use synta::{Decoder, Encoding, Tag, TagClass};
-use synta_certificate::oids::CMS_SIGNED_DATA;
+use synta_certificate::oids::{self, CMS_SIGNED_DATA};
 use synta_certificate::{
     cert_byte_ranges, default_signature_verifier, name::format_dn, BackendPublicKey,
-    CertByteRanges, KeyWrapAlgorithm,
+    CertByteRanges, Certificate, KeyWrapAlgorithm,
 };
+use tracing::warn;
 
 use crate::auth::{AuthMethod, AuthResult};
 use crate::error::KipukaError;

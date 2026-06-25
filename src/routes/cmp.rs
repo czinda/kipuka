@@ -383,12 +383,10 @@ pub fn parse_cmp_message(der: &[u8]) -> Result<CmpRequest, KipukaError> {
             ));
         }
     } else {
-        // Unprotected message — only acceptable for certain discovery messages.
-        // For now, require at least a MAC placeholder so callers can decide
-        // whether to accept it.
-        CmpProtectionType::Mac {
-            algorithm: "unprotected".into(),
-        }
+        // Unprotected messages are not acceptable — reject them outright.
+        return Err(KipukaError::Auth(
+            "CMP message has no protection".into(),
+        ));
     };
 
     Ok(CmpRequest {
@@ -470,7 +468,12 @@ pub fn build_cmp_response(
     //   - senderNonce = fresh random nonce
     //   - recipNonce = request's senderNonce (replay protection)
     let sender_spec = GeneralNameSpec::rfc822("ca@kipuka.dev");
-    let recipient_spec = GeneralNameSpec::rfc822("client@kipuka.dev");
+    // Use the request's sender as the recipient, echoing it back per CMP protocol.
+    let recipient_spec = if req.sender.is_empty() {
+        GeneralNameSpec::rfc822("unknown@kipuka.dev")
+    } else {
+        GeneralNameSpec::rfc822(&req.sender)
+    };
 
     let sender_gn = sender_spec.to_general_name().map_err(|e| {
         KipukaError::Internal(format!("failed to encode CA sender name: {e}"))
@@ -861,7 +864,7 @@ async fn process_enrollment_request(
         })?;
         key_label_owned =
             crate::routes::simpleenroll::parse_pkcs11_object_label(
-                ca_cfg.pkcs11_uri.as_deref().unwrap(),
+                ca_cfg.pkcs11_uri.as_deref().ok_or_else(|| KipukaError::Ca("CA marked as HSM-backed but pkcs11_uri not configured".into()))?,
             )
             .map_err(|e| KipukaError::Ca(format!("invalid pkcs11_uri: {e}")))?;
         crate::ca::issue::CaSigningKey::Hsm {
@@ -1224,10 +1227,10 @@ mod tests {
         assert!(matches!(result, Err(KipukaError::BadRequest(_))));
     }
 
-    /// Build a valid PKIMessage DER using `CMPMessageBuilder` and verify
-    /// that `parse_cmp_message` can decode it correctly.
+    /// Build an unprotected PKIMessage DER and verify that
+    /// `parse_cmp_message` rejects it (unprotected messages must be refused).
     #[test]
-    fn parse_valid_pkiconf_message() {
+    fn parse_rejects_unprotected_pkiconf_message() {
         use synta_certificate::CMPMessageBuilder;
 
         let msg_der = CMPMessageBuilder::new()
@@ -1239,16 +1242,13 @@ mod tests {
             .build()
             .expect("CMPMessageBuilder::build failed");
 
-        let req = parse_cmp_message(&msg_der).expect("parse should succeed");
-        assert_eq!(req.message_type, CmpMessageType::PkiConf);
-        assert_eq!(req.transaction_id, b"\x01\x02\x03\x04");
-        assert_eq!(req.sender_nonce, b"\xaa\xbb\xcc\xdd");
-        assert_eq!(req.sender, "client@example.com");
+        let result = parse_cmp_message(&msg_der);
+        assert!(matches!(result, Err(KipukaError::Auth(_))), "unprotected CMP message should be rejected");
     }
 
-    /// Build an IR message and verify parse extracts the correct type.
+    /// Build an unprotected IR message and verify parse rejects it.
     #[test]
-    fn parse_valid_ir_message() {
+    fn parse_rejects_unprotected_ir_message() {
         use synta_certificate::CMPMessageBuilder;
 
         // Build a minimal CertReqMessages body (empty SEQUENCE).
@@ -1263,16 +1263,13 @@ mod tests {
             .build()
             .expect("CMPMessageBuilder::build failed for ir");
 
-        let req = parse_cmp_message(&msg_der).expect("parse should succeed");
-        assert_eq!(req.message_type, CmpMessageType::Ir);
-        assert_eq!(req.transaction_id, b"\x10\x20\x30\x40");
-        assert!(req.sender_nonce.len() == 8);
-        assert_eq!(req.sender, "user@example.com");
+        let result = parse_cmp_message(&msg_der);
+        assert!(matches!(result, Err(KipukaError::Auth(_))), "unprotected CMP message should be rejected");
     }
 
-    /// Build a GENM message and verify parse extracts the correct type.
+    /// Build an unprotected GENM message and verify parse rejects it.
     #[test]
-    fn parse_valid_genm_message() {
+    fn parse_rejects_unprotected_genm_message() {
         use synta_certificate::CMPMessageBuilder;
 
         // Empty GenMsgContent (SEQUENCE OF InfoTypeAndValue).
@@ -1287,13 +1284,8 @@ mod tests {
             .build()
             .expect("CMPMessageBuilder::build failed for genm");
 
-        let req = parse_cmp_message(&msg_der).expect("parse should succeed");
-        assert_eq!(req.message_type, CmpMessageType::GenM);
-        assert!(req.message_type.is_request());
-        assert_eq!(
-            req.message_type.expected_response(),
-            Some(CmpMessageType::GenP)
-        );
+        let result = parse_cmp_message(&msg_der);
+        assert!(matches!(result, Err(KipukaError::Auth(_))), "unprotected CMP message should be rejected");
     }
 
     /// Test build_cmp_response produces valid DER that round-trips

@@ -467,8 +467,14 @@ async fn fetch_and_check_crl(
     client_serial: &synta::Integer,
     issuer_spki_der: &[u8],
 ) -> Result<(), String> {
-    // Fetch the CRL via HTTP.
-    let response = reqwest::get(url)
+    // Fetch the CRL via HTTP with timeout and size limit.
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("CRL client error: {e}"))?;
+    let response = client
+        .get(url)
+        .send()
         .await
         .map_err(|e| format!("HTTP fetch failed for {url}: {e}"))?;
 
@@ -477,6 +483,15 @@ async fn fetch_and_check_crl(
             "HTTP {} fetching CRL from {url}",
             response.status()
         ));
+    }
+
+    // Reject excessively large CRLs (> 10 MB) to prevent resource exhaustion.
+    if let Some(len) = response.content_length() {
+        if len > 10_000_000 {
+            return Err(format!(
+                "CRL from {url} too large ({len} bytes, max 10 MB)"
+            ));
+        }
     }
 
     let crl_der = response

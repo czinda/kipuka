@@ -129,8 +129,18 @@ async fn renewal_cycle(
         let signing_key = match ca_cfg {
             Some(cfg) if cfg.is_hsm_backed() => match hsm {
                 Some(hsm_ctx) => {
+                    let pkcs11_uri = match cfg.pkcs11_uri.as_deref() {
+                        Some(uri) => uri,
+                        None => {
+                            warn!(
+                                order_id = %id,
+                                "CA marked as HSM-backed but pkcs11_uri not configured — skipping"
+                            );
+                            continue;
+                        }
+                    };
                     key_label_owned = match crate::routes::simpleenroll::parse_pkcs11_object_label(
-                        cfg.pkcs11_uri.as_deref().unwrap(),
+                        pkcs11_uri,
                     ) {
                         Ok(l) => l,
                         Err(e) => {

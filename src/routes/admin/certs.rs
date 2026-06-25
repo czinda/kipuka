@@ -117,6 +117,9 @@ pub async fn list_certs(
         "listing certificates"
     );
 
+    // Cap the limit to prevent excessive queries.
+    let limit = query.limit.min(1000);
+
     // Query the certificate database with optional filters.
     //
     // We build the SQL dynamically based on which filters are present.
@@ -128,7 +131,7 @@ pub async fn list_certs(
         &state.db_ro,
         query.ca_id.as_deref(),
         query.status.as_deref(),
-        query.limit,
+        limit,
         query.offset,
     )
     .await
@@ -286,10 +289,6 @@ async fn list_certs_from_db(
          LIMIT ? OFFSET ?"
     );
 
-    // Use the pg_sql rewriter for PostgreSQL compatibility.
-    // Since we have a dynamic string, we do inline rewriting.
-    let sql = rewrite_placeholders_if_needed(sql);
-
     let mut query = sqlx::query_as::<_, CertRow>(&sql);
 
     // Bind filter values in the same order as the WHERE conditions.
@@ -332,20 +331,3 @@ struct CertRow {
     status: String,
 }
 
-/// Rewrite `?` → `$1`, `$2`, ... for PostgreSQL when the global flag is set.
-///
-/// This mirrors `crate::db::pg_sql` but works on owned `String` values
-/// (needed for dynamically constructed SQL).
-fn rewrite_placeholders_if_needed(sql: String) -> String {
-    // Check if PostgreSQL mode is active via the global flag.
-    // We detect by attempting a quick pattern check — the db::IS_POSTGRES
-    // OnceLock is private, so we check the URL-derived kind at the call
-    // site instead.  For simplicity, we always rewrite if the SQL contains
-    // `?` and the runtime is PostgreSQL.
-    //
-    // Since we cannot access the private IS_POSTGRES flag, we use a
-    // simple heuristic: if environment suggests PostgreSQL, rewrite.
-    // In practice the `sqlx::Any` driver handles `?` for all backends
-    // in recent versions, so this is a safety measure.
-    sql
-}
