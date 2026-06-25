@@ -304,7 +304,7 @@ pub fn verify_cms_signed_data(
         ));
     }
 
-    // 5. Parse the first SignerInfo from the SET.
+    // 5. Parse the first SignerInfo from the SET using the synta CMS types.
     //    EST requires exactly one signer (RFC 8295 §3.1).
     let set_tag = Tag::universal_constructed(17); // SET
     let mut si_set_dec = Decoder::new(&si_bytes, Encoding::Ber);
@@ -318,54 +318,19 @@ pub fn verify_cms_signed_data(
         ));
     }
 
-    // Capture the first SignerInfo SEQUENCE as raw bytes for further parsing.
+    // Capture the first SignerInfo SEQUENCE as raw bytes, then parse with
+    // the synta cms_2009_types::SignerInfo struct for structured access.
     let si_raw: synta::RawDer = si_inner
         .decode()
         .map_err(|e| KipukaError::BadRequest(format!("CMS SignerInfo parse error: {e:?}")))?;
     let si_raw_bytes = si_raw.as_bytes();
 
-    // Parse SignerInfo fields: version, sid, digestAlgorithm, [signedAttrs],
-    // signatureAlgorithm, signature, [unsignedAttrs].
-    let mut si_dec = Decoder::new(si_raw_bytes, Encoding::Ber);
-    let mut si_fields = si_dec
-        .enter_constructed(seq_tag)
-        .map_err(|e| KipukaError::BadRequest(format!("CMS SignerInfo SEQUENCE enter error: {e:?}")))?;
+    let signer_info = synta_certificate::cms_2009_types::SignerInfo::from_der(si_raw_bytes)
+        .map_err(|e| KipukaError::BadRequest(format!("CMS SignerInfo structured parse error: {e:?}")))?;
 
-    // version INTEGER
-    let _si_version: synta::RawDer = si_fields
-        .decode()
-        .map_err(|e| KipukaError::BadRequest(format!("CMS SignerInfo version error: {e:?}")))?;
-
-    // sid (SignerIdentifier) — IssuerAndSerialNumber (SEQUENCE) or SubjectKeyIdentifier ([0])
-    let _sid: synta::RawDer = si_fields
-        .decode()
-        .map_err(|e| KipukaError::BadRequest(format!("CMS SignerInfo sid error: {e:?}")))?;
-
-    // digestAlgorithm AlgorithmIdentifier
-    let _digest_alg: synta::RawDer = si_fields
-        .decode()
-        .map_err(|e| KipukaError::BadRequest(format!("CMS SignerInfo digestAlgorithm error: {e:?}")))?;
-
-    // Optional signedAttrs [0] IMPLICIT
-    if !si_fields.is_empty() {
-        let next = si_fields
-            .peek_tag()
-            .map_err(|e| KipukaError::BadRequest(format!("CMS SignerInfo peek error: {e:?}")))?;
-        if next.class() == TagClass::ContextSpecific && next.number() == 0 {
-            let _signed_attrs: synta::RawDer = si_fields
-                .decode()
-                .map_err(|e| KipukaError::BadRequest(format!("CMS signedAttrs error: {e:?}")))?;
-        }
-    }
-
-    // signatureAlgorithm AlgorithmIdentifier
-    let sig_alg_raw: synta::RawDer = si_fields
-        .decode()
-        .map_err(|e| KipukaError::BadRequest(format!("CMS signatureAlgorithm error: {e:?}")))?;
-
-    // Extract the OID from the AlgorithmIdentifier for the result.
+    // Extract the signatureAlgorithm OID string for the result.
     let sig_alg_oid_str = {
-        let mut alg_dec = Decoder::new(sig_alg_raw.as_bytes(), Encoding::Der);
+        let mut alg_dec = Decoder::new(signer_info.signature_algorithm.as_bytes(), Encoding::Der);
         let mut alg_seq = alg_dec
             .enter_constructed(seq_tag)
             .map_err(|e| KipukaError::BadRequest(format!("CMS sigAlg SEQUENCE error: {e:?}")))?;
@@ -375,32 +340,14 @@ pub fn verify_cms_signed_data(
         oid.to_string()
     };
 
-    // signature OCTET STRING
-    let sig_raw: synta::RawDer = si_fields
-        .decode()
-        .map_err(|e| KipukaError::BadRequest(format!("CMS signature error: {e:?}")))?;
+    // Extract the signature value bytes from the SignerInfo.
+    let sig_bytes = signer_info.signature.as_bytes().to_vec();
 
-    // Extract the signature value bytes from the OCTET STRING TLV.
-    let sig_bytes = {
-        let b = sig_raw.as_bytes();
-        let mut sdec = Decoder::new(b, Encoding::Ber);
-        sdec.read_tag()
-            .map_err(|e| KipukaError::BadRequest(format!("CMS sig tag error: {e:?}")))?;
-        let slen = sdec
-            .read_length()
-            .map_err(|e| KipukaError::BadRequest(format!("CMS sig length error: {e:?}")))?
-            .definite()
-            .map_err(|e| KipukaError::BadRequest(format!("CMS sig indef error: {e:?}")))?;
-        sdec.read_bytes(slen)
-            .map_err(|e| KipukaError::BadRequest(format!("CMS sig value error: {e:?}")))?
-            .to_vec()
-    };
-
-    // 6. Use the first certificate in the SignedData as the signer cert.
-    //    A production implementation would match the sid (IssuerAndSerialNumber)
-    //    against the certificates list. For EST with a single signer this is
-    //    the first cert.
-    let signer_cert_der = &signer_certs[0];
+    // 6. Match the signer certificate using the sid (SignerIdentifier).
+    //    RFC 5652 §5.3: The sid identifies the signer's certificate by
+    //    either IssuerAndSerialNumber or SubjectKeyIdentifier.
+    let sid_raw = signer_info.sid.as_bytes();
+    let signer_cert_der = match_signer_cert_by_sid(sid_raw, &signer_certs)?;
 
     // Extract the signer cert byte ranges for signature verification.
     let signer_ranges: CertByteRanges = cert_byte_ranges(signer_cert_der).ok_or_else(|| {
@@ -422,6 +369,13 @@ pub fn verify_cms_signed_data(
     // 7. Verify the signer's certificate chains to a trust anchor.
     //    We do a simple direct-issuer check: the signer cert must be signed
     //    by one of the truststore certificates.
+    //    Use Certificate::from_der() to access signature_value directly
+    //    instead of the manual extract_cert_signature_bits helper.
+    let signer_cert_parsed = Certificate::from_der(signer_cert_der).map_err(|e| {
+        KipukaError::BadRequest(format!("failed to parse signer certificate: {e:?}"))
+    })?;
+    let cert_sig_bits = signer_cert_parsed.signature_value.as_bytes();
+
     let verifier = default_signature_verifier();
     let mut signer_trusted = false;
     for ta_der in truststore {
@@ -436,10 +390,7 @@ pub fn verify_cms_signed_data(
             .verify_certificate_signature_erased(
                 &signer_cert_der[signer_ranges.tbs.clone()],
                 &signer_cert_der[signer_ranges.signature_algorithm.clone()],
-                // The signature BIT STRING is at the end of the certificate TLV,
-                // after tbs and signatureAlgorithm. Extract it.
-                &extract_cert_signature_bits(signer_cert_der)
-                    .unwrap_or_default(),
+                cert_sig_bits,
                 ta_spki,
             )
             .is_ok()
@@ -461,15 +412,50 @@ pub fn verify_cms_signed_data(
         ));
     }
 
-    // 8. Verify the CMS signature itself: the signer used their private key
-    //    to sign the eContent (or signedAttrs). For this simplified verification,
-    //    we verify that the public key in the signer cert can verify the
-    //    signature over the payload.
+    // 8. Verify the CMS signature itself.
+    //    RFC 5652 §5.4: When signedAttrs are present, the signature is computed
+    //    over the DER-encoded signedAttrs (re-tagged from IMPLICIT [0] 0xa0 to
+    //    SET OF 0x31). The message-digest attribute within signedAttrs must match
+    //    a digest of the eContent payload.
+    //    When signedAttrs are absent, the signature is over the payload directly.
+    let verification_data = if let Some(ref signed_attrs_raw) = signer_info.signed_attrs {
+        // signedAttrs are present — verify message-digest attribute matches
+        // a hash of eContent, then verify signature over the re-tagged signedAttrs.
+        let signed_attrs_bytes = signed_attrs_raw.as_bytes();
+
+        // Verify message-digest attribute: extract the digest algorithm OID from
+        // the SignerInfo and hash the eContent payload.
+        let digest_alg_oid = {
+            let mut da_dec = Decoder::new(signer_info.digest_algorithm.as_bytes(), Encoding::Der);
+            let mut da_seq = da_dec
+                .enter_constructed(seq_tag)
+                .map_err(|e| KipukaError::BadRequest(format!("CMS digestAlg SEQUENCE error: {e:?}")))?;
+            let oid: synta::ObjectIdentifier = da_seq
+                .decode()
+                .map_err(|e| KipukaError::BadRequest(format!("CMS digestAlg OID error: {e:?}")))?;
+            oid.components().to_vec()
+        };
+
+        let payload_hash = compute_digest(&digest_alg_oid, &payload)?;
+        verify_message_digest_attribute(signed_attrs_bytes, &payload_hash)?;
+
+        // RFC 5652 §5.4: Re-tag the signedAttrs from IMPLICIT [0] (0xa0) to
+        // SET OF (0x31) for signature verification.
+        let mut retagged = signed_attrs_bytes.to_vec();
+        if retagged.first() == Some(&0xa0) {
+            retagged[0] = 0x31;
+        }
+        retagged
+    } else {
+        // No signedAttrs — signature is over the payload directly.
+        payload.clone()
+    };
+
     let pub_key = BackendPublicKey::from_spki_der(signer_spki_der.to_vec());
     pub_key
         .verify_signature(
-            &payload,
-            sig_alg_raw.as_bytes(),
+            &verification_data,
+            signer_info.signature_algorithm.as_bytes(),
             &sig_bytes,
         )
         .map_err(|e| {
@@ -554,10 +540,28 @@ pub fn build_cms_enveloped_data(
     // GCM-128) since the synta EnvelopedData infrastructure uses CBC
     // for content encryption.
     let content_enc_oid: &[u32] = match _alg {
-        SupportedContentEncryption::Aes256Gcm | SupportedContentEncryption::Aes256Cbc => {
+        SupportedContentEncryption::Aes256Gcm => {
+            warn!(
+                requested = %content_encryption_alg,
+                actual = "AES-256-CBC",
+                "CMS EnvelopedData: GCM downgraded to CBC — authenticated encryption \
+                 is being replaced with unauthenticated encryption"
+            );
             synta_certificate::pkcs12_types::ID_AES256_CBC
         }
-        SupportedContentEncryption::Aes128Gcm | SupportedContentEncryption::Aes128Cbc => {
+        SupportedContentEncryption::Aes128Gcm => {
+            warn!(
+                requested = %content_encryption_alg,
+                actual = "AES-128-CBC",
+                "CMS EnvelopedData: GCM downgraded to CBC — authenticated encryption \
+                 is being replaced with unauthenticated encryption"
+            );
+            synta_certificate::pkcs12_types::ID_AES128_CBC
+        }
+        SupportedContentEncryption::Aes256Cbc => {
+            synta_certificate::pkcs12_types::ID_AES256_CBC
+        }
+        SupportedContentEncryption::Aes128Cbc => {
             synta_certificate::pkcs12_types::ID_AES128_CBC
         }
     };
@@ -612,54 +616,198 @@ pub fn extract_signer_identity(
     })
 }
 
-/// Extract the raw signature BIT STRING value from a DER-encoded certificate.
+/// Match the signer certificate from the certificates list using the sid
+/// (SignerIdentifier) field.
 ///
-/// A Certificate is `SEQUENCE { tbsCertificate, signatureAlgorithm, signatureValue }`.
-/// We skip the first two fields and extract the BIT STRING content (without the
-/// unused-bits byte).
-fn extract_cert_signature_bits(cert_der: &[u8]) -> Result<Vec<u8>, KipukaError> {
-    let mut dec = Decoder::new(cert_der, Encoding::Der);
-    let seq_tag = Tag::universal_constructed(16);
-    let mut cert_seq = dec
-        .enter_constructed(seq_tag)
-        .map_err(|e| KipukaError::BadRequest(format!("cert signature extract: {e:?}")))?;
-
-    // Skip tbsCertificate SEQUENCE
-    let _tbs: synta::RawDer = cert_seq
-        .decode()
-        .map_err(|e| KipukaError::BadRequest(format!("cert tbs skip: {e:?}")))?;
-
-    // Skip signatureAlgorithm SEQUENCE
-    let _sig_alg: synta::RawDer = cert_seq
-        .decode()
-        .map_err(|e| KipukaError::BadRequest(format!("cert sigAlg skip: {e:?}")))?;
-
-    // signatureValue BIT STRING — extract the raw TLV, then parse the value
-    let sig_raw: synta::RawDer = cert_seq
-        .decode()
-        .map_err(|e| KipukaError::BadRequest(format!("cert sig bitstring: {e:?}")))?;
-
-    let bs_bytes = sig_raw.as_bytes();
-    let mut bs_dec = Decoder::new(bs_bytes, Encoding::Der);
-    bs_dec
-        .read_tag()
-        .map_err(|e| KipukaError::BadRequest(format!("sig bs tag: {e:?}")))?;
-    let bs_len = bs_dec
-        .read_length()
-        .map_err(|e| KipukaError::BadRequest(format!("sig bs len: {e:?}")))?
-        .definite()
-        .map_err(|e| KipukaError::BadRequest(format!("sig bs indef: {e:?}")))?;
-    let bs_content = bs_dec
-        .read_bytes(bs_len)
-        .map_err(|e| KipukaError::BadRequest(format!("sig bs val: {e:?}")))?;
-
-    // First byte is the unused-bits count (should be 0 for signatures).
-    if bs_content.is_empty() {
+/// RFC 5652 §5.3: The sid is either an IssuerAndSerialNumber (SEQUENCE)
+/// or a SubjectKeyIdentifier ([0] IMPLICIT OCTET STRING).
+fn match_signer_cert_by_sid<'a>(
+    sid_raw: &[u8],
+    certs: &'a [Vec<u8>],
+) -> Result<&'a Vec<u8>, KipukaError> {
+    if sid_raw.is_empty() {
         return Err(KipukaError::BadRequest(
-            "certificate signature BIT STRING is empty".into(),
+            "CMS SignerInfo sid is empty".into(),
         ));
     }
-    Ok(bs_content[1..].to_vec())
+
+    // Determine the sid variant by examining the first byte's tag.
+    let first_byte = sid_raw[0];
+
+    if first_byte == 0x30 {
+        // IssuerAndSerialNumber — SEQUENCE tag.
+        let ias = synta_certificate::cms_2009_types::IssuerAndSerialNumber::from_der(sid_raw)
+            .map_err(|e| KipukaError::BadRequest(format!(
+                "CMS sid IssuerAndSerialNumber parse error: {e:?}"
+            )))?;
+
+        for cert_der in certs {
+            if let Ok(cert) = Certificate::from_der(cert_der) {
+                if cert.tbs_certificate.issuer.as_bytes() == ias.issuer.as_bytes()
+                    && cert.tbs_certificate.serial_number == ias.serial_number
+                {
+                    return Ok(cert_der);
+                }
+            }
+        }
+        Err(KipukaError::BadRequest(
+            "CMS signer certificate not found by IssuerAndSerialNumber".into(),
+        ))
+    } else if first_byte == 0x80 {
+        // SubjectKeyIdentifier — [0] IMPLICIT OCTET STRING.
+        // Extract the SKI value (skip the tag and length bytes).
+        let mut dec = Decoder::new(sid_raw, Encoding::Ber);
+        dec.read_tag()
+            .map_err(|e| KipukaError::BadRequest(format!("CMS sid SKI tag error: {e:?}")))?;
+        let len = dec
+            .read_length()
+            .map_err(|e| KipukaError::BadRequest(format!("CMS sid SKI length error: {e:?}")))?
+            .definite()
+            .map_err(|e| KipukaError::BadRequest(format!("CMS sid SKI indef error: {e:?}")))?;
+        let ski_value = dec
+            .read_bytes(len)
+            .map_err(|e| KipukaError::BadRequest(format!("CMS sid SKI value error: {e:?}")))?;
+
+        for cert_der in certs {
+            if let Ok(cert) = Certificate::from_der(cert_der) {
+                // Look up the SubjectKeyIdentifier extension (OID 2.5.29.14)
+                // from the certificate's extensions.
+                if let Some(ref exts_raw) = cert.tbs_certificate.extensions {
+                    if let Some(ext_value) = synta_certificate::find_extension_value(
+                        exts_raw.as_bytes(),
+                        oids::SUBJECT_KEY_IDENTIFIER,
+                    ) {
+                        // The extension value is an OCTET STRING wrapping the key id.
+                        let mut ev_dec = Decoder::new(ext_value, Encoding::Der);
+                        if let Ok(tag) = ev_dec.read_tag() {
+                            if tag.number() == 4 {
+                                // OCTET STRING
+                                if let Ok(ev_len) = ev_dec.read_length() {
+                                    if let Ok(def_len) = ev_len.definite() {
+                                        if let Ok(key_id) = ev_dec.read_bytes(def_len) {
+                                            if key_id == ski_value {
+                                                return Ok(cert_der);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Err(KipukaError::BadRequest(
+            "CMS signer certificate not found by SubjectKeyIdentifier".into(),
+        ))
+    } else {
+        // Fallback: if sid format is unrecognised, use the first cert and warn.
+        warn!(
+            first_byte = format_args!("0x{first_byte:02x}"),
+            "CMS SignerIdentifier has unexpected tag, falling back to first certificate"
+        );
+        Ok(&certs[0])
+    }
+}
+
+/// Compute a message digest of `data` using the specified algorithm OID.
+///
+/// Supports SHA-256, SHA-384, SHA-512, and SHA-1 (for legacy compatibility).
+fn compute_digest(alg_oid: &[u32], data: &[u8]) -> Result<Vec<u8>, KipukaError> {
+    if alg_oid == oids::ID_SHA256 {
+        Ok(sha2::Sha256::digest(data).to_vec())
+    } else if alg_oid == oids::ID_SHA384 {
+        Ok(sha2::Sha384::digest(data).to_vec())
+    } else if alg_oid == oids::ID_SHA512 {
+        Ok(sha2::Sha512::digest(data).to_vec())
+    } else if alg_oid == oids::ID_SHA1 {
+        Err(KipukaError::BadRequest(
+            "CMS digest algorithm SHA-1 is not permitted — use SHA-256 or stronger".into(),
+        ))
+    } else {
+        Err(KipukaError::BadRequest(format!(
+            "unsupported CMS digest algorithm OID: {alg_oid:?}"
+        )))
+    }
+}
+
+/// Verify that the message-digest attribute in signedAttrs matches the
+/// expected digest of the eContent payload.
+///
+/// RFC 5652 §11.2: The message-digest attribute value is an OCTET STRING
+/// containing the digest of the eContent.
+fn verify_message_digest_attribute(
+    signed_attrs_bytes: &[u8],
+    expected_digest: &[u8],
+) -> Result<(), KipukaError> {
+    // The signedAttrs RawDer includes the IMPLICIT [0] tag. Parse the attributes
+    // by entering the constructed tag (either 0xa0 or 0x31).
+    let tag = Tag::new(TagClass::ContextSpecific, true, 0);
+    let mut dec = Decoder::new(signed_attrs_bytes, Encoding::Ber);
+    let mut attrs = dec
+        .enter_constructed(tag)
+        .map_err(|e| KipukaError::BadRequest(format!("CMS signedAttrs enter error: {e:?}")))?;
+
+    let seq_tag = Tag::universal_constructed(16);
+
+    // Walk through the attributes looking for id-messageDigest (1.2.840.113549.1.9.4).
+    while !attrs.is_empty() {
+        let mut attr_seq = attrs
+            .enter_constructed(seq_tag)
+            .map_err(|e| KipukaError::BadRequest(format!("CMS attr SEQUENCE error: {e:?}")))?;
+
+        let attr_oid: synta::ObjectIdentifier = attr_seq
+            .decode()
+            .map_err(|e| KipukaError::BadRequest(format!("CMS attr OID error: {e:?}")))?;
+
+        if attr_oid.components() == oids::PKCS9_MESSAGE_DIGEST {
+            // Found the message-digest attribute. The value is a SET containing
+            // an OCTET STRING with the digest.
+            let set_tag = Tag::universal_constructed(17);
+            let mut val_set = attr_seq
+                .enter_constructed(set_tag)
+                .map_err(|e| KipukaError::BadRequest(format!("CMS messageDigest SET error: {e:?}")))?;
+
+            let digest_raw: synta::RawDer = val_set
+                .decode()
+                .map_err(|e| KipukaError::BadRequest(format!("CMS messageDigest value error: {e:?}")))?;
+
+            // Parse the OCTET STRING value.
+            let digest_bytes = digest_raw.as_bytes();
+            let mut d_dec = Decoder::new(digest_bytes, Encoding::Der);
+            d_dec
+                .read_tag()
+                .map_err(|e| KipukaError::BadRequest(format!("CMS md tag error: {e:?}")))?;
+            let d_len = d_dec
+                .read_length()
+                .map_err(|e| KipukaError::BadRequest(format!("CMS md length error: {e:?}")))?
+                .definite()
+                .map_err(|e| KipukaError::BadRequest(format!("CMS md indef error: {e:?}")))?;
+            let digest_value = d_dec
+                .read_bytes(d_len)
+                .map_err(|e| KipukaError::BadRequest(format!("CMS md value error: {e:?}")))?;
+
+            if digest_value != expected_digest {
+                return Err(KipukaError::Auth(
+                    "CMS message-digest attribute does not match eContent hash".into(),
+                ));
+            }
+            return Ok(());
+        }
+
+        // Not the attribute we want — skip remaining fields.
+        while !attr_seq.is_empty() {
+            let _: synta::RawDer = attr_seq
+                .decode()
+                .map_err(|e| KipukaError::BadRequest(format!("CMS attr value skip error: {e:?}")))?;
+        }
+    }
+
+    // RFC 5652 §11.2: The message-digest attribute MUST be present when
+    // signedAttrs is present.
+    Err(KipukaError::BadRequest(
+        "CMS signedAttrs is missing the required message-digest attribute".into(),
+    ))
 }
 
 #[cfg(test)]
