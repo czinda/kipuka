@@ -625,6 +625,10 @@ async fn regenerate_crl(
         "sha256" => &[0x30,0x0d,0x06,0x09,0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x0b,0x05,0x00],
         "sha384" => &[0x30,0x0d,0x06,0x09,0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x0c,0x05,0x00],
         "sha512" => &[0x30,0x0d,0x06,0x09,0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x0d,0x05,0x00],
+        // ML-DSA CAs use "none" — the signature algorithm is determined by
+        // the key type (FIPS 204).  OID 2.16.840.1.101.3.4.3.18 = id-ml-dsa-65.
+        // The actual OID is selected by synta-certificate based on the key.
+        "none" => &[0x30,0x0b,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x03,0x12],
         other => return Err(format!("unsupported hash algorithm for CRL: {other}")),
     };
 
@@ -661,9 +665,12 @@ async fn regenerate_crl(
         .map_err(|e| format!("CA key parse failed: {e}"))?;
 
     // Sign synchronously and drop the non-Send signer before any await.
+    // For ML-DSA CAs (hash_algorithm == "none"), pass "" so synta-certificate
+    // uses the key's native algorithm without a separate hash step.
     let (signature, crl_der) = {
         use synta_certificate::PrivateKey as _;
-        let signer = pem_key.as_signer(&ca.hash_algorithm);
+        let effective_hash = if ca.hash_algorithm == "none" { "" } else { &ca.hash_algorithm };
+        let signer = pem_key.as_signer(effective_hash);
         let sig = signer.sign_tbs_erased(&tbs_der)
             .map_err(|e| format!("CRL signing failed: {e}"))?;
 

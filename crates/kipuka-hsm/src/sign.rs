@@ -185,7 +185,7 @@ impl HsmSigner for DefaultHsmSigner {
             Attribute::Sensitive(false),     // needed for extraction
         ];
 
-        let (ciphertext, _secret_handle) = session
+        let (ciphertext, secret_handle) = session
             .encapsulate_key(&mechanism, public_key, &template)
             .map_err(|e| {
                 HsmError::PqcNotSupported(format!("ML-KEM encapsulate failed: {e}"))
@@ -193,31 +193,42 @@ impl HsmSigner for DefaultHsmSigner {
 
         // Extract the shared secret value from the derived key object.
         // The returned handle is a CKK_GENERIC_SECRET; read its CKA_VALUE.
-        let attrs = session
-            .get_attributes(_secret_handle, &[cryptoki::object::AttributeType::Value])
-            .map_err(|e| {
-                HsmError::PqcNotSupported(format!(
-                    "ML-KEM: failed to extract shared secret: {e}"
-                ))
-            })?;
-
-        let shared_secret = attrs
-            .into_iter()
-            .find_map(|a| {
-                if let Attribute::Value(v) = a {
-                    Some(v)
-                } else {
-                    None
+        let attrs = match session
+            .get_attributes(secret_handle, &[cryptoki::object::AttributeType::Value])
+        {
+            Ok(a) => a,
+            Err(e) => {
+                if let Err(de) = session.destroy_object(secret_handle) {
+                    tracing::warn!(error = %de, "failed to destroy temporary KEM shared secret");
                 }
-            })
-            .ok_or_else(|| {
-                HsmError::PqcNotSupported(
+                return Err(HsmError::PqcNotSupported(format!(
+                    "ML-KEM: failed to extract shared secret: {e}"
+                )));
+            }
+        };
+
+        let shared_secret = match attrs.into_iter().find_map(|a| {
+            if let Attribute::Value(v) = a {
+                Some(v)
+            } else {
+                None
+            }
+        }) {
+            Some(v) => v,
+            None => {
+                if let Err(de) = session.destroy_object(secret_handle) {
+                    tracing::warn!(error = %de, "failed to destroy temporary KEM shared secret");
+                }
+                return Err(HsmError::PqcNotSupported(
                     "ML-KEM: derived key has no CKA_VALUE attribute".to_string(),
-                )
-            })?;
+                ));
+            }
+        };
 
         // Destroy the temporary session object
-        let _ = session.destroy_object(_secret_handle);
+        if let Err(e) = session.destroy_object(secret_handle) {
+            tracing::warn!(error = %e, "failed to destroy temporary KEM shared secret");
+        }
 
         Ok((ciphertext, shared_secret))
     }
@@ -248,31 +259,42 @@ impl HsmSigner for DefaultHsmSigner {
             })?;
 
         // Extract the shared secret value
-        let attrs = session
+        let attrs = match session
             .get_attributes(secret_handle, &[cryptoki::object::AttributeType::Value])
-            .map_err(|e| {
-                HsmError::PqcNotSupported(format!(
-                    "ML-KEM: failed to extract shared secret: {e}"
-                ))
-            })?;
-
-        let shared_secret = attrs
-            .into_iter()
-            .find_map(|a| {
-                if let Attribute::Value(v) = a {
-                    Some(v)
-                } else {
-                    None
+        {
+            Ok(a) => a,
+            Err(e) => {
+                if let Err(de) = session.destroy_object(secret_handle) {
+                    tracing::warn!(error = %de, "failed to destroy temporary KEM shared secret");
                 }
-            })
-            .ok_or_else(|| {
-                HsmError::PqcNotSupported(
+                return Err(HsmError::PqcNotSupported(format!(
+                    "ML-KEM: failed to extract shared secret: {e}"
+                )));
+            }
+        };
+
+        let shared_secret = match attrs.into_iter().find_map(|a| {
+            if let Attribute::Value(v) = a {
+                Some(v)
+            } else {
+                None
+            }
+        }) {
+            Some(v) => v,
+            None => {
+                if let Err(de) = session.destroy_object(secret_handle) {
+                    tracing::warn!(error = %de, "failed to destroy temporary KEM shared secret");
+                }
+                return Err(HsmError::PqcNotSupported(
                     "ML-KEM: derived key has no CKA_VALUE attribute".to_string(),
-                )
-            })?;
+                ));
+            }
+        };
 
         // Destroy the temporary session object
-        let _ = session.destroy_object(secret_handle);
+        if let Err(e) = session.destroy_object(secret_handle) {
+            tracing::warn!(error = %e, "failed to destroy temporary KEM shared secret");
+        }
 
         Ok(shared_secret)
     }

@@ -25,6 +25,12 @@ use axum::response::{IntoResponse, Response};
 use crate::error::KipukaError;
 use crate::state::AppState;
 
+/// OID for the id-kp-cmcRA Extended Key Usage (RFC 6402 section 2.10).
+///
+/// Used by `/fullcmc` and CMS-EST endpoints to verify the signer holds
+/// the CMC Registration Authority EKU (RHELBU-3536 R15).
+pub const CMC_RA_EKU_OID: &str = "1.3.6.1.5.5.7.3.28";
+
 /// How a client authenticated to the EST server.
 ///
 /// Stored in [`AuthResult`] so handlers can make authorization decisions
@@ -97,8 +103,9 @@ impl AuthResult {
     ///
     /// OID: 1.3.6.1.5.5.7.3.28 (RFC 6402 §2.10).
     pub fn has_cmc_ra_eku(&self) -> bool {
-        const CMC_RA_OID: &str = "1.3.6.1.5.5.7.3.28";
-        self.extended_key_usage.iter().any(|oid| oid == CMC_RA_OID)
+        self.extended_key_usage
+            .iter()
+            .any(|oid| oid == CMC_RA_EKU_OID)
     }
 }
 

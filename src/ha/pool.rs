@@ -130,6 +130,10 @@ pub struct QueueConfig {
     /// Requests older than this are drained and discarded.
     /// Default: 300 (5 minutes).
     pub queue_ttl_secs: u64,
+    /// Maximum size in bytes for a single CSR to be enqueued.
+    /// Requests exceeding this limit are rejected to prevent memory exhaustion.
+    /// Default: 65536 (64 KiB).
+    pub max_csr_size: usize,
 }
 
 impl Default for QueueConfig {
@@ -137,6 +141,7 @@ impl Default for QueueConfig {
         Self {
             max_queue_size: 100,
             queue_ttl_secs: 300,
+            max_csr_size: 65_536,
         }
     }
 }
@@ -349,6 +354,18 @@ impl CaPool {
     /// with a suggested `Retry-After` value on success, or
     /// `EnqueueResult::QueueFull` if the queue is at capacity.
     pub fn enqueue_request(&self, csr_der: Vec<u8>) -> EnqueueResult {
+        // Reject oversized CSRs before acquiring the lock.
+        if csr_der.len() > self.queue_config.max_csr_size {
+            warn!(
+                csr_size = csr_der.len(),
+                max_size = self.queue_config.max_csr_size,
+                "rejecting oversized CSR for queue"
+            );
+            return EnqueueResult::QueueFull {
+                max_size: self.queue_config.max_queue_size,
+            };
+        }
+
         let mut queue = self.retry_queue.lock();
 
         // Drain expired entries first.

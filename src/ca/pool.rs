@@ -62,12 +62,24 @@ pub struct CaBackendPool {
     ha_pool: Arc<CaPool>,
     /// Pool configuration.
     config: CaBackendPoolConfig,
+    /// Reusable HTTP client for remote CA requests.
+    http_client: reqwest::Client,
 }
 
 impl CaBackendPool {
     /// Create a new backend pool wrapping the HA pool.
     pub fn new(ha_pool: Arc<CaPool>, config: CaBackendPoolConfig) -> Self {
-        Self { ha_pool, config }
+        let http_client = reqwest::Client::builder()
+            .timeout(config.request_timeout)
+            .danger_accept_invalid_certs(false)
+            .pool_max_idle_per_host(4)
+            .build()
+            .expect("failed to build reqwest::Client for CA backend pool");
+        Self {
+            ha_pool,
+            config,
+            http_client,
+        }
     }
 
     /// Route a certificate issuance request to a healthy CA.
@@ -175,17 +187,8 @@ impl CaBackendPool {
                 endpoint.trim_end_matches('/')
             );
 
-            // 3. POST to the remote CA's EST endpoint.
-            let client = reqwest::Client::builder()
-                .timeout(self.config.request_timeout)
-                .danger_accept_invalid_certs(false)
-                .build()
-                .map_err(|e| CaBackendError::BackendError {
-                    ca_id: ca_id.to_string(),
-                    message: format!("HTTP client error: {e}"),
-                })?;
-
-            let response = client
+            // 3. POST to the remote CA's EST endpoint (reusing pooled client).
+            let response = self.http_client
                 .post(&url)
                 .header("Content-Type", "application/pkcs10")
                 .header("Content-Transfer-Encoding", "base64")

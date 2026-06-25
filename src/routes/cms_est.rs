@@ -402,8 +402,6 @@ pub async fn post_cms_fullcmc(
     // Full CMC requests.  Extract the EKU extension from the signer
     // certificate and verify the OID is present.
     {
-        const CMC_RA_OID: &str = "1.3.6.1.5.5.7.3.28";
-
         let signer_cert = synta_certificate::Certificate::from_der(&cms_result.signer_cert_der)
             .map_err(|e| KipukaError::BadRequest(format!(
                 "failed to parse CMS signer certificate for EKU check: {e}"
@@ -422,7 +420,8 @@ pub async fn post_cms_fullcmc(
             .map(|eku_bytes| {
                 let mut decoder = synta::Decoder::new(eku_bytes, synta::Encoding::Der);
                 let oids: Vec<synta::ObjectIdentifier> = decoder.decode().unwrap_or_default();
-                oids.iter().any(|oid| oid.to_string() == CMC_RA_OID)
+                oids.iter()
+                    .any(|oid| oid.to_string() == crate::auth::CMC_RA_EKU_OID)
             })
             .unwrap_or(false);
 

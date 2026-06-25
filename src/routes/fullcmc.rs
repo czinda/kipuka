@@ -105,7 +105,10 @@ pub async fn post_fullcmc(
             "fullcmc rejected: signer lacks id-kp-cmcRA EKU"
         );
         return Err(KipukaError::Auth(
-            "CMC signer certificate must have id-kp-cmcRA EKU (1.3.6.1.5.5.7.3.28)".into(),
+            format!(
+                "CMC signer certificate must have id-kp-cmcRA EKU ({})",
+                crate::auth::CMC_RA_EKU_OID,
+            ),
         ));
     }
 

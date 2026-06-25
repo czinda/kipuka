@@ -288,6 +288,7 @@ export TEST_USER_PASSWORD="${TEST_USER_PASSWORD}"
 export ADMIN_TOKEN="${ADMIN_TOKEN}"
 export CONFIG_DIR="${CONFIG_DIR}"
 EOF
+chmod 600 /tmp/kipuka-gssapi-env.sh
 
 ok "Test env: source /tmp/kipuka-gssapi-env.sh"
 

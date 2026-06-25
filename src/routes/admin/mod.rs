@@ -157,15 +157,23 @@ where
     }
 }
 
+/// Cached admin trust anchors, loaded once and reused across requests.
+///
+/// Avoids blocking I/O on every admin mTLS validation by caching the
+/// parsed DER certificates from the admin CA file.
+static ADMIN_TRUST_ANCHORS: std::sync::OnceLock<Vec<Vec<u8>>> = std::sync::OnceLock::new();
+
 /// Validate an admin mTLS client certificate against the admin truststore.
 ///
 /// RHELBU-3536 R18: the admin truststore is separate from the EST enrollment
 /// truststore.  This function:
 ///
-/// 1. Loads admin CA trust anchors from the configured PEM file.
+/// 1. Loads admin CA trust anchors from the configured PEM file (cached via `OnceLock`).
 /// 2. Verifies the client certificate signature chains to a trust anchor
 ///    using `synta_certificate::default_signature_verifier()`.
-/// 3. Checks the client subject DN against `allowed_operators` patterns.
+/// 3. Validates certificate temporal validity (notBefore/notAfter).
+/// 4. Checks the client subject DN against `allowed_operators` patterns
+///    using case-insensitive exact matching.
 ///
 /// Returns the authenticated operator identity (subject DN) on success.
 fn validate_admin_cert(
@@ -184,22 +192,26 @@ fn validate_admin_cert(
         return Err("admin client certificate has no valid subject DN".to_string());
     }
 
-    // 2. Load admin CA trust anchors from the configured PEM file.
+    // 2. Load admin CA trust anchors (cached after first load).
     let ca_file = admin_cfg
         .admin_ca_file
         .as_deref()
         .ok_or_else(|| "admin_ca_file not configured for mTLS validation".to_string())?;
 
-    let pem_data = std::fs::read(ca_file)
-        .map_err(|e| format!("cannot read admin CA file '{ca_file}': {e}"))?;
-
-    let trust_certs_der: Vec<Vec<u8>> = {
+    let trust_certs_der = ADMIN_TRUST_ANCHORS.get_or_init(|| {
+        let pem_data = match std::fs::read(ca_file) {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::error!(error = %e, path = %ca_file, "failed to read admin CA file");
+                return Vec::new();
+            }
+        };
         let mut reader = BufReader::new(&pem_data[..]);
         rustls_pemfile::certs(&mut reader)
             .filter_map(|r| r.ok())
             .map(|c| c.to_vec())
             .collect()
-    };
+    });
 
     if trust_certs_der.is_empty() {
         return Err(format!("no CA certificates found in admin CA file '{ca_file}'"));
@@ -221,7 +233,7 @@ fn validate_admin_cert(
     let verifier = synta_certificate::default_signature_verifier();
 
     let mut verified = false;
-    for anchor_der in &trust_certs_der {
+    for anchor_der in trust_certs_der {
         let anchor_ranges = match synta_certificate::cert_byte_ranges(anchor_der) {
             Some(r) => r,
             None => continue,
@@ -249,14 +261,58 @@ fn validate_admin_cert(
         "admin mTLS certificate verified against admin truststore"
     );
 
-    // 4. Check `allowed_operators` — client subject DN must match a pattern.
+    // 4. Validate certificate temporal validity (notBefore / notAfter).
+    {
+        let validity = &client_cert.tbs_certificate.validity;
+        let now = chrono::Utc::now();
+
+        // Convert a synta Time (UtcTime or GeneralizedTime) to chrono DateTime.
+        let time_to_chrono =
+            |t: &synta_certificate::Time| -> Result<chrono::DateTime<chrono::Utc>, String> {
+                let (year, month, day, hour, minute, second) = match t {
+                    synta_certificate::Time::UtcTime(ut) => {
+                        (ut.year, ut.month, ut.day, ut.hour, ut.minute, ut.second)
+                    }
+                    synta_certificate::Time::GeneralTime(gt) => {
+                        (gt.year, gt.month, gt.day, gt.hour, gt.minute, gt.second)
+                    }
+                };
+                let naive = chrono::NaiveDate::from_ymd_opt(year.into(), month.into(), day.into())
+                    .and_then(|d| d.and_hms_opt(hour.into(), minute.into(), second.into()))
+                    .ok_or_else(|| {
+                        format!("invalid date components: {year}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}")
+                    })?;
+                Ok(naive.and_utc())
+            };
+
+        let nb = time_to_chrono(&validity.not_before)?;
+        let na = time_to_chrono(&validity.not_after)?;
+
+        if now < nb {
+            return Err(format!(
+                "admin client certificate is not yet valid (notBefore: {nb})"
+            ));
+        }
+        if now > na {
+            return Err(format!(
+                "admin client certificate has expired (notAfter: {na})"
+            ));
+        }
+
+        tracing::debug!(
+            subject = %client_dn,
+            not_before = %nb,
+            not_after = %na,
+            "admin certificate validity check passed"
+        );
+    }
+
+    // 5. Check `allowed_operators` — client subject DN must exactly match a pattern.
     if !admin_cfg.allowed_operators.is_empty() {
         let dn_lower = client_dn.to_lowercase();
         let matches = admin_cfg.allowed_operators.iter().any(|pattern| {
             let pat_lower = pattern.to_lowercase();
-            // Support substring matching: the operator pattern can be a full DN
-            // or a fragment (e.g., "admin@example.com", "CN=Admin").
-            dn_lower.contains(&pat_lower)
+            dn_lower == pat_lower
         });
 
         if !matches {

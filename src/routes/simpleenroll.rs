@@ -115,6 +115,9 @@ pub async fn post_simpleenroll(
         .await
         {
             tracing::error!(error = %e, "failed to persist CSR for deferred signing");
+            return Err(KipukaError::Ca(format!(
+                "failed to persist CSR for deferred signing: {e}"
+            )));
         }
 
         let retry_after = state.config.est.disconnected_retry_after_secs;
