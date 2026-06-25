@@ -25,6 +25,7 @@ Built on the Synta ASN.1/X.509 library. Architecture inspired by Akamu ACME serv
 - Dogtag PKI integration (CA enrollment, KRA key generation, CMC passthrough)
 - OTP, mTLS, and GSSAPI/Kerberos authentication for enrollment
 - OCSP stapling, CRL fallback, CSR self-signature validation
+- CoAP/DTLS transport (RFC 7252/9483): EST-coaps enrollment for constrained devices via kipuka-coap
 - SQLite/PostgreSQL/MariaDB database backends (via sqlx Any driver)
 - Container image: registry.kipuka.dev/heebus/kipuka (x86_64 latest, arm64 latest-arm64)
 - API docs: kipuka.dev (GitLab Pages, cargo doc)
@@ -46,6 +47,12 @@ Built on the Synta ASN.1/X.509 library. Architecture inspired by Akamu ACME serv
 - RFC 2986 (PKCS#10 — Certification Request Syntax)
 - RFC 5280 (X.509 PKI Certificate and CRL Profile)
 - draft-ietf-lamps-rfc5272bis (CMC next-gen, tracking)
+
+### CoAP/DTLS Transport RFCs
+- RFC 7252 (CoAP — Constrained Application Protocol)
+- RFC 9483 (DTLS as Transport for EST)
+- RFC 9148 (EST-coaps — EST over CoAP)
+- RFC 7959 (CoAP Block-Wise Transfers)
 
 ### Algorithm and Security RFCs
 - RFC 5753 (ECC Algorithms in CMS)

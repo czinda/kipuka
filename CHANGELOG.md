@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### CoAP/DTLS Transport (`crates/kipuka-coap/`)
+- OpenSSL DTLS transport with client certificate extraction for mTLS authentication
+- CoapDtlsServer with UDP socket binding and configurable listen address
+- EST bridge for CoAP operations: `/cacerts`, `/simpleenroll`, `/simplereenroll`,
+  `/serverkeygen`, `/csrattrs` mapped to CoAP request/response
+- Block-wise transfer (RFC 7959) for constrained devices with large payloads
+- 69 new tests covering DTLS handshake, CoAP message parsing, EST bridging,
+  block-wise transfer, error handling, and concurrent connection scenarios
+- RFC 7252 (CoAP), RFC 9483 (DTLS transport for EST), RFC 9148 (EST-coaps) compliance
+
 #### EST Protocol Implementation (RFC 7030)
 - Complete EST enrollment server with all six operations:
   - `GET /cacerts` — CA certificate distribution (no authentication required)

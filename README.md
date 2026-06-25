@@ -69,6 +69,13 @@ inspired by the [Akamu](https://codeberg.org/abbra/akamu) ACME server.
 - **Audit logging**: NIAP FAU_GEN.1 compliant event recording
 - **synta-cmc crate**: RFC 5272 CMC protocol implementation covering 13 RFCs
 
+### CoAP/DTLS Transport (RFC 7252 / RFC 9483)
+- **EST-coaps** (RFC 9148): EST enrollment over CoAP/DTLS for constrained devices
+- **OpenSSL DTLS transport**: UDP socket binding with client certificate extraction
+- **CoapDtlsServer**: full DTLS server with EST operation bridging
+- **Block-wise transfer** (RFC 7959): chunked payloads for constrained devices
+- **187 tests** including 69 CoAP/DTLS-specific tests
+
 ### Testing and Deployment
 - **idm-ci integration**: Beaker-based testing with Dogtag PKI on RHEL 10
 
@@ -158,6 +165,10 @@ key = "/etc/kipuka/ca.key"
 | RFC 4211 | CRMF (Certificate Request Message Format) | In TaggedRequest |
 | RFC 2986 | PKCS#10 (Certification Request Syntax) | Primary CSR format |
 | RFC 5280 | X.509 PKI Certificate and CRL Profile | Via synta-certificate |
+| RFC 7252 | CoAP (Constrained Application Protocol) | CoAP transport layer |
+| RFC 9483 | DTLS (Datagram TLS) as Transport for EST | EST-coaps via kipuka-coap |
+| RFC 9148 | EST-coaps (EST over CoAP) | Constrained device enrollment |
+| RFC 7959 | CoAP Block-Wise Transfers | Large payload support |
 
 ### Algorithm and Security Standards
 
@@ -215,8 +226,8 @@ Cargo workspace with 6 internal crates:
               |         REST client     13 RFC coverage
               |
          +----+----+       kipuka-coap
-         |   sqlx  |       CoAP transport
-         | sqlite  |       (RFC 7252)
+         |   sqlx  |       CoAP/DTLS transport
+         | sqlite  |       (RFC 7252/9483)
          | postgres|
          | mariadb |
          +---------+
