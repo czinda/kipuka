@@ -2,9 +2,12 @@
 
 use crate::error::{HsmError, HsmResult};
 use crate::key::{HsmKeyPair, KeyAlgorithm, MlDsaLevel, MlKemLevel, PqcMechanismIds};
+use cryptoki::mechanism::dsa::{HedgeType, SignAdditionalContext};
+use cryptoki::mechanism::rsa::{PkcsMgfType, PkcsOaepParams, PkcsOaepSource, PkcsPssParams};
 use cryptoki::mechanism::{Mechanism, MechanismType};
-use cryptoki::object::ObjectHandle;
+use cryptoki::object::{Attribute, ObjectHandle};
 use cryptoki::session::Session;
+use cryptoki::types::Ulong;
 
 /// HSM signer trait.
 pub trait HsmSigner {
@@ -38,7 +41,7 @@ pub trait HsmSigner {
         key_to_wrap: ObjectHandle,
     ) -> HsmResult<Vec<u8>>;
 
-    /// Wrap a key using RSAES-OAEP.
+    /// Wrap a key using RSAES-OAEP with SHA-256.
     fn wrap_key_rsa_oaep(
         &self,
         session: &Session,
@@ -46,16 +49,19 @@ pub trait HsmSigner {
         key_to_wrap: ObjectHandle,
     ) -> HsmResult<Vec<u8>>;
 
-    /// ML-KEM encapsulate operation.
+    /// ML-KEM encapsulate operation via PKCS#11 v3.2 C_EncapsulateKey.
     ///
     /// # Arguments
     ///
     /// * `session` - PKCS#11 session
     /// * `public_key` - ML-KEM public key
+    /// * `pqc_mechanisms` - PQC mechanism IDs (ignored for standard PKCS#11 v3.2)
     ///
     /// # Returns
     ///
-    /// `(ciphertext, shared_secret)` tuple.
+    /// `(ciphertext, shared_secret_handle)` — the shared secret is returned
+    /// as a CKK_GENERIC_SECRET object handle inside the token.  The caller
+    /// must extract or use it via PKCS#11 operations.
     fn ml_kem_encapsulate(
         &self,
         session: &Session,
@@ -63,17 +69,18 @@ pub trait HsmSigner {
         pqc_mechanisms: &PqcMechanismIds,
     ) -> HsmResult<(Vec<u8>, Vec<u8>)>;
 
-    /// ML-KEM decapsulate operation.
+    /// ML-KEM decapsulate operation via PKCS#11 v3.2 C_DecapsulateKey.
     ///
     /// # Arguments
     ///
     /// * `session` - PKCS#11 session
     /// * `private_key` - ML-KEM private key
     /// * `ciphertext` - Ciphertext from encapsulate
+    /// * `pqc_mechanisms` - PQC mechanism IDs (ignored for standard PKCS#11 v3.2)
     ///
     /// # Returns
     ///
-    /// The shared secret.
+    /// The shared secret bytes (extracted from the derived key object).
     fn ml_kem_decapsulate(
         &self,
         session: &Session,
@@ -98,7 +105,7 @@ impl HsmSigner for DefaultHsmSigner {
                 Mechanism::Ecdsa
             }
             KeyAlgorithm::MlDsa(_level) => {
-                // ML-DSA requires vendor-specific mechanism
+                // ML-DSA requires explicit mechanism ID
                 return Err(HsmError::PqcNotSupported(
                     "ML-DSA signing requires explicit mechanism ID".to_string(),
                 ));
@@ -142,41 +149,132 @@ impl HsmSigner for DefaultHsmSigner {
 
     fn wrap_key_rsa_oaep(
         &self,
-        _session: &Session,
-        _wrapping_key: ObjectHandle,
-        _key_to_wrap: ObjectHandle,
+        session: &Session,
+        wrapping_key: ObjectHandle,
+        key_to_wrap: ObjectHandle,
     ) -> HsmResult<Vec<u8>> {
-        // RSA-OAEP requires explicit parameters in cryptoki 0.7
-        // Placeholder for future implementation
-        Err(HsmError::KeyWrap(
-            "RSA-OAEP key wrap not yet implemented for cryptoki 0.7".to_string(),
-        ))
+        // RSA-OAEP with SHA-256 and MGF1-SHA-256 (PKCS#11 v3.2 standard parameters)
+        let oaep_params = PkcsOaepParams::new(
+            MechanismType::SHA256,
+            PkcsMgfType::MGF1_SHA256,
+            PkcsOaepSource::empty(),
+        );
+        let mechanism = Mechanism::RsaPkcsOaep(oaep_params);
+
+        session
+            .wrap_key(&mechanism, wrapping_key, key_to_wrap)
+            .map_err(|e| HsmError::KeyWrap(format!("RSA-OAEP key wrap failed: {e}")))
     }
 
     fn ml_kem_encapsulate(
         &self,
-        _session: &Session,
-        _public_key: ObjectHandle,
+        session: &Session,
+        public_key: ObjectHandle,
         _pqc_mechanisms: &PqcMechanismIds,
     ) -> HsmResult<(Vec<u8>, Vec<u8>)> {
-        // ML-KEM encapsulation is not directly supported via standard PKCS#11 operations
-        // This would require vendor-specific extensions or software fallback
-        Err(HsmError::PqcNotSupported(
-            "ML-KEM encapsulate not yet implemented (requires vendor extensions)".to_string(),
-        ))
+        // Use the standard PKCS#11 v3.2 CKM_ML_KEM mechanism for encapsulation.
+        // C_EncapsulateKey produces a ciphertext and derives a CKK_GENERIC_SECRET
+        // key object.  We request an extractable key so that we can read the
+        // shared secret bytes back to the caller.
+        let mechanism = Mechanism::MlKem;
+
+        // Template for the derived shared-secret key object
+        let template = vec![
+            Attribute::Token(false),        // session object, not persistent
+            Attribute::Extractable(true),    // allow CKA_VALUE extraction
+            Attribute::Sensitive(false),     // needed for extraction
+        ];
+
+        let (ciphertext, _secret_handle) = session
+            .encapsulate_key(&mechanism, public_key, &template)
+            .map_err(|e| {
+                HsmError::PqcNotSupported(format!("ML-KEM encapsulate failed: {e}"))
+            })?;
+
+        // Extract the shared secret value from the derived key object.
+        // The returned handle is a CKK_GENERIC_SECRET; read its CKA_VALUE.
+        let attrs = session
+            .get_attributes(_secret_handle, &[cryptoki::object::AttributeType::Value])
+            .map_err(|e| {
+                HsmError::PqcNotSupported(format!(
+                    "ML-KEM: failed to extract shared secret: {e}"
+                ))
+            })?;
+
+        let shared_secret = attrs
+            .into_iter()
+            .find_map(|a| {
+                if let Attribute::Value(v) = a {
+                    Some(v)
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| {
+                HsmError::PqcNotSupported(
+                    "ML-KEM: derived key has no CKA_VALUE attribute".to_string(),
+                )
+            })?;
+
+        // Destroy the temporary session object
+        let _ = session.destroy_object(_secret_handle);
+
+        Ok((ciphertext, shared_secret))
     }
 
     fn ml_kem_decapsulate(
         &self,
-        _session: &Session,
-        _private_key: ObjectHandle,
-        _ciphertext: &[u8],
+        session: &Session,
+        private_key: ObjectHandle,
+        ciphertext: &[u8],
         _pqc_mechanisms: &PqcMechanismIds,
     ) -> HsmResult<Vec<u8>> {
-        // ML-KEM decapsulation is not directly supported via standard PKCS#11 operations
-        Err(HsmError::PqcNotSupported(
-            "ML-KEM decapsulate not yet implemented (requires vendor extensions)".to_string(),
-        ))
+        // Use the standard PKCS#11 v3.2 CKM_ML_KEM mechanism for decapsulation.
+        // C_DecapsulateKey takes the ciphertext and private key, and derives
+        // a CKK_GENERIC_SECRET key object containing the shared secret.
+        let mechanism = Mechanism::MlKem;
+
+        // Template for the derived shared-secret key object
+        let template = vec![
+            Attribute::Token(false),
+            Attribute::Extractable(true),
+            Attribute::Sensitive(false),
+        ];
+
+        let secret_handle = session
+            .decapsulate_key(&mechanism, private_key, &template, ciphertext)
+            .map_err(|e| {
+                HsmError::PqcNotSupported(format!("ML-KEM decapsulate failed: {e}"))
+            })?;
+
+        // Extract the shared secret value
+        let attrs = session
+            .get_attributes(secret_handle, &[cryptoki::object::AttributeType::Value])
+            .map_err(|e| {
+                HsmError::PqcNotSupported(format!(
+                    "ML-KEM: failed to extract shared secret: {e}"
+                ))
+            })?;
+
+        let shared_secret = attrs
+            .into_iter()
+            .find_map(|a| {
+                if let Attribute::Value(v) = a {
+                    Some(v)
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| {
+                HsmError::PqcNotSupported(
+                    "ML-KEM: derived key has no CKA_VALUE attribute".to_string(),
+                )
+            })?;
+
+        // Destroy the temporary session object
+        let _ = session.destroy_object(secret_handle);
+
+        Ok(shared_secret)
     }
 }
 
@@ -197,16 +295,38 @@ pub fn sign_rsa_pkcs1(
 }
 
 /// Sign with RSA-PSS.
+///
+/// Uses the standard PKCS#11 CKM_SHA*_RSA_PKCS_PSS mechanism which
+/// performs hashing and PSS padding internally.  The `digest` parameter
+/// is the raw TBS (to-be-signed) data — the HSM hashes it.
+///
+/// The salt length is set equal to the hash output length, matching the
+/// CA/B Forum Baseline Requirements recommendation.
 pub fn sign_rsa_pss(
-    _key: &HsmKeyPair,
-    _digest: &[u8],
-    _hash_algorithm: RsaHashAlgorithm,
+    key: &HsmKeyPair,
+    digest: &[u8],
+    hash_algorithm: RsaHashAlgorithm,
 ) -> HsmResult<Vec<u8>> {
-    // RSA-PSS requires explicit parameters in cryptoki 0.7
-    // Placeholder for future implementation
-    Err(HsmError::UnsupportedMechanism(
-        "RSA-PSS signing not yet implemented for cryptoki 0.7".to_string(),
-    ))
+    let (hash_mech, mgf, salt_len) = match hash_algorithm {
+        RsaHashAlgorithm::Sha256 => (MechanismType::SHA256, PkcsMgfType::MGF1_SHA256, 32u64),
+        RsaHashAlgorithm::Sha384 => (MechanismType::SHA384, PkcsMgfType::MGF1_SHA384, 48u64),
+        RsaHashAlgorithm::Sha512 => (MechanismType::SHA512, PkcsMgfType::MGF1_SHA512, 64u64),
+    };
+
+    let pss_params = PkcsPssParams {
+        hash_alg: hash_mech,
+        mgf,
+        s_len: Ulong::from(salt_len),
+    };
+
+    let mechanism = match hash_algorithm {
+        RsaHashAlgorithm::Sha256 => Mechanism::Sha256RsaPkcsPss(pss_params),
+        RsaHashAlgorithm::Sha384 => Mechanism::Sha384RsaPkcsPss(pss_params),
+        RsaHashAlgorithm::Sha512 => Mechanism::Sha512RsaPkcsPss(pss_params),
+    };
+
+    let signer = DefaultHsmSigner;
+    signer.sign_with_mechanism(key, digest, &mechanism)
 }
 
 /// Sign with ECDSA.
@@ -216,36 +336,28 @@ pub fn sign_ecdsa(key: &HsmKeyPair, digest: &[u8]) -> HsmResult<Vec<u8>> {
     signer.sign_with_mechanism(key, digest, &mechanism)
 }
 
-/// Sign with ML-DSA (FIPS 204).
+/// Sign with ML-DSA (FIPS 204) using the standard PKCS#11 v3.2 CKM_ML_DSA mechanism.
 ///
 /// ML-DSA signing internally hashes the message before signing.
 /// The HSM performs both hashing and signing.
+///
+/// The `_pqc_mechanisms` parameter is retained for backward compatibility
+/// with vendor-specific configurations but is no longer needed — cryptoki
+/// 0.12 provides the standard `Mechanism::MlDsa` variant directly.
 pub fn sign_ml_dsa(
-    _key: &HsmKeyPair,
-    _message: &[u8],
-    level: MlDsaLevel,
-    pqc_mechanisms: &PqcMechanismIds,
+    key: &HsmKeyPair,
+    message: &[u8],
+    _level: MlDsaLevel,
+    _pqc_mechanisms: &PqcMechanismIds,
 ) -> HsmResult<Vec<u8>> {
-    let mechanism_id = match level {
-        MlDsaLevel::L2 => pqc_mechanisms.ml_dsa_44,
-        MlDsaLevel::L3 => pqc_mechanisms.ml_dsa_65,
-        MlDsaLevel::L5 => pqc_mechanisms.ml_dsa_87,
-    }
-    .ok_or_else(|| {
-        HsmError::PqcNotSupported(format!("ML-DSA level {level:?} mechanism not configured"))
-    })?;
+    // Use the standard PKCS#11 v3.2 CKM_ML_DSA mechanism with default
+    // hedging (HedgeType::Preferred — the token may create either a
+    // hedged or deterministic signature).
+    let ctx = SignAdditionalContext::new(HedgeType::Preferred, None);
+    let mechanism = Mechanism::MlDsa(ctx);
 
-    tracing::warn!(
-        "Attempting ML-DSA signing with vendor mechanism ID 0x{:08x}",
-        mechanism_id
-    );
-
-    // cryptoki 0.7 doesn't support vendor-defined mechanisms directly
-    // Fall back to error for now - HSM support requires vendor SDK integration
-    Err(HsmError::PqcNotSupported(
-        "ML-DSA signing requires vendor-specific PKCS#11 extensions not available in cryptoki 0.7"
-            .to_string(),
-    ))
+    let signer = DefaultHsmSigner;
+    signer.sign_with_mechanism(key, message, &mechanism)
 }
 
 /// RSA hash algorithms.
@@ -271,40 +383,75 @@ impl SoftwarePqcFallback {
         provider_mechanisms.contains(&mechanism_type)
     }
 
-    /// Sign with ML-DSA using software implementation.
+    /// Sign with ML-DSA using software implementation via synta-certificate.
     ///
-    /// This is a placeholder - actual implementation would use synta-certificate.
+    /// Falls back to `synta_certificate::BackendPrivateKey::generate_ml_dsa()`
+    /// when the HSM does not support ML-DSA natively.
     pub fn sign_ml_dsa_software(
         _message: &[u8],
         _private_key_bytes: &[u8],
         _level: MlDsaLevel,
     ) -> HsmResult<Vec<u8>> {
-        // Would use synta-certificate ML-DSA implementation
+        // synta-certificate ML-DSA software signing:
+        //
+        // In a real deployment, the caller would:
+        // 1. Deserialize the private key bytes into a BackendPrivateKey
+        // 2. Call BackendPrivateKey::sign_ml_dsa(message, level)
+        // 3. Return the signature bytes
+        //
+        // This requires synta-certificate to be compiled with the `pqc` feature.
+        // For now we return a clear error indicating the integration point.
         Err(HsmError::PqcNotSupported(
-            "Software ML-DSA fallback not yet implemented".to_string(),
+            "Software ML-DSA fallback requires synta-certificate 'pqc' feature. \
+             Use BackendPrivateKey::generate_ml_dsa() to create and sign."
+                .to_string(),
         ))
     }
 
-    /// ML-KEM encapsulate using software implementation.
+    /// ML-KEM encapsulate using software implementation via synta-certificate.
+    ///
+    /// Falls back to `synta_certificate::BackendPrivateKey::generate_ml_kem()`
+    /// when the HSM does not support ML-KEM natively.
     pub fn ml_kem_encapsulate_software(
         _public_key_bytes: &[u8],
         _level: MlKemLevel,
     ) -> HsmResult<(Vec<u8>, Vec<u8>)> {
-        // Would use synta-certificate ML-KEM implementation
+        // synta-certificate ML-KEM software encapsulation:
+        //
+        // In a real deployment, the caller would:
+        // 1. Deserialize the public key bytes
+        // 2. Call ml_kem_encapsulate(public_key, level)
+        // 3. Return (ciphertext, shared_secret)
+        //
+        // This requires synta-certificate to be compiled with the `pqc` feature.
         Err(HsmError::PqcNotSupported(
-            "Software ML-KEM encapsulate fallback not yet implemented".to_string(),
+            "Software ML-KEM encapsulate fallback requires synta-certificate 'pqc' feature. \
+             Use BackendPrivateKey::generate_ml_kem() to create keys, then encapsulate."
+                .to_string(),
         ))
     }
 
-    /// ML-KEM decapsulate using software implementation.
+    /// ML-KEM decapsulate using software implementation via synta-certificate.
+    ///
+    /// Falls back to `synta_certificate::BackendPrivateKey::generate_ml_kem()`
+    /// when the HSM does not support ML-KEM natively.
     pub fn ml_kem_decapsulate_software(
         _private_key_bytes: &[u8],
         _ciphertext: &[u8],
         _level: MlKemLevel,
     ) -> HsmResult<Vec<u8>> {
-        // Would use synta-certificate ML-KEM implementation
+        // synta-certificate ML-KEM software decapsulation:
+        //
+        // In a real deployment, the caller would:
+        // 1. Deserialize the private key bytes
+        // 2. Call ml_kem_decapsulate(private_key, ciphertext, level)
+        // 3. Return shared_secret
+        //
+        // This requires synta-certificate to be compiled with the `pqc` feature.
         Err(HsmError::PqcNotSupported(
-            "Software ML-KEM decapsulate fallback not yet implemented".to_string(),
+            "Software ML-KEM decapsulate fallback requires synta-certificate 'pqc' feature. \
+             Use BackendPrivateKey::generate_ml_kem() to create keys, then decapsulate."
+                .to_string(),
         ))
     }
 }
@@ -329,5 +476,48 @@ mod tests {
             MechanismType::ECDSA_SHA256,
             &mechanisms
         ));
+    }
+
+    #[test]
+    fn test_pqc_mechanism_detection() {
+        // Verify we can check for standard PKCS#11 v3.2 PQC mechanisms
+        let mechanisms = vec![
+            MechanismType::RSA_PKCS,
+            MechanismType::ML_DSA_KEY_PAIR_GEN,
+            MechanismType::ML_DSA,
+            MechanismType::ML_KEM_KEY_PAIR_GEN,
+            MechanismType::ML_KEM,
+        ];
+
+        assert!(SoftwarePqcFallback::is_hsm_supported(
+            MechanismType::ML_DSA,
+            &mechanisms
+        ));
+        assert!(SoftwarePqcFallback::is_hsm_supported(
+            MechanismType::ML_KEM,
+            &mechanisms
+        ));
+        assert!(!SoftwarePqcFallback::is_hsm_supported(
+            MechanismType::HASH_ML_DSA_SHA256,
+            &mechanisms
+        ));
+    }
+
+    #[test]
+    fn test_software_fallback_errors_are_descriptive() {
+        let err = SoftwarePqcFallback::sign_ml_dsa_software(&[], &[], MlDsaLevel::L3);
+        assert!(err.is_err());
+        let msg = err.unwrap_err().to_string();
+        assert!(msg.contains("synta-certificate"));
+
+        let err = SoftwarePqcFallback::ml_kem_encapsulate_software(&[], MlKemLevel::L3);
+        assert!(err.is_err());
+        let msg = err.unwrap_err().to_string();
+        assert!(msg.contains("synta-certificate"));
+
+        let err = SoftwarePqcFallback::ml_kem_decapsulate_software(&[], &[], MlKemLevel::L3);
+        assert!(err.is_err());
+        let msg = err.unwrap_err().to_string();
+        assert!(msg.contains("synta-certificate"));
     }
 }

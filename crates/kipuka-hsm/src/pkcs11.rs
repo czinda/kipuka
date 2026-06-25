@@ -1,7 +1,7 @@
 //! PKCS#11 library context management.
 
 use crate::error::{HsmError, HsmResult};
-use cryptoki::context::{CInitializeArgs, Pkcs11};
+use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -35,7 +35,7 @@ impl Pkcs11Context {
 
         // Initialize the library with OS locking
         pkcs11
-            .initialize(CInitializeArgs::OsThreads)
+            .initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK))
             .map_err(|e| HsmError::LibraryLoad(format!("C_Initialize failed: {e}")))?;
 
         tracing::info!("PKCS#11 library initialized: {}", path.display());
@@ -91,7 +91,7 @@ impl Pkcs11Context {
 
 impl Drop for Pkcs11Context {
     fn drop(&mut self) {
-        // Finalization is handled automatically by cryptoki 0.7
+        // Finalization is handled automatically by cryptoki 0.12
         // The library calls C_Finalize in its own Drop implementation
         tracing::debug!("PKCS#11 context dropped");
     }

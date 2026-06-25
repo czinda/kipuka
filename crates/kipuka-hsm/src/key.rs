@@ -4,7 +4,9 @@ use crate::error::{HsmError, HsmResult};
 use crate::providers::HsmProviderConfig;
 use crate::slot::HsmSlot;
 use cryptoki::mechanism::{Mechanism, MechanismType};
-use cryptoki::object::{Attribute, ObjectClass, ObjectHandle};
+use cryptoki::object::{
+    Attribute, KeyType, MlDsaParameterSetType, MlKemParameterSetType, ObjectClass, ObjectHandle,
+};
 use cryptoki::session::Session;
 use cryptoki::types::Ulong;
 use serde::Deserialize;
@@ -13,56 +15,78 @@ use url::Url;
 
 /// Vendor-specific PQC mechanism IDs.
 ///
-/// PQC mechanisms are not yet standardized in PKCS#11 v3.1. Different vendors
-/// use different mechanism IDs. This struct holds configurable IDs per provider.
+/// PKCS#11 v3.2 standardizes ML-DSA and ML-KEM mechanisms.  These standard
+/// mechanism IDs are now used by default via the `cryptoki` crate's
+/// `MechanismType::ML_DSA*` and `MechanismType::ML_KEM*` constants.
+///
+/// This struct is retained for backward compatibility with vendor-specific
+/// configurations that predate PKCS#11 v3.2.  When `None`, the standard
+/// PKCS#11 v3.2 mechanism IDs are used automatically.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PqcMechanismIds {
     /// ML-DSA key pair generation (FIPS 204).
+    ///
+    /// Standard PKCS#11 v3.2: CKM_ML_DSA_KEY_PAIR_GEN (0x00004030)
     #[serde(default)]
     pub ml_dsa_keygen: Option<u64>,
 
     /// ML-DSA-44 signing.
+    ///
+    /// Standard PKCS#11 v3.2: CKM_ML_DSA (0x00004031)
     #[serde(default)]
     pub ml_dsa_44: Option<u64>,
 
     /// ML-DSA-65 signing.
+    ///
+    /// Standard PKCS#11 v3.2: CKM_ML_DSA (0x00004031) — level selected via CKA_PARAMETER_SET.
     #[serde(default)]
     pub ml_dsa_65: Option<u64>,
 
     /// ML-DSA-87 signing.
+    ///
+    /// Standard PKCS#11 v3.2: CKM_ML_DSA (0x00004031) — level selected via CKA_PARAMETER_SET.
     #[serde(default)]
     pub ml_dsa_87: Option<u64>,
 
     /// ML-KEM key pair generation (FIPS 203).
+    ///
+    /// Standard PKCS#11 v3.2: CKM_ML_KEM_KEY_PAIR_GEN (0x00004024)
     #[serde(default)]
     pub ml_kem_keygen: Option<u64>,
 
     /// ML-KEM-512 encapsulate/decapsulate.
+    ///
+    /// Standard PKCS#11 v3.2: CKM_ML_KEM (0x00004025)
     #[serde(default)]
     pub ml_kem_512: Option<u64>,
 
     /// ML-KEM-768 encapsulate/decapsulate.
+    ///
+    /// Standard PKCS#11 v3.2: CKM_ML_KEM (0x00004025)
     #[serde(default)]
     pub ml_kem_768: Option<u64>,
 
     /// ML-KEM-1024 encapsulate/decapsulate.
+    ///
+    /// Standard PKCS#11 v3.2: CKM_ML_KEM (0x00004025)
     #[serde(default)]
     pub ml_kem_1024: Option<u64>,
 }
 
 impl Default for PqcMechanismIds {
     fn default() -> Self {
-        // Placeholder vendor-defined values
-        // These should be configured per provider
+        // Use the standard PKCS#11 v3.2 mechanism values.
+        // The cryptoki crate constants (MechanismType::ML_DSA_KEY_PAIR_GEN, etc.)
+        // carry these values, so we store them as u64 for config-file compatibility.
         Self {
-            ml_dsa_keygen: Some(0x8000_0001),
-            ml_dsa_44: Some(0x8000_0002),
-            ml_dsa_65: Some(0x8000_0003),
-            ml_dsa_87: Some(0x8000_0004),
-            ml_kem_keygen: Some(0x8000_0010),
-            ml_kem_512: Some(0x8000_0011),
-            ml_kem_768: Some(0x8000_0012),
-            ml_kem_1024: Some(0x8000_0013),
+            ml_dsa_keygen: Some(*MechanismType::ML_DSA_KEY_PAIR_GEN),
+            ml_dsa_44: Some(*MechanismType::ML_DSA),
+            ml_dsa_65: Some(*MechanismType::ML_DSA),
+            ml_dsa_87: Some(*MechanismType::ML_DSA),
+            ml_kem_keygen: Some(*MechanismType::ML_KEM_KEY_PAIR_GEN),
+            ml_kem_512: Some(*MechanismType::ML_KEM),
+            ml_kem_768: Some(*MechanismType::ML_KEM),
+            ml_kem_1024: Some(*MechanismType::ML_KEM),
         }
     }
 }
@@ -274,56 +298,130 @@ impl HsmKeyPair {
             .map_err(|e| HsmError::KeyGeneration(format!("ECDSA key generation failed: {e}")))
     }
 
-    /// Generate ML-DSA key pair (FIPS 204).
+    /// Generate ML-DSA key pair (FIPS 204) using PKCS#11 v3.2 CKM_ML_DSA_KEY_PAIR_GEN.
+    ///
+    /// The parameter set (ML-DSA-44, ML-DSA-65, ML-DSA-87) is specified via
+    /// the CKA_PARAMETER_SET attribute in the key templates.
     fn generate_ml_dsa(
-        _session: &Session,
-        _level: MlDsaLevel,
-        _label: &str,
-        _id: &[u8],
-        _config: &HsmProviderConfig,
-        pqc_mechanisms: &PqcMechanismIds,
+        session: &Session,
+        level: MlDsaLevel,
+        label: &str,
+        id: &[u8],
+        config: &HsmProviderConfig,
+        _pqc_mechanisms: &PqcMechanismIds,
     ) -> HsmResult<(ObjectHandle, ObjectHandle)> {
-        let mechanism_id = pqc_mechanisms.ml_dsa_keygen.ok_or_else(|| {
-            HsmError::PqcNotSupported("ML-DSA mechanism ID not configured".to_string())
-        })?;
+        // Check if HSM supports the standard ML-DSA mechanism
+        if !config
+            .supported_mechanisms
+            .contains(&MechanismType::ML_DSA_KEY_PAIR_GEN)
+        {
+            return Err(HsmError::PqcNotSupported(
+                "ML-DSA key generation (CKM_ML_DSA_KEY_PAIR_GEN) not supported by HSM. \
+                 Consider using SoftwarePqcFallback."
+                    .to_string(),
+            ));
+        }
 
-        // Check if HSM supports this vendor-specific mechanism
-        // This is a best-effort check since we can't enumerate vendor mechanisms
-        tracing::warn!(
-            "Attempting ML-DSA key generation with vendor mechanism ID 0x{:08x}",
-            mechanism_id
+        let mechanism = Mechanism::MlDsaKeyPairGen;
+
+        // Map our level enum to the standard PKCS#11 v3.2 parameter set type
+        let param_set = match level {
+            MlDsaLevel::L2 => MlDsaParameterSetType::ML_DSA_44,
+            MlDsaLevel::L3 => MlDsaParameterSetType::ML_DSA_65,
+            MlDsaLevel::L5 => MlDsaParameterSetType::ML_DSA_87,
+        };
+
+        let public_key_template = vec![
+            Attribute::Token(true),
+            Attribute::Label(label.as_bytes().to_vec()),
+            Attribute::Id(id.to_vec()),
+            Attribute::Verify(true),
+            Attribute::KeyType(KeyType::ML_DSA),
+            Attribute::ParameterSet(param_set.into()),
+        ];
+
+        let private_key_template = vec![
+            Attribute::Token(true),
+            Attribute::Label(label.as_bytes().to_vec()),
+            Attribute::Id(id.to_vec()),
+            Attribute::Private(true),
+            Attribute::Sensitive(true),    // NIAP CA PP FCS_CKM.1
+            Attribute::Extractable(false), // NIAP CA PP FCS_CKM.1
+            Attribute::Sign(true),
+            Attribute::KeyType(KeyType::ML_DSA),
+            Attribute::ParameterSet(param_set.into()),
+        ];
+
+        tracing::info!(
+            "Generating ML-DSA key pair with parameter set {:?}",
+            level
         );
 
-        // cryptoki 0.7 doesn't support vendor-defined mechanisms directly
-        // Fall back to error for now - HSM support requires vendor SDK integration
-        Err(HsmError::PqcNotSupported(
-            "ML-DSA key generation requires vendor-specific PKCS#11 extensions not available in cryptoki 0.7".to_string()
-        ))
+        session
+            .generate_key_pair(&mechanism, &public_key_template, &private_key_template)
+            .map_err(|e| HsmError::KeyGeneration(format!("ML-DSA key generation failed: {e}")))
     }
 
-    /// Generate ML-KEM key pair (FIPS 203).
+    /// Generate ML-KEM key pair (FIPS 203) using PKCS#11 v3.2 CKM_ML_KEM_KEY_PAIR_GEN.
+    ///
+    /// The parameter set (ML-KEM-512, ML-KEM-768, ML-KEM-1024) is specified via
+    /// the CKA_PARAMETER_SET attribute in the key templates.
     fn generate_ml_kem(
-        _session: &Session,
-        _level: MlKemLevel,
-        _label: &str,
-        _id: &[u8],
-        _config: &HsmProviderConfig,
-        pqc_mechanisms: &PqcMechanismIds,
+        session: &Session,
+        level: MlKemLevel,
+        label: &str,
+        id: &[u8],
+        config: &HsmProviderConfig,
+        _pqc_mechanisms: &PqcMechanismIds,
     ) -> HsmResult<(ObjectHandle, ObjectHandle)> {
-        let mechanism_id = pqc_mechanisms.ml_kem_keygen.ok_or_else(|| {
-            HsmError::PqcNotSupported("ML-KEM mechanism ID not configured".to_string())
-        })?;
+        // Check if HSM supports the standard ML-KEM mechanism
+        if !config
+            .supported_mechanisms
+            .contains(&MechanismType::ML_KEM_KEY_PAIR_GEN)
+        {
+            return Err(HsmError::PqcNotSupported(
+                "ML-KEM key generation (CKM_ML_KEM_KEY_PAIR_GEN) not supported by HSM. \
+                 Consider using SoftwarePqcFallback."
+                    .to_string(),
+            ));
+        }
 
-        tracing::warn!(
-            "Attempting ML-KEM key generation with vendor mechanism ID 0x{:08x}",
-            mechanism_id
+        let mechanism = Mechanism::MlKemKeyPairGen;
+
+        // Map our level enum to the standard PKCS#11 v3.2 parameter set type
+        let param_set = match level {
+            MlKemLevel::L1 => MlKemParameterSetType::ML_KEM_512,
+            MlKemLevel::L3 => MlKemParameterSetType::ML_KEM_768,
+            MlKemLevel::L5 => MlKemParameterSetType::ML_KEM_1024,
+        };
+
+        let public_key_template = vec![
+            Attribute::Token(true),
+            Attribute::Label(label.as_bytes().to_vec()),
+            Attribute::Id(id.to_vec()),
+            Attribute::KeyType(KeyType::ML_KEM),
+            Attribute::ParameterSet(param_set.into()),
+        ];
+
+        let private_key_template = vec![
+            Attribute::Token(true),
+            Attribute::Label(label.as_bytes().to_vec()),
+            Attribute::Id(id.to_vec()),
+            Attribute::Private(true),
+            Attribute::Sensitive(true),    // NIAP CA PP FCS_CKM.1
+            Attribute::Extractable(false), // NIAP CA PP FCS_CKM.1
+            Attribute::KeyType(KeyType::ML_KEM),
+            Attribute::ParameterSet(param_set.into()),
+        ];
+
+        tracing::info!(
+            "Generating ML-KEM key pair with parameter set {:?}",
+            level
         );
 
-        // cryptoki 0.7 doesn't support vendor-defined mechanisms directly
-        // Fall back to error for now - HSM support requires vendor SDK integration
-        Err(HsmError::PqcNotSupported(
-            "ML-KEM key generation requires vendor-specific PKCS#11 extensions not available in cryptoki 0.7".to_string()
-        ))
+        session
+            .generate_key_pair(&mechanism, &public_key_template, &private_key_template)
+            .map_err(|e| HsmError::KeyGeneration(format!("ML-KEM key generation failed: {e}")))
     }
 
     /// Find a key pair by label.
@@ -488,6 +586,26 @@ mod tests {
         let ids = PqcMechanismIds::default();
         assert!(ids.ml_dsa_keygen.is_some());
         assert!(ids.ml_kem_keygen.is_some());
+    }
+
+    #[test]
+    fn test_pqc_mechanism_ids_use_standard_values() {
+        let ids = PqcMechanismIds::default();
+        // Verify default mechanism IDs match the standard PKCS#11 v3.2 values
+        assert_eq!(
+            ids.ml_dsa_keygen.unwrap(),
+            *MechanismType::ML_DSA_KEY_PAIR_GEN
+        );
+        assert_eq!(ids.ml_dsa_44.unwrap(), *MechanismType::ML_DSA);
+        assert_eq!(ids.ml_dsa_65.unwrap(), *MechanismType::ML_DSA);
+        assert_eq!(ids.ml_dsa_87.unwrap(), *MechanismType::ML_DSA);
+        assert_eq!(
+            ids.ml_kem_keygen.unwrap(),
+            *MechanismType::ML_KEM_KEY_PAIR_GEN
+        );
+        assert_eq!(ids.ml_kem_512.unwrap(), *MechanismType::ML_KEM);
+        assert_eq!(ids.ml_kem_768.unwrap(), *MechanismType::ML_KEM);
+        assert_eq!(ids.ml_kem_1024.unwrap(), *MechanismType::ML_KEM);
     }
 
     #[test]

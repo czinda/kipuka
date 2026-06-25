@@ -86,7 +86,7 @@ impl HsmSlot {
     /// * `pin` - User PIN
     pub fn login(&self, session: &Session, pin: &str) -> HsmResult<()> {
         session
-            .login(UserType::User, Some(&AuthPin::new(pin.to_owned())))
+            .login(UserType::User, Some(&AuthPin::new(pin.to_owned().into())))
             .map_err(|e| HsmError::Login(format!("User login failed: {e}")))
     }
 
@@ -98,7 +98,7 @@ impl HsmSlot {
     /// * `pin` - SO PIN
     pub fn login_so(&self, session: &Session, pin: &str) -> HsmResult<()> {
         session
-            .login(UserType::So, Some(&AuthPin::new(pin.to_owned())))
+            .login(UserType::So, Some(&AuthPin::new(pin.to_owned().into())))
             .map_err(|e| HsmError::Login(format!("SO login failed: {e}")))
     }
 
