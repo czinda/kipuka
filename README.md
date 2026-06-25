@@ -19,23 +19,57 @@ inspired by the [Akamu](https://codeberg.org/abbra/akamu) ACME server.
 
 ## Features
 
-- **All six RFC 7030 EST operations**: `/cacerts`, `/simpleenroll`, `/simplereenroll`,
+### EST Protocol (RFC 7030)
+- **All six EST operations**: `/cacerts`, `/simpleenroll`, `/simplereenroll`,
   `/fullcmc`, `/serverkeygen`, `/csrattrs`
+- **Server-side key generation** (`/serverkeygen`): RSA, ECDSA, ML-DSA, ML-KEM
+  with encrypted private key return via CMS EnvelopedData
+- **Full CMC support** (`/fullcmc`): RFC 5272 PKIData/PKIResponse via synta-cmc
+- **CMS-EST endpoints** (RFC 8295): `/cms/simpleenroll`, `/cms/simplereenroll`,
+  `/cms/serverkeygen`, `/cms/fullcmc` for CMS-wrapped EST operations
+- **STAR certificates** (RFC 8739): short-lived auto-renewal with configurable
+  lifetime and renewal window
+- **EST labels**: multiple certificate profiles via path-based label routing
+
+### CMP Protocol (RFC 4210)
+- **Certificate enrollment and revocation** via CMP messages
+- **General messages** for CA capability discovery
+- **MAC-based protection** with PBKDF2 key derivation (RFC 4210 S5.1.3.1)
+- **Signature-based protection** verification over header||body
+
+### Cryptographic Operations
+- **CMS SignedData verification** with signedAttrs support (RFC 5652 S5.4)
+- **CMS EnvelopedData construction** for encrypted EST responses
+- **OCSP stapling** and response signature verification
+- **CRL distribution point** fetching with revocation checking
+- **CSR self-signature validation** with key size enforcement
+- **Real certificate parsing** via synta-certificate (no placeholders)
+- **CNSA Suite profile validation** (RFC 8603)
+- **Post-quantum algorithm pairing** validation (RFC 9688/9882/9936)
+
+### Infrastructure
 - **Multi-CA with HA failover**: active-passive, round-robin, weighted, and
   latency-based strategies
 - **HSM support**: Entrust nShield, Utimaco CryptoServer, Kryoptic (dev/test),
   Thales Luna (CSP11/TCT)
-- **Dogtag PKI integration**: REST API client for Red Hat Certificate System
-  (enrollment, revocation, KRA server-side key generation)
+- **Dogtag PKI integration**: CA enrollment, KRA server-side key generation,
+  CMC passthrough via REST API
+- **Multiple database backends**: SQLite, PostgreSQL, MariaDB (via sqlx Any driver)
+- **Admin API**: certificate listing with database query, filters, and pagination
+
+### Authentication
 - **OTP authentication**: one-time passwords for initial enrollment with
   configurable expiration, use limits, and per-profile binding
 - **mTLS client authentication**: certificate-based re-enrollment
-- **GSSAPI/Kerberos authentication**: enterprise SSO integration
-- **EST labels**: multiple certificate profiles via path-based label routing
+- **GSSAPI/Kerberos authentication**: enterprise SSO via optional libgssapi FFI
+
+### PQC and Compliance
 - **PQC-ready**: ML-DSA signing (FIPS 204), ML-KEM key encapsulation (FIPS 203),
   and composite hybrid algorithms via Synta and PKCS#11
 - **Audit logging**: NIAP FAU_GEN.1 compliant event recording
-- **Multiple database backends**: SQLite, PostgreSQL, MariaDB (via sqlx Any driver)
+- **synta-cmc crate**: RFC 5272 CMC protocol implementation covering 13 RFCs
+
+### Testing and Deployment
 - **idm-ci integration**: Beaker-based testing with Dogtag PKI on RHEL 10
 
 ## Quick Start
@@ -113,11 +147,14 @@ key = "/etc/kipuka/ca.key"
 |----------|-------|--------|
 | RFC 7030 | EST (Enrollment over Secure Transport) | Core implementation |
 | RFC 8951 | EST clarifications | Implemented |
+| RFC 8295 | CMS-EST (EST with CMS) | /cms/* endpoints |
+| RFC 4210 | CMP (Certificate Management Protocol) | Enrollment, revocation, general messages |
+| RFC 8739 | STAR (Short-Term Automatic Renewal) | Short-lived auto-renewal certificates |
 | RFC 5272 | CMC (Certificate Management over CMS) | /fullcmc endpoint via synta-cmc |
 | RFC 6402 | CMC Updates | Implemented |
 | RFC 5273 | CMC Transport Protocols | HTTP transport |
 | RFC 5274 | CMC Compliance Requirements | Per-agent-type validation |
-| RFC 5652 | CMS (Cryptographic Message Syntax) | SignedData, EnvelopedData |
+| RFC 5652 | CMS (Cryptographic Message Syntax) | SignedData verification, EnvelopedData construction |
 | RFC 4211 | CRMF (Certificate Request Message Format) | In TaggedRequest |
 | RFC 2986 | PKCS#10 (Certification Request Syntax) | Primary CSR format |
 | RFC 5280 | X.509 PKI Certificate and CRL Profile | Via synta-certificate |
@@ -160,10 +197,11 @@ Cargo workspace with 6 internal crates:
 ```
                           Clients
                             |
-                       TLS + mTLS/OTP
+                  TLS + mTLS/OTP/GSSAPI
                             |
                     +-------+-------+
-                    |   kipuka-est  |     axum routes, EST protocol
+                    |   kipuka-est  |     axum routes: EST, CMS-EST,
+                    |               |     CMP, STAR, admin API
                     +---+---+---+---+
                         |   |   |
               +---------+   |   +---------+
@@ -172,9 +210,9 @@ Cargo workspace with 6 internal crates:
          OTP lifecycle  PKCS#11      shared types
               |         HSM ops         & config
               |             |
-              |        kipuka-dogtag
-              |         Dogtag PKI
-              |         REST client
+              |        kipuka-dogtag     synta-cmc
+              |         Dogtag PKI      RFC 5272 CMC
+              |         REST client     13 RFC coverage
               |
          +----+----+       kipuka-coap
          |   sqlx  |       CoAP transport

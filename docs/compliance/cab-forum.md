@@ -25,6 +25,7 @@ may sit upstream of kipuka. This document covers what kipuka enforces directly.
 |------------|-------------|----------------------|
 | S6.1.5 | RSA: minimum 2048 bits | Enforced in CSR validation. Configurable per label (`allowed_key_types`). |
 | S6.1.5 | ECDSA: P-256 or P-384 only for public trust | Enforced in CSR validation. P-521 allowed only for private PKI labels. |
+| S6.1.5 | Post-quantum (ML-DSA, ML-KEM) | Available for private PKI only (not yet in CA/B BR for public trust). Composite ML-DSA + classical hybrid signing supported. |
 | S6.1.5 | Key must not be a known weak key | CSR key checked against known-weak-key databases (Debian, ROCA). |
 | S7.1 | Serial number >= 64 bits of CSPRNG output | Serial numbers are 20 bytes (160 bits) from CSPRNG per RFC 5280 recommendation. |
 
@@ -43,8 +44,8 @@ may sit upstream of kipuka. This document covers what kipuka enforces directly.
 
 | Effective Date | Maximum Validity | kipuka Implementation |
 |----------------|-----------------|----------------------|
-| Current | 398 days | Default `max_validity_days = 398`. Enforced at issuance. |
-| 15 March 2026 | 200 days | Configurable via `max_validity_days`. Operator must update config. |
+| Before 15 March 2026 | 398 days | Default `max_validity_days = 398`. Enforced at issuance. |
+| 15 March 2026 (active) | 200 days | Currently in effect. Configurable via `max_validity_days`. |
 | 15 March 2027 | 100 days | Configurable via `max_validity_days`. |
 | 15 March 2029 | 47 days | Configurable via `max_validity_days`. |
 
@@ -67,9 +68,9 @@ labels can disable CT via `require_ct = false`.
 
 | Requirement | kipuka Implementation |
 |-------------|----------------------|
-| Keys generated using approved CSPRNG | Keys generated via `rand::rngs::OsRng` (CSPRNG) or PKCS#11 `C_GenerateKeyPair` (HSM CSPRNG). |
+| Keys generated using approved CSPRNG | Server key generation uses synta-certificate PrivateKeyBuilder supporting RSA, ECDSA, ML-DSA, ML-KEM, and composite algorithms. Keys generated via `rand::rngs::OsRng` (CSPRNG) or PKCS#11 `C_GenerateKeyPair` (HSM CSPRNG). |
 | Key archival for recovery | `/serverkeygen` keys optionally archived in `server_generated_keys` table, encrypted with the archive key. |
-| Key transport encryption | Private key returned to client encrypted in the PKCS#7 EnvelopedData structure per RFC 7030 S4.4.2. |
+| Key transport encryption | Private key returned to client encrypted using CMS EnvelopedData (RFC 5652 S6) and PKCS#7 EnvelopedData structures per RFC 7030 S4.4.2. |
 
 ## Audit Requirements (BR S8)
 
@@ -86,4 +87,6 @@ labels can disable CT via `require_ct = false`.
 |-------------|----------------------|
 | Support revocation within 24 hours | `certificates` table tracks revocation status, reason, and time. Admin API provides revocation endpoint. |
 | CRL issuance | Planned. CRL generation from the `certificates` table. |
+| CRL checking | CRL checking implemented via `check_crl_fallback()` in `src/auth/mtls.rs`. |
 | OCSP responder | Out of scope for kipuka. Use a dedicated OCSP responder reading from the kipuka database. |
+| OCSP client | OCSP client with caching implemented in `src/ocsp/mod.rs`. |

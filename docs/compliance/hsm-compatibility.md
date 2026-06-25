@@ -15,6 +15,11 @@ per-vendor configuration, supported mechanisms, and known limitations.
 | EC P-256 | Yes | Yes | Yes | Yes |
 | EC P-384 | Yes | Yes | Yes | Yes |
 | EC P-521 | Yes | Yes | Yes | Yes |
+| ML-DSA-44 | Planned (1) | Planned (1) | Yes | Planned (1) |
+| ML-DSA-65 | Planned (1) | Planned (1) | Yes | Planned (1) |
+| ML-DSA-87 | Planned (1) | Planned (1) | Yes | Planned (1) |
+| ML-KEM-768 | Planned (1) | Planned (1) | Yes | Planned (1) |
+| ML-KEM-1024 | Planned (1) | Planned (1) | Yes | Planned (1) |
 | **Signing** | | | | |
 | CKM_RSA_PKCS | Yes | Yes | Yes | Yes |
 | CKM_RSA_PKCS_PSS | Yes | Yes | Yes | Yes |
@@ -34,9 +39,9 @@ per-vendor configuration, supported mechanisms, and known limitations.
 | **FIPS 140 Level** | Level 3 | Level 3 | N/A (2) | Level 3 |
 
 Notes:
-1. Utimaco CKM_RSA_PKCS_OAEP: supported with SHA-256 MGF only. SHA-384/SHA-512 MGF
-   requires firmware >= 5.2.
-2. Kryoptic is a software token for development and testing. Not FIPS-validated.
+1. Post-quantum algorithms (ML-DSA, ML-KEM): firmware-dependent support for hardware HSMs. Available via software (synta-certificate PrivateKeyBuilder) when HSM does not support them natively.
+2. Utimaco CKM_RSA_PKCS_OAEP: supported with SHA-256 MGF only. SHA-384/SHA-512 MGF requires firmware >= 5.2.
+3. Kryoptic is a software token for development and testing. Not FIPS-validated.
 
 ## Per-Vendor Configuration
 
@@ -131,6 +136,8 @@ pin = "1234"  # OK for development only
 **Prerequisites:**
 - Kryoptic installed (`dnf install kryoptic` on Fedora/RHEL)
 - Token initialized
+- OpenSSL 3.2+ (required for post-quantum algorithm support)
+- Container builds require clang (see Kryoptic Containerfile)
 
 **Setup:**
 ```bash
@@ -154,6 +161,10 @@ pkcs11-tool --module /usr/lib/libkryoptic_pkcs11.so \
 - Not FIPS 140-3 validated
 - Token state stored on filesystem (default: `~/.local/share/kryoptic/`)
 - Suitable for CI and development only
+
+**Container build notes:**
+- The Kryoptic Containerfile requires clang and OpenSSL 3.2+ for building
+- Post-quantum algorithm support relies on OpenSSL 3.2+ cryptographic primitives
 
 **CI integration:**
 ```bash

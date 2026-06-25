@@ -233,6 +233,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Crate responsibility breakdown
   - Security invariants and threat model
 
+#### synta-cmc Crate (RFC 5272 CMC Protocol)
+- PKIData/PKIResponse builders and parsers with full CMC control attribute support
+- CMCStatus/CMCFailInfo with HTTP status mapping
+- All 35+ CMC control OIDs (id-cmc arc)
+- CNSA Suite profile validation (RFC 8603)
+- ML-DSA digest pairing and ML-KEM wrap validation (RFC 9688)
+- RFC 5274 compliance checks per agent type (EE/RA/CA)
+- Coverage across 13 RFCs (5272, 6402, 5273, 5274, 5652, 4211, 2986, 5280, 5753, 5754, 5816, 8603, 7906)
+
+#### CMP Protocol (RFC 4210)
+- Certificate enrollment and revocation via CMP messages
+- General messages for CA capability discovery
+- MAC-based protection with PBKDF2 key derivation (RFC 4210 S5.1.3.1)
+- Signature-based protection verification over header||body
+- Revocation authorization checking
+
+#### CMS-EST Endpoints (RFC 8295)
+- `/cms/simpleenroll` — CMS-wrapped initial enrollment
+- `/cms/simplereenroll` — CMS-wrapped certificate renewal
+- `/cms/serverkeygen` — CMS-wrapped server-side key generation
+- `/cms/fullcmc` — CMS-wrapped Full CMC operations
+
+#### STAR Certificates (RFC 8739)
+- Short-lived certificate issuance with auto-renewal
+- Configurable lifetime and renewal window
+- Automatic renewal scheduling
+
+#### CMS Operations (RFC 5652)
+- CMS SignedData verification with signedAttrs support (RFC 5652 S5.4)
+- CMS EnvelopedData construction for encrypted EST responses
+- Signer certificate matching by SignerIdentifier (sid)
+
+#### Certificate Validation
+- OCSP response signature verification and stapling
+- CRL distribution point fetching with 10s timeout and 10MB size limit
+- CSR self-signature validation with key size enforcement
+- CNSA Suite profile validation (RFC 8603)
+- Post-quantum algorithm pairing validation (RFC 9688/9882/9936)
+
+#### Server-Side Key Generation Enhancements
+- Real key generation via synta-certificate PrivateKeyBuilder (RSA, ECDSA, ML-DSA, ML-KEM)
+- Encrypted private key return via CMS EnvelopedData
+
+#### Admin API Enhancements
+- Certificate listing with database query, filters, and pagination
+- Query limit capped at 1000
+
 #### Disconnected EST Support
 - CSR queue for deferred signing in DMZ deployments with limited CA connectivity
 - Configurable CA connection behavior (fail-fast vs queue-and-retry)
@@ -287,11 +334,22 @@ Additional compliance:
 - **FIPS 140-3**: Via HSM integration (Entrust nShield, Utimaco, Thales Luna certified modules)
 
 ### Changed
+- Replaced 60+ placeholder functions with real synta-certificate parsing
+- Extracted CA signing key resolver (ResolvedSigningKey) eliminating 8-site duplication
+- CMP protection verification: signature over header||body, revocation authorization
 - Upgraded Beaker deployment from RHEL 9.6 to RHEL 10.0 for OpenSSL 3.5+ PQC provider support
 - Bumped Beaker host requirements to 8 GB RAM / 4 CPU for Rust compilation
 - Updated Beaker setup URLs to use `codeberg.org` public repository
 
 ### Fixed
+- CMS signedAttrs re-tagged from 0xa0 to 0x31 for RFC 5652 compliance
+- CMS signer cert matched by SignerIdentifier (sid) not position
+- Dogtag REST API field name casing (ProfileID, cert_request_type, response aliases)
+- reqwest TLS identity type conflict (native-tls vs rustls-tls)
+- OCSP signature verification uses original DER bytes (not re-encoded)
+- CRL fetch with 10s timeout and 10MB size limit
+- pkcs11_uri unwrap panic replaced with proper error handling (8 files)
+- Admin certs query limit capped at 1000
 - Removed comments with double-dashes and non-ASCII characters from Beaker job XML for strict XML parser compliance
 - Escaped `>=` operators as `&gt;=` in Beaker XML attribute values
 

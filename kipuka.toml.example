@@ -131,9 +131,19 @@ key = "/etc/kipuka/ca/ecdsa-ca.key"
 # cacerts = true
 # simpleenroll = true
 # simplereenroll = true
-# fullcmc = true
-# serverkeygen = true
-# csrattrs = true
+
+# Full CMC via EST (RFC 7030 S4.3 / RFC 5272).
+# Accepts application/pkcs7-mime CMC requests and proxies to the CA CMC
+# infrastructure. Requires id-kp-cmcRA EKU on the authenticated client.
+fullcmc = true
+
+# Server-side key generation (RFC 7030 S4.4).
+# Generates key pairs on behalf of clients and returns both the certificate
+# and private key. Integrates with Dogtag KRA when [dogtag] is configured.
+serverkeygen = true
+
+# CSR attributes endpoint.
+csrattrs = true
 
 # CSR attributes to request from clients (returned by /csrattrs).
 # OID values per RFC 7030 S4.5.2.
@@ -290,6 +300,67 @@ hash_algorithm = "argon2id"
 # name = "ecdsa-ha"
 # ca_ids = ["ecdsa-ca-1", "ecdsa-ca-2", "ecdsa-ca-3"]
 # strategy = "round-robin"
+
+# ── Dogtag PKI Backend ────────────────────────────────────────────────────────
+# Connect to a Dogtag CA (and optionally KRA) for enrollment and key generation.
+# When configured, enrollment requests are proxied to Dogtag instead of the
+# local file-based CA.
+
+# [dogtag]
+# # Dogtag CA REST API URL.
+# ca_url = "https://pki.example.com:8443"
+#
+# # Agent certificate and key for authenticating to Dogtag.
+# agent_cert_file = "/etc/kipuka/dogtag/agent.pem"
+# agent_key_file = "/etc/kipuka/dogtag/agent-key.pem"
+#
+# # Dogtag CA certificate for TLS verification.
+# ca_cert_file = "/etc/kipuka/dogtag/ca-chain.pem"
+#
+# # Enrollment profile ID on the Dogtag CA.
+# profile_id = "caServerCert"
+#
+# # KRA URL for /serverkeygen key generation and archival (optional).
+# kra_url = "https://pki.example.com:8443"
+#
+# # Whether to archive generated keys in the KRA (default: false).
+# archive_keys = false
+
+# ── CMP Protocol ─────────────────────────────────────────────────────────────
+# Certificate Management Protocol (RFC 4210) handler.
+# Supports both signature-based and MAC-based protection verification.
+
+# [cmp]
+# enabled = true
+#
+# # Shared secrets for MAC-based CMP protection (reference ID -> secret).
+# # For production, use mac_secrets_file or mac_secrets_env.
+# [cmp.mac_secrets]
+# "reference-id-1" = "shared-secret-value"
+# "device-bootstrap" = "another-secret"
+#
+# # Or load MAC secrets from a file (JSON: {"ref-id": "secret", ...}).
+# # mac_secrets_file = "/etc/kipuka/cmp/mac-secrets.json"
+
+# ── GSSAPI / Kerberos Authentication ────────────────────────────────────────
+# Enable GSSAPI (Kerberos) authentication for EST enrollment.
+# Requires a keytab and principal for the EST service.
+
+# [gssapi]
+# enabled = true
+#
+# # Kerberos keytab file for the EST service principal.
+# keytab = "/etc/kipuka/krb5.keytab"
+#
+# # Service principal name (default: HTTP/<hostname>@<REALM>).
+# principal = "HTTP/est.example.com@EXAMPLE.COM"
+#
+# # Allowed client principal patterns (regex). If empty, all authenticated
+# # principals are allowed.
+# allowed_principals = [".*@EXAMPLE\\.COM"]
+#
+# # Whether to use the libgssapi FFI backend (default: false, uses native Rust).
+# use_ffi = false
 
 # ── Admin API ─────────────────────────────────────────────────────────────────
 

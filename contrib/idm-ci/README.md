@@ -1,6 +1,6 @@
 # Running Kipuka Tests via idm-ci
 
-This directory contains helper scripts for running Kipuka EST/CMC tests through the [idm-ci](https://gitlab.example.com/identity-management/idm-ci) test infrastructure.
+This directory contains helper scripts for running Kipuka EST/CMC/CMP tests through the [idm-ci](https://gitlab.example.com/identity-management/idm-ci) test infrastructure.
 
 ## Prerequisites
 
@@ -25,6 +25,18 @@ This directory contains helper scripts for running Kipuka EST/CMC tests through 
    ./scripts/te --help
    ```
 
+## Beaker Deployment
+
+The Beaker topology provisions a RHEL 10 VM with the following components:
+
+- **Dogtag CA** -- Certificate Authority backend for EST enrollment
+- **Dogtag KRA** -- Key Recovery Authority for `/serverkeygen` key generation and archival
+- **kipuka EST server** -- configured against the Dogtag CA/KRA backends
+
+This enables end-to-end testing of all EST operations including Dogtag-backed
+enrollment, server-side key generation with KRA integration, and Full CMC
+proxying through the Dogtag CMC infrastructure.
+
 ## Quick Start
 
 ### Run Full Test Suite
@@ -33,7 +45,7 @@ This directory contains helper scripts for running Kipuka EST/CMC tests through 
 # AWS (default)
 ./run-tests.sh aws
 
-# Beaker
+# Beaker (includes Dogtag CA + KRA)
 ./run-tests.sh beaker
 
 # OpenStack
@@ -56,12 +68,29 @@ This provisions a RHEL 10 VM and prints SSH details. Use this when you want to m
 
 Destroys all provisioned VMs and cleans up resources.
 
+## Test Coverage
+
+The smoke test suite validates the following kipuka capabilities:
+
+| Category | Tests |
+|---|---|
+| **EST Core** | `/cacerts`, `/simpleenroll`, `/simplereenroll`, `/csrattrs` |
+| **Full CMC** | `/fullcmc` endpoint (RFC 5272/6402 CMC-over-EST) |
+| **Server Keygen** | `/serverkeygen` with KRA-backed key generation and archival |
+| **CMP** | CMP protocol handler (RFC 4210) with signature and MAC protection |
+| **OTP Enrollment** | OTP generation, consumption, expiration, and rate limiting |
+| **Dogtag Health** | CA and KRA subsystem connectivity and health checks |
+| **mTLS** | Client certificate authentication and POP linking |
+| **CMS-EST** | RFC 8295 CMS-EST endpoints |
+| **GSSAPI/Kerberos** | GSSAPI authentication (when KDC is available) |
+| **Admin API** | Health, OTP management, CA status, audit endpoints |
+
 ## Topology Files
 
 Kipuka test topologies are defined in idm-ci metadata files:
-- `metadata/kipuka-est.yaml` - Generic EST/CMC test topology
-- `metadata/kipuka-est-aws.yaml` - AWS-specific EST/CMC topology
-- `metadata/kipuka-est-beaker.yaml` - Beaker-specific EST/CMC topology
+- `metadata/kipuka-est.yaml` - Generic EST/CMC/CMP test topology
+- `metadata/kipuka-est-aws.yaml` - AWS-specific topology
+- `metadata/kipuka-est-beaker.yaml` - Beaker-specific topology (Dogtag CA + KRA)
 
 See the [idm-ci metadata directory](https://gitlab.example.com/identity-management/idm-ci/-/tree/main/metadata) for full topology definitions.
 
@@ -103,9 +132,14 @@ For iterative development and debugging:
 - **Cloud credentials errors**: Verify credentials are exported in your shell session
 - **VM provisioning timeout**: Check cloud provider quotas and network connectivity
 - **idm-ci not found**: Set `IDM_CI_DIR` to point to your clone location
+- **Dogtag not responding**: On Beaker, verify `pki-server status` shows CA and KRA as running
+- **KRA errors**: Ensure the KRA subsystem is enabled and the EST config includes `[dogtag]` with `kra_url`
 
 ## References
 
 - [idm-ci GitLab](https://gitlab.example.com/identity-management/idm-ci)
 - [mrack documentation](https://github.com/neoave/mrack)
 - [Kipuka test suite](../../tests/)
+- [RFC 7030 -- EST](https://www.rfc-editor.org/rfc/rfc7030)
+- [RFC 5272 -- CMC](https://www.rfc-editor.org/rfc/rfc5272)
+- [RFC 4210 -- CMP](https://www.rfc-editor.org/rfc/rfc4210)

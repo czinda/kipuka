@@ -14,13 +14,13 @@
                     |   src/routes/         |
                     +-----------+-----------+
                           |           |
-                   EST Routes      Admin API
-                   /cacerts        /admin/otp
-                   /simpleenroll   /admin/ca
-                   /simplereenroll /admin/audit
-                   /fullcmc
-                   /serverkeygen
-                   /csrattrs
+            EST Routes        CMP Route      CMS-EST Routes       STAR Routes    Admin API
+            /cacerts          /cmp           /cms/simpleenroll    /star/*        /admin/otp
+            /simpleenroll                    /cms/simplereenroll                 /admin/ca
+            /simplereenroll                  /cms/serverkeygen                   /admin/audit
+            /fullcmc                         /cms/fullcmc
+            /serverkeygen
+            /csrattrs
                           |
               +-----------+-----------+
               |                       |
@@ -31,10 +31,11 @@
      |  - CSR parsing   |    |  - mTLS verify  |
      |  - Cert building |    |  - OTP validate |
      |  - CMC handling  |    |  - GSSAPI/Krb5  |
-     |  - PKCS#7 encode |    |  - Rate limiting|
+     |  - CMS-EST layer |    |  - CMS auth     |
+     |  - CMP v3 handler|    |  - Rate limiting|
+     |  - STAR mgmt     |    +--------+--------+
+     |  - PKCS#7 encode |             |
      +--------+---------+    +--------+--------+
-              |                       |
-              |              +--------+--------+
               |              |   kipuka-otp    |
               |              |   crates/otp/   |
               |              |                 |
@@ -51,7 +52,14 @@
      |  - Key generation|            |
      |  - Signing       |            |
      |  - Key wrapping  |            |
-     +--------+---------+            |
+     +--------+---------+   +--------+--------+
+              |             |   kipuka-dogtag  |
+              |             |   crates/dogtag/ |
+              |             |                  |
+              |             |  - RHCS/Dogtag   |
+              |             |  - REST client   |
+              |             |  - CMC passthru  |
+              |             +--------+---------+
               |                       |
               |   +-------------------+
               |   |
@@ -65,14 +73,21 @@
      |  - MariaDB          |
      +--------+------------+
               |
-     +--------+------------+
-     |   Audit Subsystem   |
-     |   src/audit/        |
-     |                     |
-     |  - DB audit_events  |
-     |  - File (JSON)      |
-     |  - Syslog           |
+     +--------+------------+   +--------+------------+   +--------+------------+
+     |   Audit Subsystem   |   |   OCSP Client       |   |   STAR Manager      |
+     |   src/audit/        |   |   src/ocsp/         |   |   src/star/         |
+     |                     |   |                     |   |                     |
+     |  - DB audit_events  |   |  - OCSP client      |   |  - Renewal task     |
+     |  - File (JSON)      |   |  - Response cache   |   |  - CSR template     |
+     |  - Syslog           |   +---------------------+   +---------------------+
      +---------------------+
+
+                           Dependencies
+                                |
+                      +---------+---------+
+                      |    synta-cmc      |
+                      |   (CMC messages)  |
+                      +-------------------+
 ```
 
 ## Crate Responsibilities
@@ -84,6 +99,11 @@
 - Configuration loading and validation
 - Database connection management
 - Audit subsystem initialization
+- OCSP client with caching (src/ocsp/)
+- STAR renewal background task (src/star/)
+- GSSAPI credential initialization
+- CMS authentication layer (src/auth/cms_auth.rs)
+- ResolvedSigningKey pattern for unified PEM/HSM key abstraction
 
 ### kipuka-est
 - EST protocol implementation (RFC 7030)
@@ -91,6 +111,9 @@
 - Certificate construction and signing
 - PKCS#7/CMS response encoding
 - CMC request/response handling (RFC 5272)
+- CMS-EST layer (RFC 8295) for message-level CMS wrapping
+- CMP v3 protocol handler (RFC 9810) for ir/cr/kur/rr/genm
+- STAR certificate management (RFC 8739)
 - CSR attributes response building
 - Server key generation logic
 
@@ -115,6 +138,19 @@
 - Common traits (AuditEvent, HealthCheck)
 - Base64 encoding/decoding helpers
 - Certificate utility functions
+
+### kipuka-dogtag
+- Dogtag PKI CA REST API client
+- PKCS#10 profile-based enrollment via /ca/rest/certrequests
+- Certificate retrieval, listing, and revocation via /ca/rest/certs
+- Profile enumeration and constraint extraction
+- Full CMC passthrough via /ca/ee/ca/profileSubmitCMCFull (uses synta-cmc)
+- KRA server-side key generation and archival via /kra/rest/agent/keys
+- Multi-CA connection pooling with health-based routing
+
+### kipuka-coap
+- CoAP transport for EST (RFC 9148)
+- EST-coaps enrollment over constrained networks
 
 ## EST Operation Data Flows
 
@@ -231,6 +267,50 @@ Client                    kipuka                    CA/HSM          DB
   |    smime-type=CMC-response                         |              |
 ```
 
+### POST /.well-known/cmp
+
+```
+Client                    kipuka                    CA/HSM          DB
+  |                         |                         |              |
+  |-- POST /cmp ----------->|                         |              |
+  |   Content-Type:         |                         |              |
+  |   application/pkixcmp   |                         |              |
+  |                         |-- parse PKIMessage      |              |
+  |                         |   (DER-encoded)         |              |
+  |                         |-- verify protection     |              |
+  |                         |   (signature or MAC)    |              |
+  |                         |-- route by body type    |              |
+  |                         |   ir/cr -> issue cert   |              |
+  |                         |   kur -> rekey cert     |              |
+  |                         |   rr -> revoke cert     |              |
+  |                         |   genm -> info request  |              |
+  |                         |-- process request ----->|              |
+  |                         |<-- result --------------|              |
+  |                         |-- build PKIMessage resp |              |
+  |                         |-- sign/MAC protect resp |              |
+  |                         |-- store + audit ------->|-- INSERT --->|
+  |<-- 200 OK --------------|                         |              |
+  |    application/pkixcmp  |                         |              |
+```
+
+### STAR Certificate Renewal (Background)
+
+```
+StarManager                    CA/HSM          DB
+  |                              |              |
+  |-- check orders needing       |              |
+  |   renewal (by deadline)      |              |
+  |-- for each due order:        |              |
+  |   |-- build cert from        |              |
+  |   |   stored CSR template    |              |
+  |   |-- sign cert ------------>|              |
+  |   |<-- signed cert ----------|              |
+  |   |-- store renewal -------->|-- INSERT --->|
+  |   |-- audit: star_renewal_success           |
+  |-- cleanup expired orders     |              |
+  |   (remove cancelled/expired) |              |
+```
+
 ## Multi-CA HA Failover
 
 ```
@@ -311,9 +391,14 @@ Health Check Flow:
    |                           +------+------+    +--------+--------+
    |                           | Validate    |    | Validate        |
    |                           | OTP token   |    | SPNEGO token    |
-   |                           | (argon2id   |    | (gss-accept)    |
-   |                           |  verify)    |    +--------+--------+
-   |                           +------+------+             |
+   |                           | (argon2id   |    | via libgssapi   |
+   |                           |  verify)    |    | (gss_accept_    |
+   |                           +------+------+    |  sec_context)   |
+   |                                  |           | Cryptographic   |
+   |                                  |           | ticket verify   |
+   |                                  |           | (gssapi_require |
+   |                                  |           |  _crypto flag)  |
+   |                                  |           +--------+--------+
    |                                  |                    |
    +----------------------------------+--------------------+
                       |
@@ -392,3 +477,57 @@ Health check (periodic):
   3. Verify signature — correct output?
   4. Update ca_health table
 ```
+
+## Dogtag PKI Integration
+
+kipuka-dogtag provides an alternative CA backend using Red Hat Certificate
+System (Dogtag PKI) instead of local signing.
+
+```
+                kipuka-dogtag
+               /      |       \
+              /       |        \
+     +-------+  +----+----+  +--------+
+     | Enroll |  | Certs   |  | KRA    |
+     | REST   |  | REST    |  | REST   |
+     | /ca/   |  | /ca/    |  | /kra/  |
+     | rest/  |  | rest/   |  | rest/  |
+     | cert-  |  | certs   |  | agent/ |
+     | reqs   |  |         |  | keys   |
+     +-------+  +---------+  +--------+
+         |           |            |
+          \          |           /
+        +--+---------+----------+
+        |   Dogtag CA Server    |
+        |   (RHCS / Dogtag)     |
+        +--------+--------------+
+                 |
+           mTLS (agent cert)
+
+Connection pooling:
+  1. Pool of authenticated HTTPS connections
+  2. Health-based routing across multiple Dogtag instances
+  3. Automatic retry on connection failure
+  4. Profile caching for constraint validation
+
+CMC passthrough:
+  1. Client submits CMC request to kipuka
+  2. kipuka forwards to Dogtag /profileSubmitCMCFull
+  3. Uses synta-cmc for CMC message construction
+  4. Response returned to client
+```
+
+## ResolvedSigningKey Pattern
+
+The `ResolvedSigningKey` enum (src/ca/issue.rs) provides a unified
+abstraction for CA signing keys regardless of storage:
+
+```
+  ResolvedSigningKey::Pem(data)     — PEM file loaded into memory
+  ResolvedSigningKey::Hsm { ctx, label } — PKCS#11 key reference
+```
+
+The `resolve_signing_key()` function at startup inspects the CA
+configuration and returns the appropriate variant.  All downstream
+signing code calls `as_signing_key()` to get a borrowed `CaSigningKey`
+reference, keeping the rest of the codebase storage-agnostic.

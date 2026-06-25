@@ -15,20 +15,29 @@ Built on the Synta ASN.1/X.509 library. Architecture inspired by Akamu ACME serv
 ## Architecture
 - Workspace with 6 internal crates: kipuka-est, kipuka-hsm, kipuka-otp, kipuka-util, kipuka-dogtag, kipuka-coap
 - EST operations: /cacerts, /simpleenroll, /simplereenroll, /fullcmc, /serverkeygen, /csrattrs
+- CMS-EST endpoints (RFC 8295): /cms/simpleenroll, /cms/simplereenroll, /cms/serverkeygen, /cms/fullcmc
+- CMP protocol (RFC 4210): enrollment, revocation, general messages with MAC and signature protection
+- STAR certificates (RFC 8739): short-lived auto-renewal with configurable lifetime
+- synta-cmc: RFC 5272 CMC protocol implementation (PKIData/PKIResponse, 13 RFC coverage)
+- CMS SignedData verification and EnvelopedData construction (RFC 5652)
 - Multi-CA with HA failover (active-passive, round-robin, weighted, latency-based)
 - PKCS#11 HSM integration for CA key protection
-- Dogtag PKI integration (enrollment, revocation, KRA key generation)
+- Dogtag PKI integration (CA enrollment, KRA key generation, CMC passthrough)
 - OTP, mTLS, and GSSAPI/Kerberos authentication for enrollment
+- OCSP stapling, CRL fallback, CSR self-signature validation
 - SQLite/PostgreSQL/MariaDB database backends (via sqlx Any driver)
 - Container image: registry.kipuka.dev/heebus/kipuka (x86_64 latest, arm64 latest-arm64)
 - API docs: kipuka.dev (GitLab Pages, cargo doc)
-- CI/CD: GitLab CI on codeberg.org
+- CI/CD: GitLab CI on codeberg.org and gitlab.cee.redhat.com
 
 ## Compliance
 
 ### Core Protocol RFCs
 - RFC 7030 (EST — Enrollment over Secure Transport)
 - RFC 8951 (EST clarifications)
+- RFC 8295 (CMS-EST — EST with CMS)
+- RFC 4210 (CMP — Certificate Management Protocol)
+- RFC 8739 (STAR — Short-Term Automatic Renewal)
 - RFC 5272 (CMC — Certificate Management over CMS) + RFC 6402 (CMC Updates)
 - RFC 5273 (CMC Transport Protocols)
 - RFC 5274 (CMC Compliance Requirements)
