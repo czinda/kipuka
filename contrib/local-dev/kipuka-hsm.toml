@@ -70,3 +70,17 @@ admin_ca_file  = "/etc/kipuka/ca/ca.pem"
 enabled    = true
 log_path   = "/dev/stdout"
 log_to_db  = true
+
+# ── Optional Features (disabled for local dev) ──────────────────────────
+
+# [coap]
+# enabled = false
+
+# [cms_est]
+# enabled = false
+
+# [star]
+# enabled = false
+
+# [ocsp]
+# enabled = false

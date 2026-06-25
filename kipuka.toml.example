@@ -395,3 +395,102 @@ hash_algorithm = "argon2id"
 
 # Bearer token for admin API (use bearer_token_env for production).
 # bearer_token_env = "KIPUKA_ADMIN_TOKEN"
+
+# ── CoAP/DTLS Transport ─────────────────────────────────────────────────
+# CoAP over DTLS transport for constrained IoT devices (RFC 9483).
+# Provides EST-coaps: EST over CoAP with block-wise transfer support
+# for resource-constrained environments (sensors, actuators, etc.).
+
+# [coap]
+# enabled = false
+#
+# # UDP listen address for CoAP/DTLS endpoint.
+# listen_addr = "0.0.0.0:5684"
+#
+# # Enable DTLS for the CoAP listener (strongly recommended; disable only
+# # for debugging on isolated networks).
+# dtls_enabled = true
+#
+# # CoAP block-wise transfer size in bytes (64, 128, 256, 512, 1024).
+# # Smaller values for very constrained devices; 512 is a good default.
+# block_size = 512
+#
+# # Maximum reassembled payload size in bytes (protects against resource
+# # exhaustion from oversized requests).
+# max_payload = 65536
+#
+# # DTLS session timeout in seconds for constrained device resumption.
+# session_timeout_secs = 300
+#
+# # Maximum number of concurrent DTLS sessions.
+# max_sessions = 1024
+
+# ── CMS-wrapped EST ─────────────────────────────────────────────────────
+# CMS (Cryptographic Message Syntax) wrapped EST endpoints (RFC 8295).
+# Adds CMS SignedData wrapping on requests and CMS EnvelopedData encryption
+# on responses for environments requiring end-to-end message-layer security.
+
+# [cms_est]
+# enabled = false
+#
+# # Require CMS SignedData wrapping on all EST requests.
+# require_signed_requests = true
+#
+# # Encrypt responses using CMS EnvelopedData.
+# encrypt_responses = true
+#
+# # Allowed content-encryption algorithms for CMS EnvelopedData.
+# allowed_content_encryption = ["AES-256-GCM", "AES-128-GCM"]
+
+# ── STAR Certificates ───────────────────────────────────────────────────
+# Short-Term Automatically Renewed (STAR) certificates (RFC 8739).
+# Issues short-lived certificates that auto-renew on a schedule, reducing
+# the need for revocation infrastructure. Useful for CDNs and TLS proxies.
+
+# [star]
+# enabled = false
+#
+# # Minimum renewal interval in seconds (floor: 3600 = 1 hour).
+# min_renewal_interval_secs = 3600
+#
+# # Maximum renewal interval in seconds (ceiling: 604800 = 7 days).
+# max_renewal_interval_secs = 604800
+#
+# # Default renewal interval when the client does not specify one (86400 = 24h).
+# default_renewal_interval_secs = 86400
+#
+# # Maximum total STAR order lifetime in days.
+# max_lifetime_days = 365
+#
+# # Maximum number of active STAR orders (resource exhaustion guard).
+# max_active_orders = 10000
+#
+# # Renew when this fraction of the interval remains (0.1 - 0.9).
+# pre_renewal_factor = 0.5
+
+# ── OCSP Revocation Checking ────────────────────────────────────────────
+# Online Certificate Status Protocol (RFC 6960) checking for client
+# certificates presented during mTLS enrollment. Verifies that client
+# certificates have not been revoked before accepting enrollment requests.
+
+# [ocsp]
+# enabled = false
+#
+# # Override OCSP responder URL. When omitted, the AIA extension from the
+# # client certificate is used (RFC 5280 S4.2.2.1).
+# # responder_url = "http://ocsp.example.com:9080"
+#
+# # Cache TTL in seconds for OCSP responses (default: 300 = 5 minutes).
+# cache_ttl_secs = 300
+#
+# # HTTP timeout in seconds for OCSP requests.
+# timeout_secs = 10
+#
+# # Require a nonce in OCSP responses (RFC 6960 S4.4.1).
+# # Nonces prevent replay attacks but not all responders support them.
+# require_nonce = true
+#
+# # Soft-fail mode: if true, accept the certificate when the OCSP responder
+# # is unreachable. If false, reject. Set to true for availability over
+# # strict revocation enforcement.
+# soft_fail = false
