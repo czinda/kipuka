@@ -166,14 +166,64 @@ pub async fn get_cert(
 
     tracing::debug!(serial = %serial, "retrieving certificate details");
 
-    // TODO: Look up the certificate by serial number.
-    //
-    // let cert = match kipuka_est::db::certs::get_by_serial(&state.db, &serial).await? {
-    //     Some(c) => c,
-    //     None => return (StatusCode::NOT_FOUND, "certificate not found").into_response(),
-    // };
+    // Query the certificate by serial number from the read-only pool.
+    let row = match sqlx::query_as::<_, CertDetailRow>(
+        crate::db::pg_sql(
+            "SELECT serial, subject_dn, issuer_dn, ca_id, \
+                    not_before, not_after, status, \
+                    revocation_reason, revocation_time \
+             FROM certificates WHERE serial = ?",
+        ),
+    )
+    .bind(&serial)
+    .fetch_optional(&state.db_ro)
+    .await
+    {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": "not_found",
+                    "detail": format!("certificate with serial {serial} not found")
+                })),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!(error = %e, serial = %serial, "failed to query certificate");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "database_error",
+                    "detail": "failed to query certificate database"
+                })),
+            )
+                .into_response();
+        }
+    };
 
-    (StatusCode::NOT_FOUND, "certificate not found").into_response()
+    let detail = CertDetail {
+        summary: CertSummary {
+            serial: row.serial,
+            subject: row.subject_dn,
+            ca_id: row.ca_id,
+            issued_at: row.not_before,
+            expires_at: row.not_after,
+            status: row.status,
+        },
+        // SANs, key algorithm, signature algorithm, and auth method
+        // require parsing the DER certificate — omitted until the
+        // DER blob is fetched alongside the metadata.
+        sans: Vec::new(),
+        key_algorithm: String::new(),
+        signature_algorithm: String::new(),
+        auth_method: String::new(),
+        revocation_reason: row.revocation_reason,
+        revoked_at: row.revocation_time,
+    };
+
+    (StatusCode::OK, Json(detail)).into_response()
 }
 
 /// `POST /admin/certs/{serial}/revoke` — Revoke a certificate.
@@ -225,12 +275,58 @@ pub async fn revoke_cert(
             .into_response();
     }
 
-    // TODO: Revoke the certificate in the database and regenerate the CRL.
-    //
-    // kipuka_est::db::certs::revoke(&state.db, &serial, req.reason).await?;
-    //
-    // Invalidate the CRL cache for the issuing CA:
-    // state.invalidate_crl_cache(ca_id);
+    // Update the certificate status to 'revoked' in the database.
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let result = match sqlx::query(
+        crate::db::pg_sql(
+            "UPDATE certificates SET status = 'revoked', \
+                    revocation_reason = ?, revocation_time = ? \
+             WHERE serial = ? AND status != 'revoked'",
+        ),
+    )
+    .bind(req.reason.to_string())
+    .bind(&now)
+    .bind(&serial)
+    .execute(&state.db)
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(error = %e, serial = %serial, "failed to revoke certificate in DB");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "database_error",
+                    "detail": "failed to update certificate status"
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    if result.rows_affected() == 0 {
+        // Either the certificate doesn't exist or is already revoked.
+        // Check which case it is.
+        let exists = sqlx::query_scalar::<_, i64>(
+            crate::db::pg_sql("SELECT COUNT(*) FROM certificates WHERE serial = ?"),
+        )
+        .bind(&serial)
+        .fetch_one(&state.db_ro)
+        .await
+        .unwrap_or(0);
+
+        if exists == 0 {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": "not_found",
+                    "detail": format!("certificate with serial {serial} not found")
+                })),
+            )
+                .into_response();
+        }
+        // Already revoked — return success idempotently.
+    }
 
     state
         .record_audit_event(
@@ -239,15 +335,7 @@ pub async fn revoke_cert(
         )
         .await;
 
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "serial": serial,
-            "status": "revoked",
-            "reason": req.reason,
-        })),
-    )
-        .into_response()
+    (StatusCode::NO_CONTENT,).into_response()
 }
 
 // ── Database helpers ────────────────────────────────────────────────────────
@@ -329,5 +417,20 @@ struct CertRow {
     issued_at: String,
     expires_at: String,
     status: String,
+}
+
+/// Row type for certificate detail queries (includes revocation fields).
+#[derive(sqlx::FromRow)]
+struct CertDetailRow {
+    serial: String,
+    subject_dn: String,
+    #[allow(dead_code)]
+    issuer_dn: String,
+    ca_id: String,
+    not_before: String,
+    not_after: String,
+    status: String,
+    revocation_reason: Option<String>,
+    revocation_time: Option<String>,
 }
 

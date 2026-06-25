@@ -394,6 +394,12 @@ entropy_bits = 128
 ttl_seconds = 3600
 max_usage = 1
 
+[admin]
+enabled = true
+auth_method = "mtls"
+admin_ca_file = "/dev/null"
+bearer_token = "test-admin-token"
+
 [audit]
 enabled = true
 "#;

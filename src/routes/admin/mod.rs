@@ -23,6 +23,8 @@ use axum::http::request::Parts;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 
+use subtle::ConstantTimeEq;
+
 use crate::state::AppState;
 
 /// Build the admin API sub-router.
@@ -98,16 +100,25 @@ where
             .get(axum::http::header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
             && let Some(token) = auth_header.strip_prefix("Bearer ")
+            && !token.is_empty()
         {
-            // TODO: Validate admin bearer token against a configured
-            // admin token or session store.
-            //
-            // For now, accept any non-empty token as a placeholder.
-            if !token.is_empty() {
-                return Ok(AdminAuth {
-                    identity: "admin".to_string(),
-                });
+            // Validate against the configured admin bearer token.
+            if let Some(ref admin_cfg) = _app.config.admin
+                && let Some(ref configured_token) = admin_cfg.bearer_token
+            {
+                // Constant-time comparison to prevent timing attacks.
+                let token_bytes = token.as_bytes();
+                let configured_bytes = configured_token.as_bytes();
+                if token_bytes.len() == configured_bytes.len()
+                    && token_bytes.ct_eq(configured_bytes).into()
+                {
+                    return Ok(AdminAuth {
+                        identity: "admin".to_string(),
+                    });
+                }
+                // Token did not match — fall through to 401.
             }
+            // No admin config or no bearer_token configured — reject Bearer auth.
         }
 
         // Check for admin mTLS client certificate.

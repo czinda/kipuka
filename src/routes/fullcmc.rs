@@ -176,20 +176,24 @@ pub async fn post_fullcmc(
     // Look up the CA backend.
     let ca = state.get_ca(ca_id).ok_or(KipukaError::NotFound)?;
 
-    // Step 1: Unwrap the CMS SignedData to extract the PKIData content.
-    let (pki_data_der, signer_certs) =
-        parser::unwrap_signed_cmc(&cmc_request_der).map_err(|e| {
-            tracing::warn!(error = %e, "CMC SignedData unwrap failed");
-            KipukaError::BadRequest("malformed CMC request".into())
-        })?;
+    // Step 1: Verify the CMS SignedData signature and extract the PKIData content.
+    //
+    // RFC 5272 §5 requires RA signature verification against the CA's
+    // truststore.  `verify_cms_signed_data` validates the signature,
+    // checks the signer's certificate chain, and returns the unwrapped
+    // payload (PKIData DER).
+    let truststore: Vec<Vec<u8>> = vec![ca.cert_der.clone()];
+    let cms_result = crate::auth::cms_auth::verify_cms_signed_data(
+        &cmc_request_der,
+        &truststore,
+    )?;
+    let pki_data_der = cms_result.payload;
 
-    if signer_certs.is_empty() {
-        tracing::warn!("CMC request has no signer certificates — CMS signature cannot be verified");
-    }
-    // TODO(security): Verify CMS SignedData signature using signer_certs.
-    // RFC 5272 §5 requires RA signature verification. Currently relying on
-    // mTLS+EKU authentication at the transport layer only.
-    tracing::warn!("CMC SignedData signature verification not yet implemented");
+    tracing::info!(
+        signer_dn = %cms_result.signer_subject_dn,
+        sig_alg = %cms_result.signature_algorithm,
+        "CMC SignedData signature verified"
+    );
 
     if pki_data_der.is_empty() {
         return Err(KipukaError::BadRequest(

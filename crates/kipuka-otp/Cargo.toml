@@ -17,6 +17,12 @@ thiserror.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 parking_lot.workspace = true
+sqlx = { workspace = true, optional = true }
+hex = { workspace = true, optional = true }
+
+[features]
+default = ["db"]
+db = ["dep:sqlx", "dep:hex"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }

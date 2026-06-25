@@ -642,13 +642,12 @@ fn match_signer_cert_by_sid<'a>(
             )))?;
 
         for cert_der in certs {
-            if let Ok(cert) = Certificate::from_der(cert_der) {
-                if cert.tbs_certificate.issuer.as_bytes() == ias.issuer.as_bytes()
+            if let Ok(cert) = Certificate::from_der(cert_der)
+                && cert.tbs_certificate.issuer.as_bytes() == ias.issuer.as_bytes()
                     && cert.tbs_certificate.serial_number == ias.serial_number
                 {
                     return Ok(cert_der);
                 }
-            }
         }
         Err(KipukaError::BadRequest(
             "CMS signer certificate not found by IssuerAndSerialNumber".into(),
@@ -672,29 +671,24 @@ fn match_signer_cert_by_sid<'a>(
             if let Ok(cert) = Certificate::from_der(cert_der) {
                 // Look up the SubjectKeyIdentifier extension (OID 2.5.29.14)
                 // from the certificate's extensions.
-                if let Some(ref exts_raw) = cert.tbs_certificate.extensions {
-                    if let Some(ext_value) = synta_certificate::find_extension_value(
+                if let Some(ref exts_raw) = cert.tbs_certificate.extensions
+                    && let Some(ext_value) = synta_certificate::find_extension_value(
                         exts_raw.as_bytes(),
                         oids::SUBJECT_KEY_IDENTIFIER,
                     ) {
                         // The extension value is an OCTET STRING wrapping the key id.
                         let mut ev_dec = Decoder::new(ext_value, Encoding::Der);
-                        if let Ok(tag) = ev_dec.read_tag() {
-                            if tag.number() == 4 {
+                        if let Ok(tag) = ev_dec.read_tag()
+                            && tag.number() == 4 {
                                 // OCTET STRING
-                                if let Ok(ev_len) = ev_dec.read_length() {
-                                    if let Ok(def_len) = ev_len.definite() {
-                                        if let Ok(key_id) = ev_dec.read_bytes(def_len) {
-                                            if key_id == ski_value {
+                                if let Ok(ev_len) = ev_dec.read_length()
+                                    && let Ok(def_len) = ev_len.definite()
+                                        && let Ok(key_id) = ev_dec.read_bytes(def_len)
+                                            && key_id == ski_value {
                                                 return Ok(cert_der);
                                             }
-                                        }
-                                    }
-                                }
                             }
-                        }
                     }
-                }
             }
         }
         Err(KipukaError::BadRequest(

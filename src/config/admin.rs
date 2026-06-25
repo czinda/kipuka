@@ -76,6 +76,14 @@ pub struct AdminConfig {
     #[serde(default = "default_max_sessions")]
     pub max_sessions: usize,
 
+    /// Bearer token for admin API authentication.
+    ///
+    /// When set, `Authorization: Bearer <token>` requests are validated
+    /// against this value using constant-time comparison.  Required when
+    /// operators authenticate via Bearer tokens (e.g., CI pipelines,
+    /// monitoring systems).
+    pub bearer_token: Option<String>,
+
     /// GSSAPI configuration (required when `auth_method = "gssapi"`).
     pub gssapi: Option<AdminGssapiConfig>,
 }
@@ -139,6 +147,7 @@ impl Default for AdminConfig {
             admin_ca_file: None,
             session_ttl_secs: default_session_ttl_secs(),
             max_sessions: default_max_sessions(),
+            bearer_token: None,
             gssapi: None,
         }
     }

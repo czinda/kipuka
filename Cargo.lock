@@ -1409,11 +1409,13 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "chrono",
+ "hex",
  "hmac",
  "parking_lot",
  "rand 0.8.6",
  "serde",
  "sha2",
+ "sqlx",
  "thiserror",
  "tokio",
  "tracing",

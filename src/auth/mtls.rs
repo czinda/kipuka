@@ -486,13 +486,12 @@ async fn fetch_and_check_crl(
     }
 
     // Reject excessively large CRLs (> 10 MB) to prevent resource exhaustion.
-    if let Some(len) = response.content_length() {
-        if len > 10_000_000 {
+    if let Some(len) = response.content_length()
+        && len > 10_000_000 {
             return Err(format!(
                 "CRL from {url} too large ({len} bytes, max 10 MB)"
             ));
         }
-    }
 
     let crl_der = response
         .bytes()

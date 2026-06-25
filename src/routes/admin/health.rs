@@ -198,41 +198,64 @@ pub async fn get_health_ca(_admin: AdminAuth, State(state): State<Arc<AppState>>
 // ── Internal health check implementations ────────────────────────────────────
 
 /// Check database connectivity with a lightweight query.
-async fn check_database_health(_state: &AppState) -> SubsystemHealth {
+async fn check_database_health(state: &AppState) -> SubsystemHealth {
     let start = std::time::Instant::now();
 
-    // TODO: Execute a lightweight query like `SELECT 1`.
-    //
-    // match sqlx::query("SELECT 1").execute(&state.db).await {
-    //     Ok(_) => SubsystemHealth { ... status: "healthy" ... },
-    //     Err(e) => SubsystemHealth { ... status: "unhealthy", detail: Some(e.to_string()) ... },
-    // }
-
-    let latency = start.elapsed().as_millis() as u64;
-
-    SubsystemHealth {
-        name: "database".to_string(),
-        status: "healthy".to_string(),
-        detail: None,
-        latency_ms: Some(latency),
+    match sqlx::query("SELECT 1").execute(&state.db).await {
+        Ok(_) => {
+            let latency = start.elapsed().as_millis() as u64;
+            SubsystemHealth {
+                name: "database".to_string(),
+                status: "healthy".to_string(),
+                detail: None,
+                latency_ms: Some(latency),
+            }
+        }
+        Err(e) => {
+            let latency = start.elapsed().as_millis() as u64;
+            tracing::error!(error = %e, "database health check failed");
+            SubsystemHealth {
+                name: "database".to_string(),
+                status: "unhealthy".to_string(),
+                detail: Some(format!("database unreachable: {e}")),
+                latency_ms: Some(latency),
+            }
+        }
     }
 }
 
-/// Check HSM connectivity by attempting a session operation.
+/// Check HSM connectivity by verifying the PKCS#11 session is active.
 async fn check_hsm_health(state: &AppState) -> SubsystemHealth {
-    let _ = state;
+    let start = std::time::Instant::now();
 
-    // TODO: Verify PKCS#11 session is active.
-    //
-    // match kipuka_hsm::ping_session(&state.hsm).await {
-    //     Ok(latency) => SubsystemHealth { ... status: "healthy" ... },
-    //     Err(e) => SubsystemHealth { ... status: "unhealthy" ... },
-    // }
-
-    SubsystemHealth {
-        name: "hsm".to_string(),
-        status: "healthy".to_string(),
-        detail: None,
-        latency_ms: None,
+    if let Some(ref hsm) = state.hsm {
+        match hsm.health_check() {
+            Ok(()) => {
+                let latency = start.elapsed().as_millis() as u64;
+                SubsystemHealth {
+                    name: "hsm".to_string(),
+                    status: "healthy".to_string(),
+                    detail: Some(format!("provider: {:?}", hsm.provider)),
+                    latency_ms: Some(latency),
+                }
+            }
+            Err(e) => {
+                let latency = start.elapsed().as_millis() as u64;
+                tracing::error!(error = %e, "HSM health check failed");
+                SubsystemHealth {
+                    name: "hsm".to_string(),
+                    status: "unhealthy".to_string(),
+                    detail: Some(format!("HSM unreachable: {e}")),
+                    latency_ms: Some(latency),
+                }
+            }
+        }
+    } else {
+        SubsystemHealth {
+            name: "hsm".to_string(),
+            status: "not_configured".to_string(),
+            detail: Some("no HSM context available".to_string()),
+            latency_ms: None,
+        }
     }
 }

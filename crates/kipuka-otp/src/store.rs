@@ -144,65 +144,274 @@ impl OtpStore for InMemoryOtpStore {
 }
 
 // ---------------------------------------------------------------------------
-// Database implementation (production stub)
+// Database implementation (production)
 // ---------------------------------------------------------------------------
 
 /// Database-backed OTP store for production use.
 ///
 /// Stores OTP records in kipuka's configured database (SQLite, PostgreSQL,
 /// or MariaDB via `sqlx`). Hash-indexed for O(1) lookup during validation.
+///
+/// Token hashes are stored as hex-encoded strings in the `token_hash` TEXT
+/// column.  The `id` column is a database auto-increment integer; the
+/// `OtpRecord.id` UUID is mapped bijectively via `Uuid::from_u128`.
+#[cfg(feature = "db")]
 pub struct DbOtpStore {
-    // In a full implementation this would hold an `sqlx::AnyPool`.
-    _pool: (),
+    pool: sqlx::AnyPool,
+    /// Whether the backend is PostgreSQL (requires `$N` parameter style).
+    is_postgres: bool,
 }
 
+#[cfg(feature = "db")]
 impl DbOtpStore {
     /// Create a database-backed store.
     ///
-    /// # Placeholder
+    /// The `is_postgres` flag controls parameter placeholder style:
+    /// PostgreSQL requires `$1, $2, …` while SQLite and MariaDB use `?`.
+    pub fn new(pool: sqlx::AnyPool, is_postgres: bool) -> Self {
+        Self { pool, is_postgres }
+    }
+
+    /// Rewrite `?` placeholders to `$1, $2, …` when running against PostgreSQL.
     ///
-    /// This constructor will accept an `sqlx::AnyPool` once the database
-    /// schema and migrations are in place.
-    pub fn new() -> Self {
-        Self { _pool: () }
+    /// sqlx 0.8's `AnyPool` does not reliably rewrite placeholders for
+    /// PostgreSQL.  This mirrors the `pg_sql` helper from the main crate.
+    fn sql(&self, s: &str) -> String {
+        if !self.is_postgres {
+            return s.to_string();
+        }
+        let mut result = String::with_capacity(s.len() + 16);
+        let mut param_num = 0u32;
+        for ch in s.chars() {
+            if ch == '?' {
+                param_num += 1;
+                result.push('$');
+                result.push_str(&param_num.to_string());
+            } else {
+                result.push(ch);
+            }
+        }
+        result
+    }
+
+    /// Convert a database auto-increment `id` to a UUID for in-memory use.
+    fn id_to_uuid(db_id: i64) -> Uuid {
+        Uuid::from_u128(db_id as u128)
+    }
+
+    /// Extract the database auto-increment `id` from an in-memory UUID.
+    fn uuid_to_id(uuid: &Uuid) -> i64 {
+        uuid.as_u128() as i64
     }
 }
 
+#[cfg(feature = "db")]
+impl OtpStore for DbOtpStore {
+    async fn insert(&self, record: OtpRecord) -> OtpResult<()> {
+        let token_hash_hex = hex::encode(&record.token_hash);
+        let expires_at_str = record.expires_at.to_rfc3339();
+        let created_at_str = record.created_at.to_rfc3339();
+
+        debug!(
+            entity_id = %record.entity_id,
+            label = %record.label,
+            profile = %record.profile,
+            max_uses = record.max_uses,
+            "inserting OTP record into database"
+        );
+
+        let sql = self.sql(
+            "INSERT INTO otp_tokens (token_hash, entity_id, label, profile, created_at, expires_at, max_uses, current_uses, revoked) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0)",
+        );
+
+        sqlx::query(&sql)
+            .bind(&token_hash_hex)
+            .bind(&record.entity_id)
+            .bind(&record.label)
+            .bind(&record.profile)
+            .bind(&created_at_str)
+            .bind(&expires_at_str)
+            .bind(record.max_uses as i32)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| OtpError::StorageError(format!("insert failed: {e}")))?;
+
+        info!(entity_id = %record.entity_id, "OTP record stored in database");
+        Ok(())
+    }
+
+    async fn find_by_hash(&self, hash: &[u8]) -> OtpResult<Option<OtpRecord>> {
+        let hash_hex = hex::encode(hash);
+
+        let sql = self.sql(
+            "SELECT id, token_hash, entity_id, label, profile, created_at, expires_at, max_uses, current_uses, revoked \
+             FROM otp_tokens WHERE token_hash = ? AND revoked = 0",
+        );
+
+        let row = sqlx::query_as::<_, (
+            i64,    // id
+            String, // token_hash (hex)
+            String, // entity_id
+            String, // label
+            String, // profile
+            String, // created_at
+            String, // expires_at
+            i32,    // max_uses
+            i32,    // current_uses
+            i32,    // revoked (integer 0/1 for SQLite compat)
+        )>(&sql)
+        .bind(&hash_hex)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| OtpError::StorageError(format!("find_by_hash query failed: {e}")))?;
+
+        match row {
+            None => Ok(None),
+            Some((db_id, token_hash_hex, entity_id, label, profile, created_str, expires_str, max_uses, current_uses, revoked)) => {
+                let token_hash = hex::decode(&token_hash_hex)
+                    .map_err(|e| OtpError::StorageError(format!("invalid hex in token_hash: {e}")))?;
+
+                let created_at = chrono::DateTime::parse_from_rfc3339(&created_str)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now());
+
+                let expires_at = chrono::DateTime::parse_from_rfc3339(&expires_str)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .map_err(|e| OtpError::StorageError(format!("invalid expires_at: {e}")))?;
+
+                Ok(Some(OtpRecord {
+                    id: Self::id_to_uuid(db_id),
+                    token_hash,
+                    entity_id,
+                    label,
+                    profile,
+                    created_at,
+                    expires_at,
+                    max_uses: max_uses as u32,
+                    current_uses: current_uses as u32,
+                    revoked: revoked != 0,
+                }))
+            }
+        }
+    }
+
+    async fn increment_uses(&self, id: &Uuid, new_count: u32) -> OtpResult<()> {
+        let db_id = Self::uuid_to_id(id);
+
+        let sql = self.sql("UPDATE otp_tokens SET current_uses = ? WHERE id = ?");
+
+        let result = sqlx::query(&sql)
+            .bind(new_count as i32)
+            .bind(db_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| OtpError::StorageError(format!("increment_uses failed: {e}")))?;
+
+        if result.rows_affected() == 0 {
+            return Err(OtpError::NotFound);
+        }
+
+        debug!(db_id, new_count, "OTP usage count updated");
+        Ok(())
+    }
+
+    async fn revoke(&self, id: &Uuid) -> OtpResult<()> {
+        let db_id = Self::uuid_to_id(id);
+        let now_str = Utc::now().to_rfc3339();
+
+        let sql = self.sql("UPDATE otp_tokens SET revoked = 1, revoked_at = ? WHERE id = ?");
+
+        let result = sqlx::query(&sql)
+            .bind(&now_str)
+            .bind(db_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| OtpError::StorageError(format!("revoke failed: {e}")))?;
+
+        if result.rows_affected() == 0 {
+            return Err(OtpError::NotFound);
+        }
+
+        info!(db_id, "OTP record revoked");
+        Ok(())
+    }
+
+    async fn cleanup_expired(&self) -> OtpResult<u64> {
+        let now_str = Utc::now().to_rfc3339();
+
+        let sql = self.sql("DELETE FROM otp_tokens WHERE expires_at < ?");
+
+        let result = sqlx::query(&sql)
+            .bind(&now_str)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| OtpError::StorageError(format!("cleanup_expired failed: {e}")))?;
+
+        let removed = result.rows_affected();
+        if removed > 0 {
+            info!(removed, "cleaned up expired OTP records from database");
+        }
+        Ok(removed)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Stub (no-db feature)
+// ---------------------------------------------------------------------------
+
+/// Stub database-backed OTP store when the `db` feature is disabled.
+///
+/// All methods return a "not implemented" error.
+#[cfg(not(feature = "db"))]
+pub struct DbOtpStore {
+    _private: (),
+}
+
+#[cfg(not(feature = "db"))]
+impl DbOtpStore {
+    /// Create a stub store (database support not compiled in).
+    pub fn new() -> Self {
+        Self { _private: () }
+    }
+}
+
+#[cfg(not(feature = "db"))]
 impl Default for DbOtpStore {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(not(feature = "db"))]
 impl OtpStore for DbOtpStore {
     async fn insert(&self, _record: OtpRecord) -> OtpResult<()> {
-        // TODO: INSERT INTO otp_tokens (id, token_hash, entity_id, ...)
         Err(OtpError::StorageError(
-            "database OTP store not yet implemented".into(),
+            "database OTP store not compiled (enable 'db' feature)".into(),
         ))
     }
 
     async fn find_by_hash(&self, _hash: &[u8]) -> OtpResult<Option<OtpRecord>> {
         Err(OtpError::StorageError(
-            "database OTP store not yet implemented".into(),
+            "database OTP store not compiled (enable 'db' feature)".into(),
         ))
     }
 
     async fn increment_uses(&self, _id: &Uuid, _new_count: u32) -> OtpResult<()> {
         Err(OtpError::StorageError(
-            "database OTP store not yet implemented".into(),
+            "database OTP store not compiled (enable 'db' feature)".into(),
         ))
     }
 
     async fn revoke(&self, _id: &Uuid) -> OtpResult<()> {
         Err(OtpError::StorageError(
-            "database OTP store not yet implemented".into(),
+            "database OTP store not compiled (enable 'db' feature)".into(),
         ))
     }
 
     async fn cleanup_expired(&self) -> OtpResult<u64> {
         Err(OtpError::StorageError(
-            "database OTP store not yet implemented".into(),
+            "database OTP store not compiled (enable 'db' feature)".into(),
         ))
     }
 }

@@ -211,6 +211,24 @@ impl HsmContext {
         }
     }
 
+    /// Check that the HSM session is initialized and the mutex is healthy.
+    ///
+    /// Returns `Ok(())` if a PKCS#11 session exists and the lock is
+    /// acquirable.  Used by health probes to verify HSM availability
+    /// without performing a signing operation.
+    pub fn health_check(&self) -> HsmResult<()> {
+        let guard = self.session.lock().map_err(|_| {
+            HsmError::LibraryLoad("HSM session mutex poisoned".into())
+        })?;
+        if guard.is_some() {
+            Ok(())
+        } else {
+            Err(HsmError::LibraryLoad(
+                "HSM session not initialized (placeholder context)".into(),
+            ))
+        }
+    }
+
     /// Sign data using the HSM key identified by label.
     ///
     /// Uses `CKM_SHA256_RSA_PKCS` for RSA keys (the mechanism hashes
