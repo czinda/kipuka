@@ -59,7 +59,6 @@ struct ProfileInput {
 
 #[derive(Serialize)]
 struct ProfileAttribute {
-    #[serde(rename = "Name")]
     name: String,
     #[serde(rename = "Value")]
     value: String,
@@ -120,19 +119,38 @@ impl DogtagClient {
         let request = EnrollmentRequest {
             profile_id: profile_id.to_owned(),
             renewal: false,
-            input: vec![ProfileInput {
-                class_id: "certReqInputImpl".to_owned(),
-                attributes: vec![
-                    ProfileAttribute {
-                        name: "cert_request_type".to_owned(),
-                        value: "pkcs10".to_owned(),
-                    },
-                    ProfileAttribute {
-                        name: "cert_request".to_owned(),
-                        value: csr_pem.to_owned(),
-                    },
-                ],
-            }],
+            input: vec![
+                ProfileInput {
+                    class_id: "certReqInputImpl".to_owned(),
+                    attributes: vec![
+                        ProfileAttribute {
+                            name: "cert_request_type".to_owned(),
+                            value: "pkcs10".to_owned(),
+                        },
+                        ProfileAttribute {
+                            name: "cert_request".to_owned(),
+                            value: csr_pem.to_owned(),
+                        },
+                    ],
+                },
+                ProfileInput {
+                    class_id: "submitterInfoInputImpl".to_owned(),
+                    attributes: vec![
+                        ProfileAttribute {
+                            name: "requestor_name".to_owned(),
+                            value: "kipuka EST Server".to_owned(),
+                        },
+                        ProfileAttribute {
+                            name: "requestor_email".to_owned(),
+                            value: String::new(),
+                        },
+                        ProfileAttribute {
+                            name: "requestor_phone".to_owned(),
+                            value: String::new(),
+                        },
+                    ],
+                },
+            ],
         };
 
         let resp = self.post_json("/ca/rest/certrequests", &request).await?;
