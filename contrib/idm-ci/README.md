@@ -1,12 +1,12 @@
 # Running Kipuka Tests via idm-ci
 
-This directory contains helper scripts for running Kipuka EST/CMC tests through the [idm-ci](https://gitlab.cee.redhat.com/identity-management/idm-ci) test infrastructure.
+This directory contains helper scripts for running Kipuka EST/CMC tests through the [idm-ci](https://gitlab.example.com/identity-management/idm-ci) test infrastructure.
 
 ## Prerequisites
 
 1. **Clone idm-ci**:
    ```bash
-   git clone git@gitlab.cee.redhat.com:identity-management/idm-ci.git ~/git/idm-ci
+   git clone git@gitlab.example.com:identity-management/idm-ci.git ~/git/idm-ci
    ```
 
 2. **Install mrack** (VM provisioning):
@@ -63,7 +63,7 @@ Kipuka test topologies are defined in idm-ci metadata files:
 - `metadata/kipuka-est-aws.yaml` - AWS-specific EST/CMC topology
 - `metadata/kipuka-est-beaker.yaml` - Beaker-specific EST/CMC topology
 
-See the [idm-ci metadata directory](https://gitlab.cee.redhat.com/identity-management/idm-ci/-/tree/main/metadata) for full topology definitions.
+See the [idm-ci metadata directory](https://gitlab.example.com/identity-management/idm-ci/-/tree/main/metadata) for full topology definitions.
 
 ## Environment Variables
 
@@ -106,6 +106,6 @@ For iterative development and debugging:
 
 ## References
 
-- [idm-ci GitLab](https://gitlab.cee.redhat.com/identity-management/idm-ci)
+- [idm-ci GitLab](https://gitlab.example.com/identity-management/idm-ci)
 - [mrack documentation](https://github.com/neoave/mrack)
 - [Kipuka test suite](../../tests/)

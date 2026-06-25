@@ -178,7 +178,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Automated setup script (`setup.sh`):
   - DNF package installation (rust, cargo, openssl-devel, pkgconf-pkg-config, sqlite, git)
   - OpenSSL PQC readiness validation (ML-DSA/ML-KEM provider check)
-  - kipuka repository clone from `gitlab.cee.redhat.com`
+  - kipuka repository clone from `codeberg.org`
   - Cargo build (release mode with vendored dependencies)
   - Database migration execution
 - RHCS 11 integration (Dogtag PKI):
@@ -289,7 +289,7 @@ Additional compliance:
 ### Changed
 - Upgraded Beaker deployment from RHEL 9.6 to RHEL 10.0 for OpenSSL 3.5+ PQC provider support
 - Bumped Beaker host requirements to 8 GB RAM / 4 CPU for Rust compilation
-- Switched Beaker setup URLs to `gitlab.cee.redhat.com` for internal Red Hat network access
+- Updated Beaker setup URLs to use `codeberg.org` public repository
 
 ### Fixed
 - Removed comments with double-dashes and non-ASCII characters from Beaker job XML for strict XML parser compliance
@@ -303,4 +303,4 @@ Additional compliance:
 - TLS 1.2+ enforcement with FIPS-approved cipher suites only
 - Audit write failures cause operation to fail (fail-closed, not fail-open)
 
-[Unreleased]: https://gitlab.cee.redhat.com/czinda/kipuka
+[Unreleased]: https://codeberg.org/czinda/kipuka
