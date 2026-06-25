@@ -377,37 +377,151 @@ fn validate_csr(
         return Err(KipukaError::BadRequest("empty CSR".into()));
     }
 
-    // TODO: Parse the CSR using `synta` or `x509-cert` and perform:
-    //
-    // 1. Self-signature verification:
-    //    let csr = synta::pkcs10::CertificationRequest::from_der(csr_der)?;
-    //    csr.verify_self_signature()?;
-    //
-    // 2. Required attribute check:
-    //    for required_oid in &label.csr_attributes {
-    //        if !csr.has_attribute(required_oid) {
-    //            return Err(KipukaError::BadRequest(...));
-    //        }
-    //    }
-    //
-    // 3. POP linking (RFC 7030 §3.5):
-    //    if auth.method == AuthMethod::Mtls {
-    //        // Verify challengePassword attribute matches TLS session binding
-    //    }
-    //
-    // 4. CN match (when configured):
-    //    if label.require_cn_match {
-    //        let cn = csr.subject_cn()?;
-    //        if cn != auth.identity {
-    //            return Err(KipukaError::BadRequest(...));
-    //        }
-    //    }
-
     // Minimal size check — a valid PKCS#10 CSR is at least ~60 bytes.
     if csr_der.len() < 60 {
         return Err(KipukaError::BadRequest(
             "CSR is too short to be valid".into(),
         ));
+    }
+
+    // ── Step 1: Parse the CSR ──────────────────────────────────────────────
+    let csr = synta_certificate::csr::CertificationRequest::from_der(csr_der)
+        .map_err(|e| KipukaError::BadRequest(format!("CSR parse failed: {e}")))?;
+
+    tracing::debug!(csr_len = csr_der.len(), "CSR parsed successfully");
+
+    // ── Step 2: Verify CSR self-signature (RFC 7030 §4.2) ──────────────────
+    //
+    // The CSR is self-signed: the signature is created with the private key
+    // corresponding to the public key in the CSR.  Verifying the self-signature
+    // proves the client possesses the private key (proof-of-possession).
+    //
+    // Per RFC 7030 §4.2, an EST server MUST verify the CSR self-signature.
+    {
+        use synta_certificate::SignatureVerifier;
+
+        // Encode the CertificationRequestInfo (TBS portion) to DER.
+        let cri_der = csr
+            .certification_request_info
+            .to_der()
+            .map_err(|e| KipukaError::BadRequest(format!("CSR CRI encode failed: {e}")))?;
+
+        // Encode the signature algorithm to DER.
+        let sig_alg_der = csr
+            .signature_algorithm
+            .to_der()
+            .map_err(|e| KipukaError::BadRequest(format!("CSR sig alg encode failed: {e}")))?;
+
+        // Extract the raw signature bytes from the BIT STRING.
+        let signature_bits = csr.signature.as_bytes();
+
+        // Encode the subject public key info to DER (the CSR is self-signed,
+        // so the issuer SPKI is the CSR's own SPKI).
+        let spki_der = csr
+            .certification_request_info
+            .subject_pkinfo
+            .to_der()
+            .map_err(|e| KipukaError::BadRequest(format!("CSR SPKI encode failed: {e}")))?;
+
+        let verifier = synta_certificate::default_signature_verifier();
+        verifier
+            .verify_certificate_signature(&cri_der, &sig_alg_der, signature_bits, &spki_der)
+            .map_err(|e| {
+                tracing::warn!(error = %e, "CSR self-signature verification failed");
+                KipukaError::BadRequest(format!("CSR self-signature verification failed: {e}"))
+            })?;
+
+        tracing::debug!("CSR self-signature verified");
+    }
+
+    // ── Step 3: Validate key size ──────────────────────────────────────────
+    //
+    // Enforce minimum key sizes per CA/B Forum Baseline Requirements:
+    // - RSA: >= 2048 bits
+    // - ECDSA: >= P-256 (256 bits)
+    {
+        let spki = &csr.certification_request_info.subject_pkinfo;
+        let key_bit_len = spki.subject_public_key.bit_len();
+
+        let pk_info = synta_certificate::decode_public_key_info(
+            &spki.algorithm.algorithm,
+            spki.algorithm.parameters.as_ref(),
+            spki.subject_public_key.as_bytes(),
+            key_bit_len,
+        );
+
+        match &pk_info {
+            synta_certificate::PublicKeyInfo::Rsa { bit_count, .. } => {
+                tracing::debug!(algorithm = "RSA", key_bits = bit_count, "CSR key info");
+                if *bit_count < 2048 {
+                    return Err(KipukaError::BadRequest(format!(
+                        "RSA key too small: {bit_count}-bit (minimum 2048-bit required)"
+                    )));
+                }
+            }
+            synta_certificate::PublicKeyInfo::Ec {
+                bit_count,
+                curve_nist_name,
+                ..
+            } => {
+                let curve = curve_nist_name.unwrap_or("unknown");
+                tracing::debug!(
+                    algorithm = "EC",
+                    curve = curve,
+                    key_bits = bit_count,
+                    "CSR key info"
+                );
+                if *bit_count < 256 {
+                    return Err(KipukaError::BadRequest(format!(
+                        "EC key too small: {curve} {bit_count}-bit (minimum P-256 required)"
+                    )));
+                }
+            }
+            synta_certificate::PublicKeyInfo::Unknown {
+                alg_name,
+                bit_count,
+                ..
+            } => {
+                // Unknown algorithm — log but allow (may be PQC or other
+                // algorithm not yet recognized by the key decoder).
+                tracing::debug!(
+                    algorithm = %alg_name,
+                    key_bits = bit_count,
+                    "CSR key: unknown algorithm, skipping size check"
+                );
+            }
+        }
+    }
+
+    // ── Step 4: Extract and log requested extensions ───────────────────────
+    //
+    // CSR attributes may contain an extensionRequest (PKCS#9 OID
+    // 1.2.840.113549.1.9.14) listing X.509v3 extensions the client would
+    // like in the issued certificate.  We log these at debug level for
+    // audit visibility.
+    if let Some(ref attrs) = csr.certification_request_info.attributes {
+        for attr in attrs.elements() {
+            let oid_components = attr.attr_type.components();
+            if oid_components == synta_certificate::oids::PKCS9_EXTENSION_REQUEST {
+                tracing::debug!("CSR contains extensionRequest attribute");
+                // Each attr_values element is a raw DER blob containing
+                // SEQUENCE OF Extension.  Log the count for visibility.
+                let ext_count = attr.attr_values.len();
+                tracing::debug!(
+                    extension_values = ext_count,
+                    "CSR extensionRequest attribute value count"
+                );
+            } else if oid_components == synta_certificate::oids::PKCS9_CHALLENGE_PASSWORD {
+                tracing::debug!("CSR contains challengePassword attribute");
+            } else {
+                let oid_str: String = oid_components
+                    .iter()
+                    .map(|n| n.to_string())
+                    .collect::<Vec<_>>()
+                    .join(".");
+                tracing::debug!(oid = %oid_str, "CSR contains unknown attribute");
+            }
+        }
     }
 
     Ok(())

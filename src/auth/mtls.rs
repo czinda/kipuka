@@ -19,6 +19,10 @@ use std::sync::Arc;
 use axum::http::request::Parts;
 use tracing::{debug, info, warn};
 
+use synta_certificate::{
+    cert_byte_ranges, crl::CertificateList, default_signature_verifier, SignatureVerifier,
+};
+
 use super::{AuthMethod, AuthResult};
 use crate::ocsp::{OcspClient, OcspStatus};
 use crate::state::AppState;
@@ -390,11 +394,297 @@ async fn check_revocation(cert_der: &[u8], app: &Arc<AppState>) -> Result<(), St
                 info!("OCSP soft-fail enabled, accepting certificate despite OCSP failure");
                 Ok(())
             } else {
-                // TODO: Implement CRL fallback check here.
-                Err(format!(
-                    "OCSP check failed and CRL fallback not yet implemented: {e}"
-                ))
+                // CRL fallback: try to fetch and check a CRL before giving up.
+                match check_crl_fallback(cert_der, app).await {
+                    Ok(()) => {
+                        info!("CRL fallback: certificate is not revoked");
+                        Ok(())
+                    }
+                    Err(crl_err) => {
+                        warn!(
+                            ocsp_error = %e,
+                            crl_error = %crl_err,
+                            "both OCSP and CRL revocation checks failed"
+                        );
+                        Err(format!(
+                            "OCSP check failed ({e}) and CRL fallback also failed ({crl_err})"
+                        ))
+                    }
+                }
             }
         }
     }
+}
+
+/// Fallback revocation check via CRL Distribution Points.
+///
+/// Extracts the CDP extension from the client certificate, fetches the CRL
+/// via HTTP, verifies the CRL signature against the issuer, and checks
+/// whether the client cert's serial number appears in the revoked list.
+async fn check_crl_fallback(cert_der: &[u8], app: &Arc<AppState>) -> Result<(), String> {
+    // 1. Parse the client certificate and extract CDP URLs.
+    let cdp_urls = extract_cdp_http_urls(cert_der)?;
+    if cdp_urls.is_empty() {
+        return Err("certificate has no CRL Distribution Point HTTP URLs".to_string());
+    }
+
+    // 2. Extract the client cert serial number for revocation lookup.
+    let client_cert = synta_certificate::Certificate::from_der(cert_der)
+        .map_err(|e| format!("failed to parse client certificate: {e}"))?;
+    let client_serial = client_cert.tbs_certificate.serial_number.clone();
+
+    // 3. Get the issuer certificate for CRL signature verification.
+    let issuer_der = app
+        .default_ca_cert_der()
+        .ok_or_else(|| "no issuer certificate available for CRL verification".to_string())?;
+    if issuer_der.is_empty() {
+        return Err("issuer certificate is empty".to_string());
+    }
+    let issuer_ranges = cert_byte_ranges(&issuer_der)
+        .ok_or_else(|| "failed to extract byte ranges from issuer certificate".to_string())?;
+    let issuer_spki = &issuer_der[issuer_ranges.subject_public_key_info.clone()];
+
+    // 4. Try each CDP URL until one succeeds.
+    let mut last_err = String::new();
+    for url in &cdp_urls {
+        debug!(url = %url, "fetching CRL from distribution point");
+        match fetch_and_check_crl(url, &client_serial, issuer_spki).await {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                warn!(url = %url, error = %e, "CRL check failed for this distribution point");
+                last_err = e;
+            }
+        }
+    }
+
+    Err(format!("all CRL distribution points failed; last error: {last_err}"))
+}
+
+/// Fetch a CRL from the given URL, verify its signature, and check
+/// whether the given serial number is in the revoked list.
+async fn fetch_and_check_crl(
+    url: &str,
+    client_serial: &synta::Integer,
+    issuer_spki_der: &[u8],
+) -> Result<(), String> {
+    // Fetch the CRL via HTTP.
+    let response = reqwest::get(url)
+        .await
+        .map_err(|e| format!("HTTP fetch failed for {url}: {e}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "HTTP {} fetching CRL from {url}",
+            response.status()
+        ));
+    }
+
+    let crl_der = response
+        .bytes()
+        .await
+        .map_err(|e| format!("failed to read CRL response body: {e}"))?;
+
+    // Parse the CRL.
+    let crl = CertificateList::from_der(&crl_der)
+        .map_err(|e| format!("failed to parse CRL DER: {e}"))?;
+
+    // Verify the CRL signature against the issuer's SPKI.
+    // The CRL has the same outer SEQUENCE { TBS, AlgId, Sig } structure
+    // as a Certificate, so we use the same byte-range extraction logic.
+    let crl_ranges = crl_byte_ranges(&crl_der)
+        .ok_or_else(|| "failed to extract byte ranges from CRL DER".to_string())?;
+
+    let tbs_bytes = &crl_der[crl_ranges.tbs];
+    let sig_alg_bytes = &crl_der[crl_ranges.sig_alg];
+    let sig_bits = &crl_der[crl_ranges.signature];
+
+    let verifier = default_signature_verifier();
+    verifier
+        .verify_certificate_signature(tbs_bytes, sig_alg_bytes, sig_bits, issuer_spki_der)
+        .map_err(|e| format!("CRL signature verification failed: {e}"))?;
+
+    info!("CRL signature verified successfully");
+
+    // Check if the client cert serial is in the revoked list.
+    if let Some(ref revoked_certs) = crl.tbs_cert_list.revoked_certificates {
+        for entry in revoked_certs {
+            if entry.user_certificate == *client_serial {
+                return Err(format!(
+                    "certificate serial {} is revoked (revocation date: {:?})",
+                    format_serial_hex(client_serial),
+                    entry.revocation_date,
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Extract HTTP URLs from the CRL Distribution Points extension.
+///
+/// Parses the CDP extension (OID 2.5.29.31) from the certificate's
+/// extensions and returns all `uniformResourceIdentifier` entries that
+/// use the `http://` or `https://` scheme.
+fn extract_cdp_http_urls(cert_der: &[u8]) -> Result<Vec<String>, String> {
+    let cert = synta_certificate::Certificate::from_der(cert_der)
+        .map_err(|e| format!("failed to parse certificate for CDP extraction: {e}"))?;
+
+    let ext_raw = cert
+        .tbs_certificate
+        .extensions
+        .as_ref()
+        .ok_or_else(|| "certificate has no extensions".to_string())?;
+
+    let cdp_bytes = synta_certificate::find_extension_value(
+        ext_raw.as_bytes(),
+        synta_certificate::oids::CRL_DISTRIBUTION_POINTS,
+    )
+    .ok_or_else(|| "CRL Distribution Points extension not found".to_string())?;
+
+    // CRLDistributionPoints ::= SEQUENCE OF DistributionPoint
+    // DistributionPoint ::= SEQUENCE {
+    //   distributionPoint [0] DistributionPointName OPTIONAL,
+    //   reasons           [1] ReasonFlags OPTIONAL,
+    //   cRLIssuer         [2] GeneralNames OPTIONAL
+    // }
+    // DistributionPointName ::= CHOICE {
+    //   fullName          [0] GeneralNames,
+    //   nameRelativeToCRLIssuer [1] RelativeDistinguishedName
+    // }
+    use synta::tag::TAG_SEQUENCE;
+    use synta::{Tag, TagClass};
+
+    let mut urls = Vec::new();
+    let seq_tag = Tag::universal_constructed(TAG_SEQUENCE);
+    let mut decoder = synta::Decoder::new(cdp_bytes, synta::Encoding::Der);
+    let mut outer = decoder
+        .enter_constructed(seq_tag)
+        .map_err(|e| format!("CDP outer SEQUENCE decode error: {e}"))?;
+
+    while !outer.is_empty() {
+        // Each element is a DistributionPoint SEQUENCE.
+        let mut dp = match outer.enter_constructed(seq_tag) {
+            Ok(d) => d,
+            Err(_) => break,
+        };
+        while !dp.is_empty() {
+            let dp_tag = match dp.read_tag() {
+                Ok(t) => t,
+                Err(_) => break,
+            };
+            let dp_len = match dp.read_length() {
+                Ok(l) => match l.definite() {
+                    Ok(n) => n,
+                    Err(_) => break,
+                },
+                Err(_) => break,
+            };
+            let dp_content = match dp.read_bytes(dp_len) {
+                Ok(c) => c,
+                Err(_) => break,
+            };
+
+            // distributionPoint is [0] — a DistributionPointName CHOICE.
+            if dp_tag.class() == TagClass::ContextSpecific && dp_tag.number() == 0 {
+                // fullName [0] IMPLICIT GeneralNames
+                let mut gn_dec = synta::Decoder::new(dp_content, synta::Encoding::Der);
+                while !gn_dec.is_empty() {
+                    let gn_tag = match gn_dec.read_tag() {
+                        Ok(t) => t,
+                        Err(_) => break,
+                    };
+                    let gn_len = match gn_dec.read_length() {
+                        Ok(l) => match l.definite() {
+                            Ok(n) => n,
+                            Err(_) => break,
+                        },
+                        Err(_) => break,
+                    };
+                    let gn_content = match gn_dec.read_bytes(gn_len) {
+                        Ok(c) => c,
+                        Err(_) => break,
+                    };
+
+                    // uniformResourceIdentifier [6] IMPLICIT IA5String
+                    if gn_tag.class() == TagClass::ContextSpecific
+                        && gn_tag.number() == 6
+                        && let Ok(uri) = std::str::from_utf8(gn_content)
+                        && (uri.starts_with("http://") || uri.starts_with("https://"))
+                    {
+                        urls.push(uri.to_string());
+                    }
+                }
+            }
+            // reasons [1] and cRLIssuer [2] are skipped.
+        }
+    }
+
+    Ok(urls)
+}
+
+/// Byte ranges within a DER-encoded CRL (same outer structure as Certificate).
+struct CrlByteRanges {
+    /// The complete `TBSCertList` TLV.
+    tbs: std::ops::Range<usize>,
+    /// The outer `signatureAlgorithm` TLV.
+    sig_alg: std::ops::Range<usize>,
+    /// The raw signature bytes from the `signatureValue` BIT STRING
+    /// (with the unused-bits byte stripped).
+    signature: std::ops::Range<usize>,
+}
+
+/// Extract byte ranges from a DER-encoded CRL for signature verification.
+///
+/// A CRL has the same `SEQUENCE { TBS, AlgorithmIdentifier, BIT STRING }`
+/// layout as a Certificate.
+fn crl_byte_ranges(crl_der: &[u8]) -> Option<CrlByteRanges> {
+    use synta::{Decoder, Encoding};
+
+    let mut d = Decoder::new(crl_der, Encoding::Der);
+
+    // Outer CertificateList SEQUENCE header.
+    d.read_tag().ok()?;
+    d.read_length().ok()?.definite().ok()?;
+
+    // TBSCertList: record start, skip.
+    let tbs_start = d.position();
+    d.read_tag().ok()?;
+    let tbs_content_len = d.read_length().ok()?.definite().ok()?;
+    let tbs_end = d.position() + tbs_content_len;
+    d.read_bytes(tbs_content_len).ok()?;
+
+    // signatureAlgorithm: record start, skip.
+    let sig_alg_start = d.position();
+    d.read_tag().ok()?;
+    let sig_alg_content_len = d.read_length().ok()?.definite().ok()?;
+    let sig_alg_end = d.position() + sig_alg_content_len;
+    d.read_bytes(sig_alg_content_len).ok()?;
+
+    // signatureValue BIT STRING: read tag+length, then skip unused-bits byte.
+    d.read_tag().ok()?;
+    let sig_len = d.read_length().ok()?.definite().ok()?;
+    if sig_len == 0 {
+        return None;
+    }
+    // The first byte of the BIT STRING content is the unused-bits count
+    // (always 0 for signatures). The actual signature starts at +1.
+    let sig_start = d.position() + 1;
+    let sig_end = d.position() + sig_len;
+
+    Some(CrlByteRanges {
+        tbs: tbs_start..tbs_end,
+        sig_alg: sig_alg_start..sig_alg_end,
+        signature: sig_start..sig_end,
+    })
+}
+
+/// Format a serial number as a colon-separated hex string for diagnostics.
+fn format_serial_hex(serial: &synta::Integer) -> String {
+    serial
+        .as_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join(":")
 }

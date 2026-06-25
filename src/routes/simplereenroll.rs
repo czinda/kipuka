@@ -108,20 +108,7 @@ pub async fn post_simplereenroll(
     //
     // RFC 7030 §3.5: "the subject field in the CSR MUST be the same as
     // the subject field in the client certificate used for TLS authentication."
-    //
-    // TODO: Parse the CSR subject DN and compare with the TLS cert subject.
-    //
-    // let csr = synta::pkcs10::CertificationRequest::from_der(&csr_der)?;
-    // let csr_subject = csr.subject_dn_string();
-    // mtls::validate_pop_linking(auth.0.subject_dn.as_deref(), &csr_subject)?;
-
-    if let Some(ref cert_subject) = auth.0.subject_dn {
-        tracing::debug!(
-            cert_subject = %cert_subject,
-            "POP linking: TLS cert subject will be compared with CSR subject"
-        );
-        // Placeholder for actual POP linking validation.
-    }
+    validate_pop_linking_from_csr(&csr_der, &auth.0)?;
 
     // Verify the client certificate has not been revoked (RHELBU-3536 R21).
     //
@@ -239,4 +226,65 @@ pub async fn post_simplereenroll(
         .await;
 
     Ok(resp)
+}
+
+/// Validate POP linking by parsing the CSR and comparing its subject with the
+/// TLS client certificate subject.
+///
+/// RFC 7030 §3.5: the CSR subject MUST match the TLS client certificate subject
+/// to prove the client possesses the private key of the certificate being renewed.
+///
+/// Additionally checks for a `challengePassword` attribute (OID 1.2.840.113549.1.9.7)
+/// in the CSR.  When present, this attribute provides cryptographic binding between
+/// the CSR and the TLS session.  When absent, the mTLS client certificate alone
+/// provides POP via the TLS handshake.
+fn validate_pop_linking_from_csr(
+    csr_der: &[u8],
+    auth: &crate::auth::AuthResult,
+) -> Result<(), KipukaError> {
+    // Parse the CSR.
+    let csr = synta_certificate::csr::CertificationRequest::from_der(csr_der)
+        .map_err(|e| KipukaError::BadRequest(format!("CSR parse failed for POP linking: {e}")))?;
+
+    // Extract the CSR subject DN by encoding the Name to DER and formatting.
+    let csr_subject_der = csr
+        .certification_request_info
+        .subject
+        .to_der()
+        .map_err(|e| KipukaError::BadRequest(format!("CSR subject encode failed: {e}")))?;
+    let csr_subject = synta_certificate::format_dn(&csr_subject_der);
+
+    tracing::debug!(
+        csr_subject = %csr_subject,
+        cert_subject = ?auth.subject_dn,
+        "POP linking: comparing CSR subject with TLS cert subject"
+    );
+
+    // Check for challengePassword attribute (RFC 7030 §3.5 binding value).
+    if let Some(ref attrs) = csr.certification_request_info.attributes {
+        for attr in attrs.elements() {
+            if attr.attr_type.components()
+                == synta_certificate::oids::PKCS9_CHALLENGE_PASSWORD
+            {
+                tracing::debug!(
+                    "POP linking: challengePassword attribute present in CSR"
+                );
+                // The challengePassword provides additional binding between the
+                // CSR and the authenticated TLS session.  A full implementation
+                // would verify the value against a computed binding (e.g., hash of
+                // client cert + server nonce).  For now, its presence is logged
+                // as evidence of POP intent.
+                break;
+            }
+        }
+    }
+
+    // Validate subject DN match using the mtls module's RFC 6125-compliant matcher.
+    crate::auth::mtls::validate_pop_linking(auth, &csr_subject).map_err(|e| {
+        KipukaError::BadRequest(format!("POP linking validation failed: {e}"))
+    })?;
+
+    tracing::info!("POP linking: CSR subject matches TLS certificate subject");
+
+    Ok(())
 }

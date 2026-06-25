@@ -34,6 +34,7 @@ use dashmap::DashMap;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use synta::{Decoder, Encoding, ToDer};
+use synta_certificate::SignatureVerifier;
 use thiserror::Error;
 use tracing::{debug, info, warn};
 
@@ -539,10 +540,65 @@ impl OcspClient {
                 .decode()
                 .map_err(|e| OcspError::Parse(format!("BasicOCSPResponse decode: {e}")))?;
 
-        // TODO: Verify the responder signature using the signing key.
-        // This requires access to the responder certificate or the CA
-        // public key, which is deferred to a follow-up implementation.
-        debug!("OCSP response signature verification deferred (not yet implemented)");
+        // Verify the responder signature (RFC 6960 §4.2.2.2).
+        // The responder certificate is typically included in the `certs`
+        // field of the BasicOCSPResponse.  When it is absent the responder
+        // cert is assumed to be pre-trusted by the relying party — we log a
+        // warning and skip verification in that case.
+        if let Some(ref certs) = basic_response.certs {
+            if let Some(first_cert_raw) = certs.first() {
+                let responder_cert_der = first_cert_raw.as_bytes();
+
+                // Encode the TBS ResponseData to DER for signature input.
+                let tbs_der = basic_response
+                    .tbs_response_data
+                    .to_der()
+                    .map_err(|e| OcspError::SignatureVerification(format!(
+                        "failed to encode TBS ResponseData: {e}"
+                    )))?;
+
+                // Encode the signature algorithm to DER.
+                let sig_alg_der = basic_response
+                    .signature_algorithm
+                    .to_der()
+                    .map_err(|e| OcspError::SignatureVerification(format!(
+                        "failed to encode signature algorithm: {e}"
+                    )))?;
+
+                // Extract the raw signature bytes.
+                let signature_bits = basic_response.signature.as_bytes();
+
+                // Extract the responder certificate's SubjectPublicKeyInfo DER
+                // using cert_byte_ranges (avoids re-parsing the full cert).
+                let cert_ranges = synta_certificate::cert_byte_ranges(responder_cert_der)
+                    .ok_or_else(|| OcspError::SignatureVerification(
+                        "malformed responder certificate: cannot extract byte ranges".into(),
+                    ))?;
+                let spki_der = &responder_cert_der[cert_ranges.subject_public_key_info.clone()];
+
+                // Verify the signature using the default crypto backend.
+                let verifier = synta_certificate::default_signature_verifier();
+                verifier
+                    .verify_certificate_signature(
+                        &tbs_der,
+                        &sig_alg_der,
+                        signature_bits,
+                        spki_der,
+                    )
+                    .map_err(|e| OcspError::SignatureVerification(format!(
+                        "signature verification failed: {e}"
+                    )))?;
+
+                debug!("OCSP response signature verified successfully");
+            } else {
+                warn!("OCSP response certs field is empty; skipping signature verification");
+            }
+        } else {
+            warn!(
+                "OCSP response does not include responder certificates; \
+                 skipping signature verification (responder cert may be pre-trusted)"
+            );
+        }
 
         // Find the SingleResponse matching our CertID by comparing the
         // issuer name hash and serial number.

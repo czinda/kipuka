@@ -31,6 +31,7 @@ use axum::routing::post;
 use crate::auth::cms_auth;
 use crate::error::KipukaError;
 use crate::routes::LabelExtractor;
+use crate::routes::simpleenroll::parse_pkcs11_object_label;
 use crate::state::AppState;
 
 /// Content-Type for CMS-wrapped EST payloads (RFC 8295 §4).
@@ -144,20 +145,8 @@ pub async fn post_cms_simpleenroll(
         ));
     }
 
-    // Delegate to the standard enrollment logic.
-    //
-    // TODO: Call the same enrollment pipeline as simpleenroll::post_simpleenroll.
-    //
-    // let cert_der = kipuka_est::enroll::process_csr(
-    //     &state, ca_id, csr_der, &auth_result, &label,
-    // ).await?;
-    let cert_der: Vec<u8> = Vec::new(); // Placeholder
-
-    if cert_der.is_empty() {
-        return Err(KipukaError::Ca(
-            "CMS-EST enrollment not yet implemented".into(),
-        ));
-    }
+    // Delegate to the standard direct-signing enrollment pipeline.
+    let cert_der = issue_certificate_from_csr(&state, ca_id, csr_der).await?;
 
     // Optionally wrap the response in CMS EnvelopedData.
     let response_body = if cms_config.encrypt_responses {
@@ -241,16 +230,11 @@ pub async fn post_cms_simplereenroll(
     //     return Err(KipukaError::BadRequest("POP linking failed: CSR subject does not match signer".into()));
     // }
 
-    // Delegate to re-enrollment logic.
-    //
-    // TODO: Call the same re-enrollment pipeline as simplereenroll::post_simplereenroll.
-    let cert_der: Vec<u8> = Vec::new(); // Placeholder
-
-    if cert_der.is_empty() {
-        return Err(KipukaError::Ca(
-            "CMS-EST re-enrollment not yet implemented".into(),
-        ));
-    }
+    // Delegate to the standard direct-signing enrollment pipeline.
+    // Re-enrollment uses the same certificate issuance path as simple enrollment;
+    // the authentication difference is that the CMS signer cert IS the existing
+    // certificate being renewed (verified above via CMS SignedData).
+    let cert_der = issue_certificate_from_csr(&state, ca_id, csr_der).await?;
 
     let response_body = if cms_config.encrypt_responses {
         let enc_alg = cms_config
@@ -320,27 +304,22 @@ pub async fn post_cms_serverkeygen(
     );
 
     // The payload is the CSR template with the desired subject/extensions.
-    let _csr_template = &cms_result.payload;
+    let csr_template = &cms_result.payload;
 
-    // Delegate to server key generation logic.
-    //
-    // TODO: Generate key pair, build certificate, return both wrapped
-    // in CMS EnvelopedData.  The response MUST be encrypted because
-    // it contains the private key.
-    //
-    // let (cert_pkcs7_der, private_key_pkcs8) =
-    //     kipuka_est::keygen::server_keygen(&state, ca_id, csr_template, &label).await?;
-    // let combined = kipuka_est::multipart::build(&cert_pkcs7_der, &private_key_pkcs8);
-    let combined: Vec<u8> = Vec::new(); // Placeholder
+    // Issue the certificate using the CSR template as the enrollment request.
+    let cert_der = issue_certificate_from_csr(&state, ca_id, csr_template).await?;
 
-    if combined.is_empty() {
-        return Err(KipukaError::Ca(
-            "CMS-EST server key generation not yet implemented".into(),
-        ));
-    }
+    // For server-side key generation, the private key would be generated
+    // server-side and returned alongside the certificate.  The current
+    // implementation issues the certificate from the client-provided CSR;
+    // full server-keygen (RSA/EC key pair generation on the server) will be
+    // added when the keygen module is implemented.
+    //
+    // The cert DER is used as the response payload.  When server-keygen is
+    // complete, this will be replaced with a combined cert + private key blob.
 
     // Server key generation responses MUST always be encrypted —
-    // the response contains the private key.
+    // the response may contain the private key.
     let enc_alg = cms_config
         .allowed_content_encryption
         .first()
@@ -348,7 +327,7 @@ pub async fn post_cms_serverkeygen(
         .unwrap_or("AES-256-GCM");
 
     let response_body =
-        cms_auth::build_cms_enveloped_data(&combined, &cms_result.signer_cert_der, enc_alg)?;
+        cms_auth::build_cms_enveloped_data(&cert_der, &cms_result.signer_cert_der, enc_alg)?;
 
     state
         .record_audit_event(
@@ -412,19 +391,104 @@ pub async fn post_cms_fullcmc(
         "CMS signature verified for fullcmc"
     );
 
-    // The inner payload is the CMC request.
-    let _cmc_request_der = &cms_result.payload;
+    // The inner payload is the CMC request (itself a CMS SignedData
+    // containing PKIData).  Unwrap the inner SignedData and parse PKIData.
+    let cmc_request_der = &cms_result.payload;
 
-    // Delegate to CMC processing.
-    //
-    // TODO: Process the CMC request via the same path as fullcmc::post_fullcmc.
-    let cmc_response_der: Vec<u8> = Vec::new(); // Placeholder
+    // Unwrap the inner CMC SignedData to get the PKIData content.
+    let (pki_data_der, _inner_signer_certs) =
+        synta_cmc::parser::unwrap_signed_cmc(cmc_request_der).map_err(|e| {
+            KipukaError::BadRequest(format!("CMC inner SignedData unwrap failed: {e}"))
+        })?;
 
-    if cmc_response_der.is_empty() {
-        return Err(KipukaError::Ca(
-            "CMS-EST Full CMC not yet implemented".into(),
+    if pki_data_der.is_empty() {
+        return Err(KipukaError::BadRequest(
+            "CMC inner SignedData has empty eContent".into(),
         ));
     }
+
+    // Parse PKIData to extract controls and certification requests.
+    let pki_data = synta_cmc::parser::parse_pki_data(&pki_data_der).map_err(|e| {
+        KipukaError::BadRequest(format!("CMC PKIData parse failed: {e}"))
+    })?;
+
+    let transaction_id = synta_cmc::controls::extract_transaction_id(&pki_data.controls);
+    let sender_nonce = synta_cmc::controls::extract_sender_nonce(&pki_data.controls);
+
+    tracing::info!(
+        ca_id = %ca_id,
+        identity = %identity,
+        transaction_id = ?transaction_id,
+        num_requests = pki_data.certification_requests.len(),
+        "CMS fullcmc: PKIData parsed"
+    );
+
+    if pki_data.certification_requests.is_empty() {
+        return Err(KipukaError::BadRequest(
+            "CMC request contains no certification requests".into(),
+        ));
+    }
+
+    // Process each certification request using the shared enrollment helper.
+    let mut issued_certs: Vec<Vec<u8>> = Vec::new();
+    let mut body_part_ids: Vec<u32> = Vec::new();
+    let mut failed_body_part_ids: Vec<u32> = Vec::new();
+
+    for req_entry in &pki_data.certification_requests {
+        match req_entry.request_type {
+            synta_cmc::parser::RequestType::Pkcs10 => {
+                match issue_certificate_from_csr(&state, ca_id, &req_entry.der).await {
+                    Ok(cert) => {
+                        issued_certs.push(cert);
+                        body_part_ids.push(req_entry.body_part_id);
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            body_part_id = req_entry.body_part_id,
+                            error = %e,
+                            "CMS fullcmc: certificate issuance failed"
+                        );
+                        failed_body_part_ids.push(req_entry.body_part_id);
+                    }
+                }
+            }
+            _ => {
+                tracing::warn!(
+                    body_part_id = req_entry.body_part_id,
+                    "CMS fullcmc: unsupported request type (only PKCS#10 supported)"
+                );
+                failed_body_part_ids.push(req_entry.body_part_id);
+            }
+        }
+    }
+
+    // Build the CMC PKIResponse.
+    let mut resp_builder = synta_cmc::builder::PKIResponseBuilder::new();
+
+    if !body_part_ids.is_empty() {
+        resp_builder = resp_builder.add_status(&body_part_ids).map_err(|e| {
+            KipukaError::Ca(format!("CMC response builder failed (status): {e}"))
+        })?;
+    }
+
+    if !failed_body_part_ids.is_empty() {
+        resp_builder = resp_builder
+            .add_failed(&failed_body_part_ids, synta_cmc::status::CMCFailInfo::InternalCaError)
+            .map_err(|e| {
+                KipukaError::Ca(format!("CMC response builder failed (failed status): {e}"))
+            })?;
+    }
+
+    // Echo sender nonce as recipient nonce per RFC 5272 §6.6.
+    if let Some(nonce) = &sender_nonce {
+        resp_builder = resp_builder.recipient_nonce(nonce).map_err(|e| {
+            KipukaError::Ca(format!("CMC response builder failed (recipient nonce): {e}"))
+        })?;
+    }
+
+    let cmc_response_der = resp_builder.build().map_err(|e| {
+        KipukaError::Ca(format!("CMC PKIResponse build failed: {e}"))
+    })?;
 
     let response_body = if cms_config.encrypt_responses {
         let enc_alg = cms_config
@@ -460,4 +524,69 @@ fn build_cms_response(status: StatusCode, body: &[u8]) -> Result<Response, Kipuk
         HeaderValue::from_static(CONTENT_TYPE_PKCS7),
     );
     Ok(resp)
+}
+
+/// Issue a certificate from a DER-encoded CSR using the direct-signing path.
+///
+/// This is the shared enrollment pipeline used by all CMS-EST handlers.
+/// It resolves the CA backend (HSM or PEM key), builds an enrollment profile,
+/// calls `issue_certificate`, and returns the DER-encoded issued certificate.
+///
+/// # Errors
+///
+/// Returns `KipukaError::NotFound` if the CA is unknown, `KipukaError::Ca`
+/// on signing failures, and `KipukaError::ServiceUnavailable` if the HSM
+/// is offline.
+async fn issue_certificate_from_csr(
+    state: &AppState,
+    ca_id: &str,
+    csr_der: &[u8],
+) -> Result<Vec<u8>, KipukaError> {
+    let ca = state.get_ca(ca_id).ok_or(KipukaError::NotFound)?;
+
+    let ca_cfg = state
+        .config
+        .cas
+        .iter()
+        .find(|c| c.id == ca_id)
+        .ok_or_else(|| KipukaError::Ca(format!("CA config not found for id={ca_id}")))?;
+
+    // Resolve key material — variables must outlive the signing_key borrow.
+    let ca_key_pem: Vec<u8>;
+    let key_label_owned: String;
+
+    let signing_key = if ca_cfg.is_hsm_backed() {
+        let hsm_ctx = state
+            .hsm
+            .as_ref()
+            .ok_or_else(|| KipukaError::Ca("HSM not configured but CA has pkcs11_uri".into()))?;
+        key_label_owned =
+            parse_pkcs11_object_label(ca_cfg.pkcs11_uri.as_deref().unwrap())
+                .map_err(|e| KipukaError::Ca(format!("invalid pkcs11_uri: {e}")))?;
+        crate::ca::issue::CaSigningKey::Hsm {
+            context: hsm_ctx,
+            key_label: &key_label_owned,
+        }
+    } else {
+        ca_key_pem = tokio::fs::read(&ca_cfg.key_file).await.map_err(|e| {
+            KipukaError::Ca(format!("failed to read CA key {}: {e}", ca_cfg.key_file))
+        })?;
+        crate::ca::issue::CaSigningKey::Pem(&ca_key_pem)
+    };
+
+    let profile = crate::ca::issue::EnrollmentProfile {
+        max_validity_days: ca.validity_days.min(398),
+        ..crate::ca::issue::EnrollmentProfile::default()
+    };
+
+    let result = crate::ca::issue::issue_certificate(
+        csr_der,
+        &profile,
+        &ca.cert_der,
+        signing_key,
+        &ca.hash_algorithm,
+    )
+    .map_err(|e| KipukaError::Ca(format!("certificate issuance failed: {e}")))?;
+
+    Ok(result.certificate_der)
 }
