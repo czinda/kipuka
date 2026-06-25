@@ -71,6 +71,41 @@ ahdapa-integration:
       when: manual
       allow_failure: true
 
+freeipa-gssapi:
+  stage: integration
+  image: registry.access.redhat.com/ubi9/ubi:latest
+  timeout: 90 minutes
+  tags:
+    - privileged
+  variables:
+    KIPUKA_PORT: "9443"
+    ADMIN_PORT: "9444"
+  script:
+    - echo "--- FreeIPA GSSAPI/Kerberos EST integration ---"
+    - echo "Provisioning FreeIPA realm + kipuka with --features gssapi"
+    - bash contrib/beaker/setup-freeipa.sh
+    - echo "Running GSSAPI smoke tests"
+    - bash contrib/beaker/test-gssapi.sh
+  artifacts:
+    when: always
+    paths:
+      - /var/log/kipuka/
+      - /tmp/kipuka-gssapi-env.sh
+    expire_in: 7 days
+  retry:
+    max: 1
+    when: runner_system_failure
+  needs:
+    - job: unit-tests
+      optional: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: manual
+      allow_failure: true
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+      allow_failure: true
+
 est-interop:
   stage: integration
   image: ${RUST_IMAGE}

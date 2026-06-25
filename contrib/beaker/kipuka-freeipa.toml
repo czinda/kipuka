@@ -1,0 +1,62 @@
+# kipuka EST Server — FreeIPA GSSAPI Integration Test Configuration
+# =================================================================
+# Used by setup-freeipa.sh for Beaker-provisioned GSSAPI testing.
+# FreeIPA provides: MIT KDC, 389 DS, Dogtag CA, DNS.
+# kipuka authenticates EST clients via Kerberos (SPNEGO/Negotiate).
+
+[server]
+listen = "0.0.0.0:9443"
+
+[tls]
+cert = "/etc/kipuka/tls/server.pem"
+key = "/etc/kipuka/tls/server-key.pem"
+min_version = "1.2"
+
+[tls.client_auth]
+trust_anchors = "/etc/kipuka/ca/ipa-ca.pem"
+mode = "optional"
+
+[db]
+url = "sqlite:///var/lib/kipuka/kipuka.db?mode=rwc"
+max_connections = 5
+run_migrations = true
+
+[[ca]]
+id = "ipa-ca"
+name = "FreeIPA CA"
+cert = "/etc/kipuka/ca/ipa-ca.pem"
+key = "/etc/kipuka/ca/ipa-ca-key.pem"
+key_type = "rsa:3072"
+validity_days = 398
+
+[est]
+base_path = "/.well-known/est"
+cacerts = true
+simpleenroll = true
+simplereenroll = true
+fullcmc = false
+serverkeygen = false
+csrattrs = true
+
+[otp]
+enabled = true
+token_length = 24
+default_ttl = "1h"
+max_uses = 1
+hash_algorithm = "argon2id"
+
+[audit]
+enabled = true
+file = "/var/log/kipuka/audit.log"
+events = ["all"]
+
+[admin]
+enabled = true
+listen_addr = "127.0.0.1:9444"
+auth = "both"
+bearer_token_env = "KIPUKA_ADMIN_TOKEN"
+
+[admin.gssapi]
+service_name = "HTTP/ipa.kipuka.test"
+keytab_file = "/etc/kipuka/kipuka.keytab"
+require_crypto_verification = true
