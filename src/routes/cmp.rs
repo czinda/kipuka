@@ -415,6 +415,7 @@ pub fn build_cmp_response(
     req: &CmpRequest,
     response_type: CmpMessageType,
     body: &[u8],
+    ca_subject_der: Option<&[u8]>,
 ) -> Result<Vec<u8>, KipukaError> {
     if req.transaction_id.is_empty() {
         return Err(KipukaError::BadRequest(
@@ -461,13 +462,16 @@ pub fn build_cmp_response(
 
     // Build PKIHeader with:
     //   - pvno = 2 (cmp2000, compatible with both RFC 4210 and RFC 9810)
-    //   - sender = CA (use rfc822Name placeholder; full implementation
-    //     would use the CA's subject DN)
+    //   - sender = CA subject DN (extracted from the default CA certificate)
     //   - recipient = original sender
     //   - transactionID = echoed from request
     //   - senderNonce = fresh random nonce
     //   - recipNonce = request's senderNonce (replay protection)
-    let sender_spec = GeneralNameSpec::rfc822("ca@kipuka.dev");
+    let sender_spec = if let Some(der) = ca_subject_der {
+        GeneralNameSpec::directory_name(der)
+    } else {
+        GeneralNameSpec::rfc822("ca@kipuka.dev")
+    };
     // Use the request's sender as the recipient, echoing it back per CMP protocol.
     let recipient_spec = if req.sender.is_empty() {
         GeneralNameSpec::rfc822("unknown@kipuka.dev")
@@ -875,8 +879,25 @@ pub async fn post_cmp(
         }
     };
 
+    // Extract the CA subject Name DER for the response sender field.
+    let ca_subject_der = state
+        .config
+        .cas
+        .first()
+        .and_then(|ca_cfg| state.get_ca(&ca_cfg.id))
+        .and_then(|ca| {
+            synta_certificate::Certificate::from_der(&ca.cert_der)
+                .ok()
+                .map(|cert| cert.tbs_certificate.subject.as_bytes().to_vec())
+        });
+
     // Build the response PKIMessage.
-    let response_der = build_cmp_response(&cmp_req, response_type, &response_body_der)?;
+    let response_der = build_cmp_response(
+        &cmp_req,
+        response_type,
+        &response_body_der,
+        ca_subject_der.as_deref(),
+    )?;
 
     state
         .record_audit_event(
@@ -984,45 +1005,6 @@ async fn process_enrollment_request(
         "CMP {}: extracted certificate request template", req_type,
     );
 
-    // Build a synthetic PKCS#10 CSR from the CRMF template fields so we
-    // can reuse the existing `issue_certificate` path.  The CSR signature
-    // is a dummy zero-length value — CMP message-level protection
-    // (verified above) provides the trust anchor, not the CSR self-signature.
-    //
-    // We use sha256WithRSAEncryption (1.2.840.113549.1.1.11) as a placeholder
-    // AlgorithmIdentifier for the signature algorithm field.
-    let sha256_rsa_alg_der = synta_certificate::signing_algorithm_der(
-        &synta::ObjectIdentifier::new(&[1, 2, 840, 113549, 1, 1, 1]).map_err(|e| {
-            KipukaError::Internal(format!("failed to construct OID: {e}"))
-        })?,
-        "sha256",
-    )
-    .unwrap_or_else(|| {
-        // Fallback: hand-encode sha256WithRSAEncryption AlgorithmIdentifier
-        // SEQUENCE { OID 1.2.840.113549.1.1.11, NULL }
-        vec![
-            0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b,
-            0x05, 0x00,
-        ]
-    });
-
-    let csr_builder = synta_certificate::CsrBuilder::new()
-        .subject_name(&subject_der)
-        .public_key_der(&spki_der);
-
-    let cri_der = csr_builder.build_cri(&sha256_rsa_alg_der).map_err(|e| {
-        KipukaError::Ca(format!("failed to build CRI from CRMF template: {e}"))
-    })?;
-
-    // Assemble with a zero-length dummy signature.
-    let csr_der =
-        synta_certificate::CsrBuilder::assemble(&cri_der, &sha256_rsa_alg_der, &[0u8])
-            .map_err(|e| {
-                KipukaError::Ca(format!(
-                    "failed to assemble CSR from CRMF template: {e}"
-                ))
-            })?;
-
     // Select the default CA for enrollment.
     let ca_id = state
         .config
@@ -1034,6 +1016,41 @@ async fn process_enrollment_request(
     let ca = state
         .get_ca(ca_id)
         .ok_or_else(|| KipukaError::Ca(format!("CA '{ca_id}' not found")))?;
+
+    // Build a synthetic PKCS#10 CSR from the CRMF template fields so we
+    // can reuse the existing `issue_certificate` path.  The CSR signature
+    // is a dummy zero-length value — CMP message-level protection
+    // (verified above) provides the trust anchor, not the CSR self-signature.
+    //
+    // Use the CA certificate's actual signature algorithm instead of a
+    // hardcoded placeholder — extract it via cert_byte_ranges().
+    let sig_alg_der = synta_certificate::cert_byte_ranges(&ca.cert_der)
+        .map(|ranges| ca.cert_der[ranges.signature_algorithm.clone()].to_vec())
+        .unwrap_or_else(|| {
+            // Fallback: hand-encode sha256WithRSAEncryption AlgorithmIdentifier
+            // SEQUENCE { OID 1.2.840.113549.1.1.11, NULL }
+            vec![
+                0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b,
+                0x05, 0x00,
+            ]
+        });
+
+    let csr_builder = synta_certificate::CsrBuilder::new()
+        .subject_name(&subject_der)
+        .public_key_der(&spki_der);
+
+    let cri_der = csr_builder.build_cri(&sig_alg_der).map_err(|e| {
+        KipukaError::Ca(format!("failed to build CRI from CRMF template: {e}"))
+    })?;
+
+    // Assemble with a zero-length dummy signature.
+    let csr_der =
+        synta_certificate::CsrBuilder::assemble(&cri_der, &sig_alg_der, &[0u8])
+            .map_err(|e| {
+                KipukaError::Ca(format!(
+                    "failed to assemble CSR from CRMF template: {e}"
+                ))
+            })?;
 
     let ca_cfg = state
         .config
@@ -1130,16 +1147,13 @@ async fn process_revocation_request(
     // For signature-protected messages, verify that the signer is
     // authorized to revoke the requested certificate(s):
     //
-    // - **Self-revocation**: the signer cert's subject DN matches the
-    //   subject of the certificate being revoked (looked up by serial).
-    // - **RA/operator**: the signer has an RA EKU
-    //   (id-kp-cmcRA, 1.3.6.1.5.5.7.3.28) — not yet enforced, but
-    //   logged.  A future implementation would check an operator
-    //   allowlist or RA EKU in the signer certificate.
+    // - **RA privilege**: if the signer cert has id-kp-cmcRA EKU
+    //   (1.3.6.1.5.5.7.3.28), allow revocation of any certificate.
+    // - **Self-revocation**: otherwise, the signer cert's subject DN
+    //   must match the subject of the certificate being revoked.
     //
-    // MAC-protected revocation requests are rejected above (MAC
-    // verification is not yet supported), so we only handle the
-    // signature case here.
+    // MAC-protected revocation requests are rejected above, so we
+    // only handle the signature case here.
     if let CmpProtectionType::Signature { cert_der, .. } = &cmp_req.protection {
         let signer_cert = synta_certificate::Certificate::from_der(cert_der).map_err(|e| {
             KipukaError::Auth(format!(
@@ -1149,59 +1163,82 @@ async fn process_revocation_request(
         let signer_subject_der = signer_cert.tbs_certificate.subject.as_bytes();
         let signer_subject_dn = synta_certificate::format_dn(signer_subject_der);
 
-        // Check each RevDetails entry: for self-revocation, the signer's
-        // subject must match the revokee's subject.  We look up the
-        // certificate in the database by serial number and compare subjects.
-        for detail in &rev_details {
-            let cert_tmpl_check =
-                CertTemplate::from_der(detail.cert_details.0).map_err(|e| {
-                    KipukaError::BadRequest(format!(
-                        "failed to parse RevDetails CertTemplate for authz: {e}"
+        // Check if the signer holds id-kp-cmcRA EKU (RA privilege).
+        const CMC_RA_OID: &str = "1.3.6.1.5.5.7.3.28";
+        let signer_is_ra = signer_cert
+            .tbs_certificate
+            .extensions
+            .as_ref()
+            .and_then(|ext_raw| {
+                synta_certificate::find_extension_value(
+                    ext_raw.as_bytes(),
+                    synta_certificate::oids::EXTENDED_KEY_USAGE,
+                )
+            })
+            .map(|eku_bytes| {
+                let mut decoder = synta::Decoder::new(eku_bytes, synta::Encoding::Der);
+                let oids: Vec<synta::ObjectIdentifier> = decoder.decode().unwrap_or_default();
+                oids.iter().any(|oid| oid.to_string() == CMC_RA_OID)
+            })
+            .unwrap_or(false);
+
+        if signer_is_ra {
+            tracing::info!(
+                signer = %signer_subject_dn,
+                "CMP rr: signer has id-kp-cmcRA EKU — RA revocation authorized"
+            );
+        } else {
+            // Self-revocation: check each RevDetails entry to verify the
+            // signer's subject matches the revokee's subject.
+            for detail in &rev_details {
+                let cert_tmpl_check =
+                    CertTemplate::from_der(detail.cert_details.0).map_err(|e| {
+                        KipukaError::BadRequest(format!(
+                            "failed to parse RevDetails CertTemplate for authz: {e}"
+                        ))
+                    })?;
+
+                if let Some(serial_check) = &cert_tmpl_check.serial_number {
+                    let serial_hex_check = hex::encode(serial_check.as_bytes());
+
+                    // Query the database for the certificate's subject DN.
+                    let row: Option<(String,)> = sqlx::query_as(crate::db::pg_sql(
+                        "SELECT subject FROM certificates WHERE serial = ?",
                     ))
-                })?;
+                    .bind(&serial_hex_check)
+                    .fetch_optional(&state.db)
+                    .await
+                    .map_err(|e| {
+                        KipukaError::Ca(format!(
+                            "database error checking revocation authorization: {e}"
+                        ))
+                    })?;
 
-            if let Some(serial_check) = &cert_tmpl_check.serial_number {
-                let serial_hex_check = hex::encode(serial_check.as_bytes());
+                    if let Some((revokee_subject,)) = row {
+                        if revokee_subject != signer_subject_dn {
+                            tracing::warn!(
+                                signer = %signer_subject_dn,
+                                revokee = %revokee_subject,
+                                serial = %serial_hex_check,
+                                "CMP rr: signer is not the certificate owner \
+                                 and does not have RA privilege"
+                            );
+                            return Err(KipukaError::Forbidden(format!(
+                                "CMP revocation denied: signer '{}' is not authorized \
+                                 to revoke certificate serial {} (owner: '{}')",
+                                signer_subject_dn, serial_hex_check, revokee_subject,
+                            )));
+                        }
 
-                // Query the database for the certificate's subject DN.
-                let row: Option<(String,)> = sqlx::query_as(crate::db::pg_sql(
-                    "SELECT subject FROM certificates WHERE serial = ?",
-                ))
-                .bind(&serial_hex_check)
-                .fetch_optional(&state.db)
-                .await
-                .map_err(|e| {
-                    KipukaError::Ca(format!(
-                        "database error checking revocation authorization: {e}"
-                    ))
-                })?;
-
-                if let Some((revokee_subject,)) = row {
-                    // Self-revocation: signer subject must match the
-                    // certificate's subject.
-                    if revokee_subject != signer_subject_dn {
-                        tracing::warn!(
-                            signer = %signer_subject_dn,
-                            revokee = %revokee_subject,
+                        tracing::debug!(
                             serial = %serial_hex_check,
-                            "CMP rr: signer is not the certificate owner \
-                             and RA authorization is not yet implemented"
+                            subject = %signer_subject_dn,
+                            "CMP rr: self-revocation authorized"
                         );
-                        return Err(KipukaError::Auth(format!(
-                            "CMP revocation denied: signer '{}' is not authorized \
-                             to revoke certificate serial {} (owner: '{}')",
-                            signer_subject_dn, serial_hex_check, revokee_subject,
-                        )));
                     }
-
-                    tracing::debug!(
-                        serial = %serial_hex_check,
-                        subject = %signer_subject_dn,
-                        "CMP rr: self-revocation authorized"
-                    );
+                    // If the certificate is not in the database, the revocation
+                    // will produce a "not found" result below — not an authz error.
                 }
-                // If the certificate is not in the database, the revocation
-                // will produce a "not found" result below — not an authz error.
             }
         }
     }
@@ -1600,7 +1637,7 @@ mod tests {
             },
             body_der: vec![0u8; 50],
         };
-        let result = build_cmp_response(&req, CmpMessageType::Ip, &[1, 2, 3]);
+        let result = build_cmp_response(&req, CmpMessageType::Ip, &[1, 2, 3], None);
         assert!(matches!(result, Err(KipukaError::BadRequest(_))));
     }
 
@@ -1617,7 +1654,7 @@ mod tests {
             },
             body_der: vec![0u8; 50],
         };
-        let result = build_cmp_response(&req, CmpMessageType::Cp, &[]);
+        let result = build_cmp_response(&req, CmpMessageType::Cp, &[], None);
         assert!(matches!(result, Err(KipukaError::BadRequest(_))));
     }
 
@@ -1700,7 +1737,7 @@ mod tests {
         // Build a GenP response with an empty SEQUENCE body.
         let body_der = vec![0x30, 0x00]; // empty GenRepContent
         let response_der =
-            build_cmp_response(&req, CmpMessageType::GenP, &body_der)
+            build_cmp_response(&req, CmpMessageType::GenP, &body_der, None)
                 .expect("build_cmp_response should succeed");
 
         // Verify it parses as a valid PKIMessage.
@@ -1743,7 +1780,7 @@ mod tests {
         // PKIBody::Pkiconf(Null).
         let null_der = synta::ToDer::to_der(&Null).unwrap();
         let response_der =
-            build_cmp_response(&req, CmpMessageType::PkiConf, &null_der)
+            build_cmp_response(&req, CmpMessageType::PkiConf, &null_der, None)
                 .expect("build_cmp_response should succeed for PkiConf");
 
         let parsed = PKIMessage::from_der(&response_der)

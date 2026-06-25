@@ -14,7 +14,7 @@ use crate::db::DbKind;
 use crate::error::KipukaError;
 
 /// Current schema version.  Increment this when adding new migrations.
-pub const SCHEMA_VERSION: i32 = 2;
+pub const SCHEMA_VERSION: i32 = 3;
 
 // ---------------------------------------------------------------------------
 // SQLite migration v1
@@ -494,6 +494,80 @@ CREATE TABLE IF NOT EXISTS star_certificates (
 CREATE INDEX IF NOT EXISTS idx_star_certs_order ON star_certificates(star_order_id, renewal_number DESC);
 "#;
 
+// ---------------------------------------------------------------------------
+// SQLite migration v3 — pending CSRs for deferred/disconnected signing
+// ---------------------------------------------------------------------------
+const MIGRATION_V3_SQLITE: &str = r#"
+CREATE TABLE IF NOT EXISTS pending_csrs (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    csr_der         BLOB    NOT NULL,
+    ca_id           TEXT    NOT NULL,
+    subject_dn      TEXT,
+    identity        TEXT    NOT NULL,
+    auth_method     TEXT,
+    status          TEXT    NOT NULL DEFAULT 'pending'
+                           CHECK (status IN ('pending', 'signed', 'rejected', 'expired')),
+    created_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    signed_at       TEXT,
+    certificate_id  INTEGER REFERENCES certificates(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_csrs_ca_id ON pending_csrs (ca_id);
+CREATE INDEX IF NOT EXISTS idx_pending_csrs_status ON pending_csrs (status);
+CREATE INDEX IF NOT EXISTS idx_pending_csrs_identity ON pending_csrs (identity);
+"#;
+
+// ---------------------------------------------------------------------------
+// PostgreSQL migration v3
+// ---------------------------------------------------------------------------
+const MIGRATION_V3_POSTGRES: &str = r#"
+DO $$ BEGIN
+    CREATE TYPE pending_csr_status AS ENUM ('pending', 'signed', 'rejected', 'expired');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+CREATE TABLE IF NOT EXISTS pending_csrs (
+    id              BIGSERIAL          PRIMARY KEY,
+    csr_der         BYTEA              NOT NULL,
+    ca_id           TEXT               NOT NULL,
+    subject_dn      TEXT,
+    identity        TEXT               NOT NULL,
+    auth_method     TEXT,
+    status          pending_csr_status NOT NULL DEFAULT 'pending',
+    created_at      TEXT        NOT NULL DEFAULT (to_char(NOW(), 'YYYY-MM-DD"T"HH24:MI:SS"Z"')),
+    signed_at       TEXT,
+    certificate_id  BIGINT             REFERENCES certificates(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_csrs_ca_id ON pending_csrs (ca_id);
+CREATE INDEX IF NOT EXISTS idx_pending_csrs_status ON pending_csrs (status);
+CREATE INDEX IF NOT EXISTS idx_pending_csrs_identity ON pending_csrs (identity);
+"#;
+
+// ---------------------------------------------------------------------------
+// MariaDB migration v3
+// ---------------------------------------------------------------------------
+const MIGRATION_V3_MARIADB: &str = r#"
+CREATE TABLE IF NOT EXISTS pending_csrs (
+    id              BIGINT       AUTO_INCREMENT PRIMARY KEY,
+    csr_der         LONGBLOB     NOT NULL,
+    ca_id           VARCHAR(255) NOT NULL,
+    subject_dn      TEXT,
+    identity        VARCHAR(255) NOT NULL,
+    auth_method     VARCHAR(255),
+    status          ENUM('pending', 'signed', 'rejected', 'expired') NOT NULL DEFAULT 'pending',
+    created_at      TEXT  NOT NULL DEFAULT (DATE_FORMAT(NOW(6), '%Y-%m-%dT%H:%i:%S.%fZ')),
+    signed_at       TEXT,
+    certificate_id  BIGINT,
+    CONSTRAINT fk_pending_csrs_certificate
+        FOREIGN KEY (certificate_id) REFERENCES certificates(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE INDEX IF NOT EXISTS idx_pending_csrs_ca_id ON pending_csrs (ca_id);
+CREATE INDEX IF NOT EXISTS idx_pending_csrs_status ON pending_csrs (status);
+CREATE INDEX IF NOT EXISTS idx_pending_csrs_identity ON pending_csrs (identity);
+"#;
+
 /// Run all pending migrations.
 ///
 /// The `kind` parameter selects the dialect-specific DDL so that the
@@ -556,6 +630,39 @@ pub async fn run_migrations(pool: &sqlx::AnyPool, kind: DbKind) -> Result<(), Ki
             .map_err(|e| KipukaError::Db(format!("recording schema version: {e}")))?;
 
         tracing::info!("migration v2 applied successfully");
+    }
+
+    if current < 3 {
+        tracing::info!("applying migration v3 (pending_csrs table)");
+
+        let migration_sql = match kind {
+            DbKind::Sqlite => MIGRATION_V3_SQLITE,
+            DbKind::Postgres => MIGRATION_V3_POSTGRES,
+            DbKind::MariaDb => MIGRATION_V3_MARIADB,
+        };
+
+        for statement in split_sql_statements(migration_sql) {
+            let stripped: String = statement
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("--"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let trimmed = stripped.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            sqlx::query(trimmed)
+                .execute(pool)
+                .await
+                .map_err(|e| KipukaError::Db(format!("migration v3 failed on [{trimmed}]: {e}")))?;
+        }
+
+        sqlx::query("INSERT INTO schema_version (version) VALUES (3)")
+            .execute(pool)
+            .await
+            .map_err(|e| KipukaError::Db(format!("recording schema version: {e}")))?;
+
+        tracing::info!("migration v3 applied successfully");
     }
 
     Ok(())

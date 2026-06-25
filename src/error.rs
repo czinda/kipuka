@@ -88,6 +88,14 @@ pub enum KipukaError {
     #[error("unsupported media type")]
     UnsupportedMediaType,
 
+    /// Forbidden: the client is authenticated but not authorized.
+    ///
+    /// RFC 7231 §6.5.3: the server understood the request but refuses
+    /// to authorize it.  Used for EKU policy violations, identity
+    /// mismatches, and revoked-certificate enrollment attempts.
+    #[error("forbidden: {0}")]
+    Forbidden(String),
+
     /// Bad request: malformed CSR, missing fields, etc.
     #[error("bad request: {0}")]
     BadRequest(String),
@@ -122,6 +130,7 @@ impl KipukaError {
         match self {
             // Client errors
             KipukaError::Auth(_) => StatusCode::UNAUTHORIZED,
+            KipukaError::Forbidden(_) => StatusCode::FORBIDDEN,
             KipukaError::Est(_) => StatusCode::BAD_REQUEST,
             KipukaError::BadRequest(_) => StatusCode::BAD_REQUEST,
             KipukaError::NotFound => StatusCode::NOT_FOUND,

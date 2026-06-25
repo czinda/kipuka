@@ -72,10 +72,6 @@ pub async fn try_extract_mtls(parts: &Parts, _app: &Arc<AppState>) -> Option<Aut
         .or_else(|| subject_dn.clone())
         .unwrap_or_else(|| "unknown".to_string());
 
-    // TODO: OCSP/CRL revocation check (RHELBU-3536 R21).
-    // When the CA has an OCSP responder URL configured, send an OCSP
-    // request to verify the certificate has not been revoked.  Fall back
-    // to CRL checking when OCSP is unavailable.
     if let Err(e) = check_revocation(cert_der, _app).await {
         warn!(error = %e, identity = %identity, "certificate revocation check failed");
         return None;
@@ -335,7 +331,7 @@ fn extract_extended_key_usage(cert_der: &[u8]) -> Vec<String> {
 ///
 /// Uses the [`OcspClient`] when OCSP is configured; falls back to CRL
 /// checking when the OCSP responder is unreachable and soft-fail is enabled.
-async fn check_revocation(cert_der: &[u8], app: &Arc<AppState>) -> Result<(), String> {
+pub async fn check_revocation(cert_der: &[u8], app: &Arc<AppState>) -> Result<(), String> {
     let ocsp_config = &app.config.ocsp;
 
     if !ocsp_config.enabled {

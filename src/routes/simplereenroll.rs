@@ -115,12 +115,18 @@ pub async fn post_simplereenroll(
     // The mTLS module already checks revocation during extraction, but we
     // perform a second check here to handle the case where the certificate
     // was revoked between TLS handshake and request processing.
-    //
-    // TODO: Implement OCSP/CRL check.
-    // kipuka_est::revocation::check_certificate(
-    //     auth.0.client_cert_der.as_deref().unwrap(),
-    //     &state,
-    // ).await?;
+    if let Some(cert_der) = auth.0.client_cert_der.as_deref()
+        && let Err(e) = crate::auth::mtls::check_revocation(cert_der, &state).await
+    {
+        tracing::warn!(
+            identity = %identity,
+            error = %e,
+            "simplereenroll rejected: client certificate revocation check failed"
+        );
+        return Err(KipukaError::Forbidden(format!(
+            "client certificate revocation check failed: {e}"
+        )));
+    }
 
     // Look up the CA backend.
     let ca = state.get_ca(ca_id).ok_or(KipukaError::NotFound)?;

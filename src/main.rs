@@ -476,11 +476,10 @@ fn spawn_background_tasks(state: AppState) {
         let state = state.clone();
         tokio::spawn(async move {
             use std::path::Path;
-            use kipuka::config::RotationPolicy;
+            use kipuka::config::audit::RotationPolicy;
 
             let audit = &state.config.audit;
 
-            // Skip if audit is disabled or rotation is set to Never.
             if !audit.enabled || audit.rotation_policy == RotationPolicy::Never {
                 tracing::debug!("audit rotation disabled, background task exiting");
                 return;
@@ -511,15 +510,14 @@ fn spawn_background_tasks(state: AppState) {
                         }
                     }
                     RotationPolicy::Daily => {
-                        // Daily: rotate on every tick (interval is 24h).
                         tokio::fs::metadata(&log_path).await.is_ok()
                     }
                     RotationPolicy::Weekly => {
-                        let should_rotate = match last_weekly_rotation {
+                        let should = match last_weekly_rotation {
                             None => true,
                             Some(last) => last.elapsed() >= std::time::Duration::from_secs(7 * 86400),
                         };
-                        should_rotate && tokio::fs::metadata(&log_path).await.is_ok()
+                        should && tokio::fs::metadata(&log_path).await.is_ok()
                     }
                     RotationPolicy::Never => false,
                 };
@@ -528,21 +526,15 @@ fn spawn_background_tasks(state: AppState) {
                     continue;
                 }
 
-                // Perform the rotation: rename current log with a timestamp suffix.
                 let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
                 let rotated_path = format!("{}.{}", log_path, timestamp);
 
                 match tokio::fs::rename(&log_path, &rotated_path).await {
                     Ok(()) => {
-                        tracing::info!(
-                            from = %log_path,
-                            to = %rotated_path,
-                            "audit log rotated"
-                        );
+                        tracing::info!(from = %log_path, to = %rotated_path, "audit log rotated");
                         if rotation_policy == RotationPolicy::Weekly {
                             last_weekly_rotation = Some(std::time::Instant::now());
                         }
-                        // TODO: compress old rotated logs (gzip)
                     }
                     Err(e) => {
                         tracing::error!(error = %e, path = %log_path, "failed to rotate audit log");
@@ -550,41 +542,23 @@ fn spawn_background_tasks(state: AppState) {
                     }
                 }
 
-                // Clean up old rotated files exceeding retention_count.
                 let path = Path::new(&log_path);
-                let parent_dir = match path.parent() {
-                    Some(p) => p,
-                    None => {
-                        tracing::error!(path = %log_path, "cannot determine parent directory for audit log cleanup");
-                        continue;
-                    }
-                };
-                let base_name_str = match path.file_name().and_then(|n| n.to_str()) {
-                    Some(n) => n.to_string(),
-                    None => continue,
-                };
-
-                if let Ok(mut entries) = tokio::fs::read_dir(parent_dir).await {
-                    let mut rotated_files = Vec::new();
-                    while let Ok(Some(entry)) = entries.next_entry().await {
-                        let name = entry.file_name().to_string_lossy().to_string();
-                        if name.starts_with(&base_name_str) && name != base_name_str {
-                            rotated_files.push(entry.path());
-                        }
-                    }
-                    rotated_files.sort();
-                    // Remove oldest files exceeding retention_count.
-                    while rotated_files.len() > retention_count as usize {
-                        if let Some(old) = rotated_files.first() {
-                            match tokio::fs::remove_file(old).await {
-                                Ok(()) => {
-                                    tracing::info!(path = %old.display(), "removed old rotated audit log");
-                                }
-                                Err(e) => {
-                                    tracing::error!(error = %e, path = %old.display(), "failed to remove old rotated audit log");
-                                }
+                if let (Some(parent), Some(base)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) {
+                    let base = base.to_string();
+                    if let Ok(mut entries) = tokio::fs::read_dir(parent).await {
+                        let mut rotated = Vec::new();
+                        while let Ok(Some(entry)) = entries.next_entry().await {
+                            let name = entry.file_name().to_string_lossy().to_string();
+                            if name.starts_with(&base) && name != base {
+                                rotated.push(entry.path());
                             }
-                            rotated_files.remove(0);
+                        }
+                        rotated.sort();
+                        while rotated.len() > retention_count as usize {
+                            if let Some(old) = rotated.first() {
+                                let _ = tokio::fs::remove_file(old).await;
+                                rotated.remove(0);
+                            }
                         }
                     }
                 }
@@ -600,7 +574,6 @@ fn spawn_background_tasks(state: AppState) {
             loop {
                 interval.tick().await;
                 tracing::debug!("OTP cleanup tick");
-                // Delete OTP tokens whose expires_at timestamp has passed.
                 let now_str = chrono::Utc::now().to_rfc3339();
                 let sql = kipuka::db::pg_sql("DELETE FROM otp_tokens WHERE expires_at < ?");
                 match sqlx::query(sql).bind(&now_str).execute(&state.db).await {
@@ -620,11 +593,6 @@ fn spawn_background_tasks(state: AppState) {
 }
 
 /// Regenerate the CRL for a single CA.
-///
-/// Queries the `certificates` table for all revoked certificates belonging to
-/// this CA, builds a CRL using `synta_certificate::CertificateListBuilder`,
-/// signs it with the CA's private key (PEM or HSM), and stores the result in
-/// `ca.crl_cache`.  An audit event (`CrlGenerate`) is recorded on success.
 async fn regenerate_crl(
     state: &AppState,
     ca: &Arc<CaState>,
@@ -632,10 +600,10 @@ async fn regenerate_crl(
     use synta::ToDer as _;
     use synta_certificate::CertificateListBuilder;
 
-    // 1. Query revoked certificates for this CA.
     let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
         kipuka::db::pg_sql(
-            "SELECT serial, revocation_time, revocation_reason FROM certificates WHERE ca_id = ? AND status = 'revoked'"
+            "SELECT serial, revocation_time, revocation_reason \
+             FROM certificates WHERE ca_id = ? AND status = 'revoked'"
         ),
     )
     .bind(&ca.id)
@@ -645,44 +613,25 @@ async fn regenerate_crl(
 
     let count = rows.len();
 
-    // 2. Parse the CA certificate to extract the issuer Name DER.
     let ca_cert = synta_certificate::Certificate::from_der(&ca.cert_der)
         .map_err(|e| format!("CA cert parse failed: {e}"))?;
     let issuer_der = ca_cert
         .tbs_certificate
         .subject
         .to_der()
-        .map_err(|e| format!("issuer Name DER encode failed: {e}"))?;
+        .map_err(|e| format!("issuer Name encode failed: {e}"))?;
 
-    // 3. Determine the signature algorithm DER bytes.
     let sig_alg_der: &[u8] = match ca.hash_algorithm.as_str() {
-        "sha256" => &[
-            0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b, 0x05,
-            0x00,
-        ],
-        "sha384" => &[
-            0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0c, 0x05,
-            0x00,
-        ],
-        "sha512" => &[
-            0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0d, 0x05,
-            0x00,
-        ],
-        other => {
-            return Err(format!(
-                "unsupported hash algorithm for CRL signing: {other}"
-            ));
-        }
+        "sha256" => &[0x30,0x0d,0x06,0x09,0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x0b,0x05,0x00],
+        "sha384" => &[0x30,0x0d,0x06,0x09,0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x0c,0x05,0x00],
+        "sha512" => &[0x30,0x0d,0x06,0x09,0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x0d,0x05,0x00],
+        other => return Err(format!("unsupported hash algorithm for CRL: {other}")),
     };
 
-    // 4. Compute thisUpdate / nextUpdate timestamps.
     let now = chrono::Utc::now();
     let this_update = now.format("%Y%m%d%H%M%SZ").to_string();
-    let next_update = (now + chrono::Duration::hours(1))
-        .format("%Y%m%d%H%M%SZ")
-        .to_string();
+    let next_update = (now + chrono::Duration::hours(1)).format("%Y%m%d%H%M%SZ").to_string();
 
-    // 5. Build the TBSCertList.
     let mut builder = CertificateListBuilder::new()
         .issuer(&issuer_der)
         .this_update(&this_update)
@@ -692,68 +641,46 @@ async fn regenerate_crl(
     for (serial_hex, rev_time, rev_reason) in &rows {
         let serial_bytes = hex::decode(serial_hex).unwrap_or_default();
         let reason_code: Option<u8> = rev_reason.as_deref().map(|r| match r {
-            "keyCompromise" => 1,
-            "cACompromise" => 2,
-            "affiliationChanged" => 3,
-            "superseded" => 4,
-            "cessationOfOperation" => 5,
-            "certificateHold" => 6,
-            "removeFromCRL" => 8,
-            "privilegeWithdrawn" => 9,
-            "aACompromise" => 10,
-            _ => 0, // unspecified
+            "keyCompromise" => 1, "cACompromise" => 2, "affiliationChanged" => 3,
+            "superseded" => 4, "cessationOfOperation" => 5, "certificateHold" => 6,
+            "removeFromCRL" => 8, "privilegeWithdrawn" => 9, "aACompromise" => 10,
+            _ => 0,
         });
         builder = builder.revoke(&serial_bytes, rev_time, reason_code);
     }
 
     let tbs_der = builder.build().map_err(|e| format!("CRL TBS build failed: {e}"))?;
 
-    // 6. Resolve the CA signing key and sign the TBS.
-    let ca_cfg = state
-        .config
-        .cas
-        .iter()
+    let ca_cfg = state.config.cas.iter()
         .find(|c| c.id == ca.id)
-        .ok_or_else(|| format!("no CaConfig found for CA '{}'", ca.id))?;
+        .ok_or_else(|| format!("no CaConfig for CA '{}'", ca.id))?;
 
-    let resolved = kipuka::ca::issue::resolve_signing_key_sync(ca_cfg, state.hsm.as_ref())
-        .map_err(|e| format!("failed to resolve signing key: {e}"))?;
+    let pem = std::fs::read(&ca_cfg.key_file)
+        .map_err(|e| format!("failed to read CA key {}: {e}", ca_cfg.key_file))?;
+    let pem_key = synta_certificate::BackendPrivateKey::from_pem(&pem, None)
+        .map_err(|e| format!("CA key parse failed: {e}"))?;
 
-    let signature = match resolved.as_signing_key() {
-        kipuka::ca::issue::CaSigningKey::Pem(pem) => {
-            use synta_certificate::PrivateKey as _;
-            let pem_key = synta_certificate::BackendPrivateKey::from_pem(pem, None)
-                .map_err(|e| format!("CA PEM key parse failed: {e}"))?;
-            let signer = pem_key.as_signer(&ca.hash_algorithm);
-            signer
-                .sign_tbs_erased(&tbs_der)
-                .map_err(|e| format!("CRL PEM signing failed: {e}"))?
-        }
-        kipuka::ca::issue::CaSigningKey::Hsm {
-            context,
-            key_label,
-        } => context
-            .sign_data(key_label, &tbs_der, &ca.hash_algorithm)
-            .map_err(|e| format!("CRL HSM signing failed: {e}"))?,
+    // Sign synchronously and drop the non-Send signer before any await.
+    let (signature, crl_der) = {
+        use synta_certificate::PrivateKey as _;
+        let signer = pem_key.as_signer(&ca.hash_algorithm);
+        let sig = signer.sign_tbs_erased(&tbs_der)
+            .map_err(|e| format!("CRL signing failed: {e}"))?;
+
+        let crl = CertificateListBuilder::assemble(&tbs_der, sig_alg_der, &sig)
+            .map_err(|e| format!("CRL assembly failed: {e}"))?;
+        (sig, crl)
     };
 
-    // 7. Assemble the final CertificateList (TBS + sigAlg + signature).
-    let crl_der = CertificateListBuilder::assemble(&tbs_der, sig_alg_der, &signature)
-        .map_err(|e| format!("CRL assembly failed: {e}"))?;
+    let _ = &signature; // suppress unused warning
 
-    // 8. Store in the CA's CRL cache.
     {
         let mut cache = ca.crl_cache.lock();
         *cache = Some((crl_der, std::time::Instant::now()));
     }
 
-    tracing::info!(
-        ca_id = %ca.id,
-        revoked_count = count,
-        "CRL regenerated successfully"
-    );
+    tracing::info!(ca_id = %ca.id, revoked_count = count, "CRL regenerated");
 
-    // 9. Record audit event.
     kipuka::audit::record(
         &state.db,
         &state.audit,

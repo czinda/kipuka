@@ -221,13 +221,35 @@ pub async fn post_cms_simplereenroll(
     // RFC 7030 §3.5 POP linking: the CMS signer certificate subject
     // MUST match the CSR subject.  This is analogous to the mTLS POP
     // linking check in standard re-enrollment.
-    //
-    // TODO: Parse CSR subject and compare with cms_result.signer_subject_dn.
-    // let csr_subject = synta::pkcs10::CertificationRequest::from_der(csr_der)?
-    //     .subject_dn_string();
-    // if csr_subject != cms_result.signer_subject_dn {
-    //     return Err(KipukaError::BadRequest("POP linking failed: CSR subject does not match signer".into()));
-    // }
+    {
+        let csr = synta_certificate::csr::CertificationRequest::from_der(csr_der)
+            .map_err(|e| KipukaError::BadRequest(format!("CSR parse failed for POP linking: {e}")))?;
+
+        let csr_subject_der = csr
+            .certification_request_info
+            .subject
+            .to_der()
+            .map_err(|e| KipukaError::BadRequest(format!("CSR subject encode failed: {e}")))?;
+        let csr_subject = synta_certificate::format_dn(&csr_subject_der);
+
+        let signer_norm = cms_result.signer_subject_dn.trim().to_lowercase();
+        let csr_norm = csr_subject.trim().to_lowercase();
+
+        if signer_norm != csr_norm {
+            tracing::warn!(
+                signer_subject = %cms_result.signer_subject_dn,
+                csr_subject = %csr_subject,
+                "CMS simplereenroll POP linking failed: subject mismatch"
+            );
+            return Err(KipukaError::Forbidden(format!(
+                "POP linking failed: CSR subject '{csr_subject}' does not match \
+                 CMS signer subject '{}'",
+                cms_result.signer_subject_dn,
+            )));
+        }
+
+        tracing::info!("CMS simplereenroll POP linking: CSR subject matches signer");
+    }
 
     // Delegate to the standard direct-signing enrollment pipeline.
     // Re-enrollment uses the same certificate issuance path as simple enrollment;
@@ -376,12 +398,46 @@ pub async fn post_cms_fullcmc(
 
     // RHELBU-3536 R15: Validate id-kp-cmcRA EKU on the signer certificate.
     //
-    // TODO: Parse the signer certificate to extract EKU OIDs and verify
-    // that id-kp-cmcRA (1.3.6.1.5.5.7.3.28) is present.
-    //
-    // For now, this check is deferred until the CMS crypto layer is
-    // implemented — the signer certificate DER is available in
-    // cms_result.signer_cert_der for EKU extraction.
+    // The signer MUST hold id-kp-cmcRA (1.3.6.1.5.5.7.3.28) to submit
+    // Full CMC requests.  Extract the EKU extension from the signer
+    // certificate and verify the OID is present.
+    {
+        const CMC_RA_OID: &str = "1.3.6.1.5.5.7.3.28";
+
+        let signer_cert = synta_certificate::Certificate::from_der(&cms_result.signer_cert_der)
+            .map_err(|e| KipukaError::BadRequest(format!(
+                "failed to parse CMS signer certificate for EKU check: {e}"
+            )))?;
+
+        let has_cmc_ra = signer_cert
+            .tbs_certificate
+            .extensions
+            .as_ref()
+            .and_then(|ext_raw| {
+                synta_certificate::find_extension_value(
+                    ext_raw.as_bytes(),
+                    synta_certificate::oids::EXTENDED_KEY_USAGE,
+                )
+            })
+            .map(|eku_bytes| {
+                let mut decoder = synta::Decoder::new(eku_bytes, synta::Encoding::Der);
+                let oids: Vec<synta::ObjectIdentifier> = decoder.decode().unwrap_or_default();
+                oids.iter().any(|oid| oid.to_string() == CMC_RA_OID)
+            })
+            .unwrap_or(false);
+
+        if !has_cmc_ra {
+            tracing::warn!(
+                identity = %identity,
+                "CMS fullcmc rejected: signer certificate lacks id-kp-cmcRA EKU"
+            );
+            return Err(KipukaError::Forbidden(
+                "CMC signer certificate must have id-kp-cmcRA EKU (1.3.6.1.5.5.7.3.28)".into(),
+            ));
+        }
+
+        tracing::info!("CMS fullcmc: signer has id-kp-cmcRA EKU");
+    }
 
     tracing::info!(
         ca_id = %ca_id,

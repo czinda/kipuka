@@ -109,16 +109,7 @@ pub async fn get_csrattrs(
         return Ok(StatusCode::NO_CONTENT.into_response());
     }
 
-    // Encode the attributes as a DER SEQUENCE of OIDs.
-    //
-    // TODO: Replace with proper ASN.1 encoding via `synta` or `der` crate.
-    //
-    // The proper implementation would:
-    // 1. For each OID string, encode it as a DER OBJECT IDENTIFIER
-    // 2. Wrap in a SEQUENCE
-    // 3. Base64-encode the result
-    //
-    // For now, build a placeholder that encodes the OID strings.
+    // Encode the attributes as a DER SEQUENCE of OIDs using synta Encoder.
     let csrattrs_der = encode_csr_attrs(attributes)?;
 
     let body = encode_est_base64(&csrattrs_der);
