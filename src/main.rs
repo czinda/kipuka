@@ -476,7 +476,7 @@ fn spawn_background_tasks(state: AppState) {
         let state = state.clone();
         tokio::spawn(async move {
             use std::path::Path;
-            use crate::config::audit::RotationPolicy;
+            use kipuka::config::RotationPolicy;
 
             let audit = &state.config.audit;
 
@@ -602,7 +602,7 @@ fn spawn_background_tasks(state: AppState) {
                 tracing::debug!("OTP cleanup tick");
                 // Delete OTP tokens whose expires_at timestamp has passed.
                 let now_str = chrono::Utc::now().to_rfc3339();
-                let sql = crate::db::pg_sql("DELETE FROM otp_tokens WHERE expires_at < ?");
+                let sql = kipuka::db::pg_sql("DELETE FROM otp_tokens WHERE expires_at < ?");
                 match sqlx::query(sql).bind(&now_str).execute(&state.db).await {
                     Ok(result) => {
                         let removed = result.rows_affected();
@@ -726,7 +726,7 @@ async fn regenerate_crl(
                 .map_err(|e| format!("CA PEM key parse failed: {e}"))?;
             let signer = pem_key.as_signer(&ca.hash_algorithm);
             signer
-                .sign(&tbs_der)
+                .sign_tbs_erased(&tbs_der)
                 .map_err(|e| format!("CRL PEM signing failed: {e}"))?
         }
         kipuka::ca::issue::CaSigningKey::Hsm {
@@ -759,7 +759,7 @@ async fn regenerate_crl(
         &state.audit,
         kipuka::audit::AuditEvent::new(kipuka::audit::AuditEventType::CrlGenerate)
             .with_ca_id(&ca.id)
-            .with_detail(&format!("CRL generated with {} revoked entries", count)),
+            .with_detail(format!("CRL generated with {} revoked entries", count)),
     )
     .await;
 

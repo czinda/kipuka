@@ -88,8 +88,34 @@ pub async fn post_simpleenroll(
             "disconnected mode: queuing CSR for deferred signing"
         );
 
-        // TODO: Persist the CSR for later signing.
-        // kipuka_est::deferred::queue_csr(&state.db, ca_id, &csr_der, identity).await?;
+        // Extract subject DN from the CSR for display/lookup.
+        let subject_dn = synta_certificate::csr::CertificationRequest::from_der(&csr_der)
+            .ok()
+            .map(|csr| {
+                synta_certificate::format_dn(
+                    &csr.certification_request_info
+                        .subject
+                        .to_der()
+                        .unwrap_or_default(),
+                )
+            });
+
+        // Persist the CSR for deferred signing.
+        let auth_method = format!("{:?}", auth.0.method);
+        if let Err(e) = sqlx::query(crate::db::pg_sql(
+            "INSERT INTO pending_csrs (csr_der, ca_id, subject_dn, identity, auth_method) \
+             VALUES (?, ?, ?, ?, ?)",
+        ))
+        .bind(&csr_der)
+        .bind(ca_id)
+        .bind(&subject_dn)
+        .bind(identity)
+        .bind(&auth_method)
+        .execute(&state.db)
+        .await
+        {
+            tracing::error!(error = %e, "failed to persist CSR for deferred signing");
+        }
 
         let retry_after = state.config.est.disconnected_retry_after_secs;
 

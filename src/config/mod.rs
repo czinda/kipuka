@@ -34,7 +34,7 @@
 //! ```
 
 mod admin;
-mod audit;
+pub mod audit;
 mod ca;
 mod cmp;
 mod cms_est;

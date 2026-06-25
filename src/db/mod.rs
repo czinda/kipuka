@@ -55,7 +55,7 @@ static IS_POSTGRES: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 /// pointer identity of the static string literal, so each unique query string
 /// is rewritten at most once.
 #[allow(dead_code)]
-pub(crate) fn pg_sql(s: &'static str) -> &'static str {
+pub fn pg_sql(s: &'static str) -> &'static str {
     if !IS_POSTGRES.get().copied().unwrap_or(false) {
         return s;
     }
