@@ -122,68 +122,8 @@ async fn renewal_cycle(
         };
 
         // Resolve key material — HSM-backed or PEM from disk.
-        let ca_cfg = ca_configs.iter().find(|c| c.id == order.ca_id);
-        let ca_key_pem: Vec<u8>;
-        let key_label_owned: String;
-
-        let signing_key = match ca_cfg {
-            Some(cfg) if cfg.is_hsm_backed() => match hsm {
-                Some(hsm_ctx) => {
-                    let pkcs11_uri = match cfg.pkcs11_uri.as_deref() {
-                        Some(uri) => uri,
-                        None => {
-                            warn!(
-                                order_id = %id,
-                                "CA marked as HSM-backed but pkcs11_uri not configured — skipping"
-                            );
-                            continue;
-                        }
-                    };
-                    key_label_owned = match crate::routes::simpleenroll::parse_pkcs11_object_label(
-                        pkcs11_uri,
-                    ) {
-                        Ok(l) => l,
-                        Err(e) => {
-                            warn!(
-                                order_id = %id,
-                                error = %e,
-                                "invalid pkcs11_uri for STAR renewal — skipping"
-                            );
-                            failed += 1;
-                            continue;
-                        }
-                    };
-                    issue::CaSigningKey::Hsm {
-                        context: hsm_ctx,
-                        key_label: &key_label_owned,
-                    }
-                }
-                None => {
-                    warn!(
-                        order_id = %id,
-                        ca_id = %order.ca_id,
-                        "HSM not configured but CA has pkcs11_uri — skipping"
-                    );
-                    failed += 1;
-                    continue;
-                }
-            },
-            Some(cfg) => match std::fs::read(&cfg.key_file) {
-                Ok(pem) => {
-                    ca_key_pem = pem;
-                    issue::CaSigningKey::Pem(&ca_key_pem)
-                }
-                Err(e) => {
-                    warn!(
-                        order_id = %id,
-                        ca_id = %order.ca_id,
-                        error = %e,
-                        "failed to read CA key for STAR renewal — skipping"
-                    );
-                    failed += 1;
-                    continue;
-                }
-            },
+        let ca_cfg = match ca_configs.iter().find(|c| c.id == order.ca_id) {
+            Some(cfg) => cfg,
             None => {
                 warn!(
                     order_id = %id,
@@ -195,12 +135,26 @@ async fn renewal_cycle(
             }
         };
 
+        let resolved_key = match issue::resolve_signing_key_sync(ca_cfg, hsm) {
+            Ok(k) => k,
+            Err(e) => {
+                warn!(
+                    order_id = %id,
+                    ca_id = %order.ca_id,
+                    error = %e,
+                    "failed to resolve signing key for STAR renewal — skipping"
+                );
+                failed += 1;
+                continue;
+            }
+        };
+
         // Issue the renewed certificate.
         match issue::issue_certificate(
             &order.csr_der,
             &profile,
             &ca.cert_der,
-            signing_key,
+            resolved_key.as_signing_key(),
             &ca.hash_algorithm,
         ) {
             Ok(result) => {

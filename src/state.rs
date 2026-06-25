@@ -56,6 +56,15 @@ pub struct AppState {
     /// layer uses it to validate `Authorization: Negotiate` tokens.
     pub gss_cred: Option<Arc<dyn std::any::Any + Send + Sync>>,
 
+    /// Whether GSSAPI requires cryptographic ticket verification.
+    ///
+    /// When `true` (the default), structural-only parsing of Kerberos
+    /// tokens is rejected — libgssapi integration is required.  When
+    /// `false`, the server accepts structural parsing and returns a
+    /// `krb5-sname:` prefixed identity (the service name from the ticket,
+    /// not a verified client identity).
+    pub gssapi_require_crypto: bool,
+
     /// Dogtag PKI client pool (present when `[dogtag]` is configured).
     ///
     /// Routes enrollment, CMC, and key generation requests to Dogtag CA/KRA
@@ -200,6 +209,7 @@ pub struct AppStateBuilder {
     audit: Option<Arc<AuditState>>,
     ha_manager: Option<Arc<crate::ha::HaManager>>,
     gss_cred: Option<Arc<dyn std::any::Any + Send + Sync>>,
+    gssapi_require_crypto: bool,
     dogtag: Option<Arc<kipuka_dogtag::DogtagPool>>,
     star_manager: Option<Arc<crate::star::StarManager>>,
 }
@@ -219,6 +229,7 @@ impl AppStateBuilder {
             audit: None,
             ha_manager: None,
             gss_cred: None,
+            gssapi_require_crypto: true,
             dogtag: None,
             star_manager: None,
         }
@@ -279,6 +290,11 @@ impl AppStateBuilder {
         self
     }
 
+    pub fn gssapi_require_crypto(mut self, require: bool) -> Self {
+        self.gssapi_require_crypto = require;
+        self
+    }
+
     pub fn dogtag(mut self, pool: Arc<kipuka_dogtag::DogtagPool>) -> Self {
         self.dogtag = Some(pool);
         self
@@ -311,6 +327,7 @@ impl AppStateBuilder {
             audit: self.audit.expect("audit is required"),
             ha_manager: self.ha_manager,
             gss_cred: self.gss_cred,
+            gssapi_require_crypto: self.gssapi_require_crypto,
             dogtag: self.dogtag,
             star_manager: self.star_manager,
             startup_time: Instant::now(),

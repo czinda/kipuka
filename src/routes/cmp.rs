@@ -570,7 +570,45 @@ pub async fn post_cmp(
         )));
     }
 
-    // Verify message protection.
+    // Verify message protection (RFC 4210 §5.1.3 / RFC 9810 §5.1.3).
+    //
+    // The protection value is a signature or MAC computed over the
+    // DER-encoded PKIHeader || PKIBody (concatenated, no outer wrapper).
+    // We re-parse the original PKIMessage to extract the protection bits,
+    // algorithm DER, and header||body bytes needed for verification.
+    let pki_msg_for_verify = PKIMessage::from_der(&body).map_err(|e| {
+        KipukaError::BadRequest(format!("failed to re-parse PKIMessage for verification: {e}"))
+    })?;
+
+    // Compute DER(header) || DER(body) — the data that was signed/MACed.
+    let protected_bytes = {
+        let header_der = synta::ToDer::to_der(&pki_msg_for_verify.header).map_err(|e| {
+            KipukaError::Internal(format!("failed to re-encode PKIHeader: {e}"))
+        })?;
+        let body_der_raw = synta::ToDer::to_der(&pki_msg_for_verify.body).map_err(|e| {
+            KipukaError::Internal(format!("failed to re-encode PKIBody: {e}"))
+        })?;
+        let mut buf = Vec::with_capacity(header_der.len() + body_der_raw.len());
+        buf.extend_from_slice(&header_der);
+        buf.extend_from_slice(&body_der_raw);
+        buf
+    };
+
+    // Extract protection bits (signature or MAC value).
+    let protection_bits = pki_msg_for_verify
+        .protection
+        .as_ref()
+        .map(|bits| bits.as_bytes().to_vec())
+        .unwrap_or_default();
+
+    // Extract DER-encoded AlgorithmIdentifier for the protection algorithm.
+    let protection_alg_der = pki_msg_for_verify
+        .header
+        .protection_alg
+        .as_ref()
+        .and_then(|alg| synta::ToDer::to_der(alg).ok())
+        .unwrap_or_default();
+
     match &cmp_req.protection {
         CmpProtectionType::Signature {
             algorithm,
@@ -582,14 +620,94 @@ pub async fn post_cmp(
                 "verifying signature-based CMP protection"
             );
 
-            // TODO: Verify the signature over (header || body) using
-            // the signer's public key from cert_der, then validate
-            // the signer's certificate chain against the CA truststore.
-            //
-            // let signer_cert = x509::Certificate::from_der(cert_der)?;
-            // let to_verify = concat_header_body(&cmp_req);
-            // signer_cert.verify_signature(algorithm, &to_verify, &protection_bits)?;
-            // x509::verify_chain(&signer_cert, &[], &truststore)?;
+            if cert_der.is_empty() {
+                return Err(KipukaError::Auth(
+                    "CMP signature protection: no signer certificate in extraCerts".into(),
+                ));
+            }
+
+            // 1. Extract the signer certificate's SPKI for signature verification.
+            let signer_ranges = synta_certificate::cert_byte_ranges(cert_der)
+                .ok_or_else(|| {
+                    KipukaError::Auth(
+                        "failed to parse signer certificate structure from extraCerts".into(),
+                    )
+                })?;
+            let signer_spki_der = &cert_der[signer_ranges.subject_public_key_info.clone()];
+
+            // 2. Verify the signature over (header || body) using the signer's
+            //    public key.  protection_alg_der is the DER-encoded
+            //    AlgorithmIdentifier; protection_bits is the raw signature bytes.
+            let pub_key =
+                synta_certificate::BackendPublicKey::from_spki_der(signer_spki_der.to_vec());
+            pub_key
+                .verify_signature(
+                    &protected_bytes,
+                    &protection_alg_der,
+                    &protection_bits,
+                )
+                .map_err(|e| {
+                    KipukaError::Auth(format!(
+                        "CMP signature verification failed: {e}"
+                    ))
+                })?;
+
+            tracing::info!("CMP signature protection verified successfully");
+
+            // 3. Validate the signer certificate chains to a CA trust anchor.
+            //    Use the same direct-issuer check pattern as CMS SignedData
+            //    verification (cms_auth.rs).
+            let signer_cert_parsed =
+                synta_certificate::Certificate::from_der(cert_der).map_err(|e| {
+                    KipukaError::Auth(format!(
+                        "failed to parse CMP signer certificate: {e:?}"
+                    ))
+                })?;
+            let cert_sig_bits = signer_cert_parsed.signature_value.as_bytes();
+            let verifier = synta_certificate::default_signature_verifier();
+
+            let mut signer_trusted = false;
+            for ca_cfg in &state.config.cas {
+                let ca = match state.get_ca(&ca_cfg.id) {
+                    Some(ca) => ca,
+                    None => continue,
+                };
+                let ta_der = &ca.cert_der;
+                let ta_ranges = match synta_certificate::cert_byte_ranges(ta_der) {
+                    Some(r) => r,
+                    None => continue,
+                };
+                let ta_spki = &ta_der[ta_ranges.subject_public_key_info.clone()];
+
+                // Verify signer cert's signature against this CA's SPKI.
+                if verifier
+                    .verify_certificate_signature_erased(
+                        &cert_der[signer_ranges.tbs.clone()],
+                        &cert_der[signer_ranges.signature_algorithm.clone()],
+                        cert_sig_bits,
+                        ta_spki,
+                    )
+                    .is_ok()
+                {
+                    signer_trusted = true;
+                    break;
+                }
+
+                // Also accept self-signed: trust anchor == signer cert.
+                if ta_der.as_slice() == cert_der.as_slice() {
+                    signer_trusted = true;
+                    break;
+                }
+            }
+
+            if !signer_trusted {
+                return Err(KipukaError::Auth(
+                    "CMP signer certificate does not chain to a configured CA trust anchor"
+                        .into(),
+                ));
+            }
+
+            tracing::info!("CMP signer certificate chain verified against CA truststore");
         }
         CmpProtectionType::Mac { algorithm } => {
             if !cmp_config.allow_mac_protection {
@@ -598,20 +716,25 @@ pub async fn post_cmp(
                 ));
             }
 
-            tracing::debug!(
-                algorithm = %algorithm,
-                "verifying MAC-based CMP protection"
-            );
-
-            // TODO: Look up the shared secret by reference number
-            // (from the sender field), compute the MAC over
-            // (header || body), and compare with the protection value.
+            // MAC verification requires a shared secret store that maps
+            // reference numbers (sender field) to secrets.  This is not
+            // yet implemented — log a clear warning and reject.
             //
-            // let secret = otp_store.lookup_cmp_secret(&cmp_req.sender)?;
-            // let expected_mac = compute_mac(algorithm, &secret, &to_protect)?;
-            // if expected_mac != protection_bits {
-            //     return Err(KipukaError::Auth("MAC verification failed"));
-            // }
+            // A future implementation would:
+            // 1. Look up the shared secret by reference number from sender
+            // 2. Compute the MAC over protected_bytes using the algorithm
+            // 3. Compare with protection_bits (constant-time)
+            tracing::warn!(
+                algorithm = %algorithm,
+                sender = %cmp_req.sender,
+                "CMP MAC protection: shared secret store not configured; \
+                 MAC verification cannot be performed"
+            );
+            return Err(KipukaError::Auth(
+                "CMP MAC-based protection verification is not yet supported: \
+                 no shared secret store is configured"
+                    .into(),
+            ));
         }
     }
 
@@ -855,28 +978,8 @@ async fn process_enrollment_request(
         .ok_or_else(|| KipukaError::Ca(format!("CA config not found for id={ca_id}")))?;
 
     // Resolve signing key (PEM or HSM).
-    let ca_key_pem: Vec<u8>;
-    let key_label_owned: String;
-
-    let signing_key = if ca_cfg.is_hsm_backed() {
-        let hsm_ctx = state.hsm.as_ref().ok_or_else(|| {
-            KipukaError::Ca("HSM not configured but CA has pkcs11_uri".into())
-        })?;
-        key_label_owned =
-            crate::routes::simpleenroll::parse_pkcs11_object_label(
-                ca_cfg.pkcs11_uri.as_deref().ok_or_else(|| KipukaError::Ca("CA marked as HSM-backed but pkcs11_uri not configured".into()))?,
-            )
-            .map_err(|e| KipukaError::Ca(format!("invalid pkcs11_uri: {e}")))?;
-        crate::ca::issue::CaSigningKey::Hsm {
-            context: hsm_ctx,
-            key_label: &key_label_owned,
-        }
-    } else {
-        ca_key_pem = tokio::fs::read(&ca_cfg.key_file).await.map_err(|e| {
-            KipukaError::Ca(format!("failed to read CA key {}: {e}", ca_cfg.key_file))
-        })?;
-        crate::ca::issue::CaSigningKey::Pem(&ca_key_pem)
-    };
+    let resolved_key =
+        crate::ca::issue::resolve_signing_key(ca_cfg, state.hsm.as_ref()).await?;
 
     let profile = crate::ca::issue::EnrollmentProfile {
         max_validity_days: ca.validity_days.min(398),
@@ -888,7 +991,7 @@ async fn process_enrollment_request(
         &csr_der,
         &profile,
         &ca.cert_der,
-        signing_key,
+        resolved_key.as_signing_key(),
         &ca.hash_algorithm,
     )
     .map_err(|e| KipukaError::Ca(format!("CMP certificate issuance failed: {e}")))?;
@@ -956,6 +1059,89 @@ async fn process_revocation_request(
             "CMP RevReqContent contains no revocation requests".into(),
         ));
     }
+
+    // ── Revocation authorization ──────────────────────────────────────
+    //
+    // For signature-protected messages, verify that the signer is
+    // authorized to revoke the requested certificate(s):
+    //
+    // - **Self-revocation**: the signer cert's subject DN matches the
+    //   subject of the certificate being revoked (looked up by serial).
+    // - **RA/operator**: the signer has an RA EKU
+    //   (id-kp-cmcRA, 1.3.6.1.5.5.7.3.28) — not yet enforced, but
+    //   logged.  A future implementation would check an operator
+    //   allowlist or RA EKU in the signer certificate.
+    //
+    // MAC-protected revocation requests are rejected above (MAC
+    // verification is not yet supported), so we only handle the
+    // signature case here.
+    if let CmpProtectionType::Signature { cert_der, .. } = &cmp_req.protection {
+        let signer_cert = synta_certificate::Certificate::from_der(cert_der).map_err(|e| {
+            KipukaError::Auth(format!(
+                "failed to parse signer certificate for revocation authorization: {e:?}"
+            ))
+        })?;
+        let signer_subject_der = signer_cert.tbs_certificate.subject.as_bytes();
+        let signer_subject_dn = synta_certificate::format_dn(signer_subject_der);
+
+        // Check each RevDetails entry: for self-revocation, the signer's
+        // subject must match the revokee's subject.  We look up the
+        // certificate in the database by serial number and compare subjects.
+        for detail in &rev_details {
+            let cert_tmpl_check =
+                CertTemplate::from_der(detail.cert_details.0).map_err(|e| {
+                    KipukaError::BadRequest(format!(
+                        "failed to parse RevDetails CertTemplate for authz: {e}"
+                    ))
+                })?;
+
+            if let Some(serial_check) = &cert_tmpl_check.serial_number {
+                let serial_hex_check = hex::encode(serial_check.as_bytes());
+
+                // Query the database for the certificate's subject DN.
+                let row: Option<(String,)> = sqlx::query_as(crate::db::pg_sql(
+                    "SELECT subject FROM certificates WHERE serial = ?",
+                ))
+                .bind(&serial_hex_check)
+                .fetch_optional(&state.db)
+                .await
+                .map_err(|e| {
+                    KipukaError::Ca(format!(
+                        "database error checking revocation authorization: {e}"
+                    ))
+                })?;
+
+                if let Some((revokee_subject,)) = row {
+                    // Self-revocation: signer subject must match the
+                    // certificate's subject.
+                    if revokee_subject != signer_subject_dn {
+                        tracing::warn!(
+                            signer = %signer_subject_dn,
+                            revokee = %revokee_subject,
+                            serial = %serial_hex_check,
+                            "CMP rr: signer is not the certificate owner \
+                             and RA authorization is not yet implemented"
+                        );
+                        return Err(KipukaError::Auth(format!(
+                            "CMP revocation denied: signer '{}' is not authorized \
+                             to revoke certificate serial {} (owner: '{}')",
+                            signer_subject_dn, serial_hex_check, revokee_subject,
+                        )));
+                    }
+
+                    tracing::debug!(
+                        serial = %serial_hex_check,
+                        subject = %signer_subject_dn,
+                        "CMP rr: self-revocation authorized"
+                    );
+                }
+                // If the certificate is not in the database, the revocation
+                // will produce a "not found" result below — not an authz error.
+            }
+        }
+    }
+    // MAC-protected revocations: already rejected by the MAC verification
+    // check above, so we do not need to handle them here.
 
     // Process each RevDetails entry and collect status responses.
     let mut statuses = Vec::with_capacity(rev_details.len());

@@ -133,29 +133,9 @@ pub async fn post_simplereenroll(
         .find(|c| c.id == ca_id)
         .ok_or_else(|| KipukaError::Ca(format!("CA config not found for id={ca_id}")))?;
 
-    // Resolve key material — variables must outlive the signing_key borrow.
-    let ca_key_pem: Vec<u8>;
-    let key_label_owned: String;
-
-    let signing_key = if ca_cfg.is_hsm_backed() {
-        let hsm_ctx = state
-            .hsm
-            .as_ref()
-            .ok_or_else(|| KipukaError::Ca("HSM not configured but CA has pkcs11_uri".into()))?;
-        key_label_owned = crate::routes::simpleenroll::parse_pkcs11_object_label(
-            ca_cfg.pkcs11_uri.as_deref().ok_or_else(|| KipukaError::Ca("CA marked as HSM-backed but pkcs11_uri not configured".into()))?,
-        )
-        .map_err(|e| KipukaError::Ca(format!("invalid pkcs11_uri: {e}")))?;
-        crate::ca::issue::CaSigningKey::Hsm {
-            context: hsm_ctx,
-            key_label: &key_label_owned,
-        }
-    } else {
-        ca_key_pem = tokio::fs::read(&ca_cfg.key_file).await.map_err(|e| {
-            KipukaError::Ca(format!("failed to read CA key {}: {e}", ca_cfg.key_file))
-        })?;
-        crate::ca::issue::CaSigningKey::Pem(&ca_key_pem)
-    };
+    // Resolve key material.
+    let resolved_key =
+        crate::ca::issue::resolve_signing_key(ca_cfg, state.hsm.as_ref()).await?;
 
     // Build the enrollment profile.
     let profile = crate::ca::issue::EnrollmentProfile {
@@ -168,7 +148,7 @@ pub async fn post_simplereenroll(
         &csr_der,
         &profile,
         &ca.cert_der,
-        signing_key,
+        resolved_key.as_signing_key(),
         &ca.hash_algorithm,
     )
     .map_err(|e| KipukaError::Ca(format!("certificate re-issuance failed: {e}")))?;

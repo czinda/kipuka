@@ -241,28 +241,9 @@ pub async fn post_fullcmc(
         .find(|c| c.id == ca_id)
         .ok_or_else(|| KipukaError::Ca(format!("CA config not found for id={ca_id}")))?;
 
-    // Resolve key material -- variables must outlive signing_key borrows.
-    // Both are initialized unconditionally so the compiler can verify that
-    // only the relevant one is populated before use.
-    let ca_key_pem: Vec<u8>;
-    let key_label_owned: String;
-    let is_hsm = ca_cfg.is_hsm_backed();
-
-    if is_hsm {
-        let _hsm_ctx = state
-            .hsm
-            .as_ref()
-            .ok_or_else(|| KipukaError::Ca("HSM not configured but CA has pkcs11_uri".into()))?;
-        key_label_owned =
-            crate::routes::simpleenroll::parse_pkcs11_object_label(ca_cfg.pkcs11_uri.as_deref().ok_or_else(|| KipukaError::Ca("CA marked as HSM-backed but pkcs11_uri not configured".into()))?)
-                .map_err(|e| KipukaError::Ca(format!("invalid pkcs11_uri: {e}")))?;
-        ca_key_pem = Vec::new(); // unused in HSM path
-    } else {
-        ca_key_pem = tokio::fs::read(&ca_cfg.key_file).await.map_err(|e| {
-            KipukaError::Ca(format!("failed to read CA key {}: {e}", ca_cfg.key_file))
-        })?;
-        key_label_owned = String::new(); // unused in PEM path
-    }
+    // Resolve key material.
+    let resolved_key =
+        crate::ca::issue::resolve_signing_key(ca_cfg, state.hsm.as_ref()).await?;
 
     let profile = crate::ca::issue::EnrollmentProfile {
         max_validity_days: ca.validity_days.min(398),
@@ -276,21 +257,11 @@ pub async fn post_fullcmc(
     for req_entry in &pki_data.certification_requests {
         match req_entry.request_type {
             RequestType::Pkcs10 => {
-                // Construct the signing key reference for this iteration.
-                let signing_key = if is_hsm {
-                    crate::ca::issue::CaSigningKey::Hsm {
-                        context: state.hsm.as_ref().unwrap(),
-                        key_label: &key_label_owned,
-                    }
-                } else {
-                    crate::ca::issue::CaSigningKey::Pem(&ca_key_pem)
-                };
-
                 match crate::ca::issue::issue_certificate(
                     &req_entry.der,
                     &profile,
                     &ca.cert_der,
-                    signing_key,
+                    resolved_key.as_signing_key(),
                     &ca.hash_algorithm,
                 ) {
                     Ok(result) => {

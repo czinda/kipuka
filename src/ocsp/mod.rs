@@ -545,17 +545,25 @@ impl OcspClient {
         // field of the BasicOCSPResponse.  When it is absent the responder
         // cert is assumed to be pre-trusted by the relying party — we log a
         // warning and skip verification in that case.
+        //
+        // IMPORTANT: We extract the TBS ResponseData bytes directly from the
+        // original DER rather than re-encoding via `to_der()`.  Re-encoding
+        // can produce different bytes when the original used BER (indefinite
+        // length, non-minimal length octets, etc.), which would invalidate
+        // the signature.  This mirrors the `cert_byte_ranges` approach used
+        // for certificate signature verification.
+        let basic_response_der = response_bytes.response.as_bytes();
         if let Some(ref certs) = basic_response.certs {
             if let Some(first_cert_raw) = certs.first() {
                 let responder_cert_der = first_cert_raw.as_bytes();
 
-                // Encode the TBS ResponseData to DER for signature input.
-                let tbs_der = basic_response
-                    .tbs_response_data
-                    .to_der()
-                    .map_err(|e| OcspError::SignatureVerification(format!(
-                        "failed to encode TBS ResponseData: {e}"
-                    )))?;
+                // Extract the TBS ResponseData bytes from the original
+                // BasicOCSPResponse DER (first field of the outer SEQUENCE).
+                let tbs_der = extract_basic_ocsp_tbs_bytes(basic_response_der)
+                    .ok_or_else(|| OcspError::SignatureVerification(
+                        "failed to extract TBS ResponseData byte range from BasicOCSPResponse"
+                            .into(),
+                    ))?;
 
                 // Encode the signature algorithm to DER.
                 let sig_alg_der = basic_response
@@ -580,7 +588,7 @@ impl OcspClient {
                 let verifier = synta_certificate::default_signature_verifier();
                 verifier
                     .verify_certificate_signature(
-                        &tbs_der,
+                        tbs_der,
                         &sig_alg_der,
                         signature_bits,
                         spki_der,
@@ -653,6 +661,77 @@ impl OcspClient {
 }
 
 // ── Module-level helpers ───────────────────────────────────────────────────────
+
+/// Extract the TBS ResponseData bytes from a BasicOCSPResponse DER.
+///
+/// The BasicOCSPResponse is (RFC 6960 §4.2.1):
+/// ```text
+/// BasicOCSPResponse ::= SEQUENCE {
+///     tbsResponseData      ResponseData,       -- first field
+///     signatureAlgorithm   AlgorithmIdentifier,
+///     signature            BIT STRING,
+///     certs            [0] EXPLICIT SEQUENCE OF Certificate OPTIONAL
+/// }
+/// ```
+///
+/// This function navigates the outer SEQUENCE tag+length to locate the
+/// first field (tbsResponseData) and returns its complete TLV bytes from
+/// the original DER.  This avoids re-encoding, which can produce different
+/// bytes when the original used BER conventions (non-minimal lengths,
+/// indefinite length encoding, etc.).
+fn extract_basic_ocsp_tbs_bytes(basic_response_der: &[u8]) -> Option<&[u8]> {
+    // The outer structure is a SEQUENCE.
+    if basic_response_der.is_empty() || basic_response_der[0] != 0x30 {
+        return None;
+    }
+
+    // Read the outer SEQUENCE length to find where content starts.
+    let (outer_len, outer_len_bytes) = read_der_length_ocsp(basic_response_der, 1)?;
+    let content_start = 1 + outer_len_bytes;
+    let content_end = content_start + outer_len;
+    if content_end > basic_response_der.len() {
+        return None;
+    }
+
+    // The first field at `content_start` is the tbsResponseData (a SEQUENCE).
+    // Read its tag and length to determine the full TLV extent.
+    let tbs_start = content_start;
+    if tbs_start >= basic_response_der.len() {
+        return None;
+    }
+    let tbs_tag = basic_response_der[tbs_start];
+    // tbsResponseData is a SEQUENCE (tag 0x30).
+    if tbs_tag != 0x30 {
+        return None;
+    }
+
+    let (tbs_value_len, tbs_len_bytes) = read_der_length_ocsp(basic_response_der, tbs_start + 1)?;
+    let tbs_end = tbs_start + 1 + tbs_len_bytes + tbs_value_len;
+    if tbs_end > basic_response_der.len() {
+        return None;
+    }
+
+    Some(&basic_response_der[tbs_start..tbs_end])
+}
+
+/// Read a DER/BER definite-length starting at `bytes[offset]`.
+/// Returns `(value_length, bytes_consumed_for_length)` or `None`.
+fn read_der_length_ocsp(bytes: &[u8], offset: usize) -> Option<(usize, usize)> {
+    let first = *bytes.get(offset)?;
+    if first < 0x80 {
+        Some((first as usize, 1))
+    } else {
+        let n = (first & 0x7f) as usize;
+        if n == 0 || n > 4 || offset + 1 + n > bytes.len() {
+            return None;
+        }
+        let mut val = 0usize;
+        for i in 0..n {
+            val = (val << 8) | bytes[offset + 1 + i] as usize;
+        }
+        Some((val, 1 + n))
+    }
+}
 
 /// SHA-256 AlgorithmIdentifier DER: SEQUENCE { OID 2.16.840.1.101.3.4.2.1, NULL }
 ///

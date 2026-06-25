@@ -81,6 +81,161 @@ pub enum CaSigningKey<'a> {
     },
 }
 
+/// Owned signing key — either PEM bytes from disk or an HSM context + label.
+///
+/// Unlike [`CaSigningKey`] (which borrows), this type owns all data,
+/// making it easy to return from an async resolver without lifetime issues.
+/// Call [`ResolvedSigningKey::as_signing_key`] to obtain a borrowed
+/// [`CaSigningKey`] for passing to [`issue_certificate`].
+pub enum ResolvedSigningKey {
+    /// PEM-encoded private key loaded from disk.
+    Pem(Vec<u8>),
+    /// HSM-backed private key accessed via PKCS#11.
+    Hsm {
+        /// Shared HSM context with an active session.
+        context: std::sync::Arc<kipuka_hsm::HsmContext>,
+        /// Object label of the private key in the PKCS#11 token.
+        key_label: String,
+    },
+}
+
+impl ResolvedSigningKey {
+    /// Borrow as a [`CaSigningKey`] suitable for [`issue_certificate`].
+    pub fn as_signing_key(&self) -> CaSigningKey<'_> {
+        match self {
+            ResolvedSigningKey::Pem(pem) => CaSigningKey::Pem(pem),
+            ResolvedSigningKey::Hsm { context, key_label } => CaSigningKey::Hsm {
+                context,
+                key_label,
+            },
+        }
+    }
+}
+
+/// Resolve the CA signing key from configuration (async — uses `tokio::fs::read`).
+///
+/// Returns a [`ResolvedSigningKey`] that owns all key material.  Use
+/// [`ResolvedSigningKey::as_signing_key`] to obtain a borrowed reference
+/// for [`issue_certificate`].
+pub async fn resolve_signing_key(
+    ca_cfg: &crate::config::CaConfig,
+    hsm: Option<&std::sync::Arc<kipuka_hsm::HsmContext>>,
+) -> Result<ResolvedSigningKey, crate::error::KipukaError> {
+    if ca_cfg.is_hsm_backed() {
+        let hsm_ctx = hsm.ok_or_else(|| {
+            crate::error::KipukaError::Ca("HSM not configured but CA has pkcs11_uri".into())
+        })?;
+        let pkcs11_uri = ca_cfg.pkcs11_uri.as_deref().ok_or_else(|| {
+            crate::error::KipukaError::Ca(
+                "CA marked as HSM-backed but pkcs11_uri not configured".into(),
+            )
+        })?;
+        let key_label = parse_pkcs11_object_label(pkcs11_uri)
+            .map_err(|e| crate::error::KipukaError::Ca(format!("invalid pkcs11_uri: {e}")))?;
+        Ok(ResolvedSigningKey::Hsm {
+            context: std::sync::Arc::clone(hsm_ctx),
+            key_label,
+        })
+    } else {
+        let pem = tokio::fs::read(&ca_cfg.key_file).await.map_err(|e| {
+            crate::error::KipukaError::Ca(format!(
+                "failed to read CA key {}: {e}",
+                ca_cfg.key_file
+            ))
+        })?;
+        Ok(ResolvedSigningKey::Pem(pem))
+    }
+}
+
+/// Resolve the CA signing key from configuration (sync — uses `std::fs::read`).
+///
+/// Identical to [`resolve_signing_key`] but suitable for non-async contexts
+/// such as the STAR background renewal task.
+pub fn resolve_signing_key_sync(
+    ca_cfg: &crate::config::CaConfig,
+    hsm: Option<&std::sync::Arc<kipuka_hsm::HsmContext>>,
+) -> Result<ResolvedSigningKey, crate::error::KipukaError> {
+    if ca_cfg.is_hsm_backed() {
+        let hsm_ctx = hsm.ok_or_else(|| {
+            crate::error::KipukaError::Ca("HSM not configured but CA has pkcs11_uri".into())
+        })?;
+        let pkcs11_uri = ca_cfg.pkcs11_uri.as_deref().ok_or_else(|| {
+            crate::error::KipukaError::Ca(
+                "CA marked as HSM-backed but pkcs11_uri not configured".into(),
+            )
+        })?;
+        let key_label = parse_pkcs11_object_label(pkcs11_uri)
+            .map_err(|e| crate::error::KipukaError::Ca(format!("invalid pkcs11_uri: {e}")))?;
+        Ok(ResolvedSigningKey::Hsm {
+            context: std::sync::Arc::clone(hsm_ctx),
+            key_label,
+        })
+    } else {
+        let pem = std::fs::read(&ca_cfg.key_file).map_err(|e| {
+            crate::error::KipukaError::Ca(format!(
+                "failed to read CA key {}: {e}",
+                ca_cfg.key_file
+            ))
+        })?;
+        Ok(ResolvedSigningKey::Pem(pem))
+    }
+}
+
+/// Extract the `object` (key label) from a PKCS#11 URI.
+///
+/// PKCS#11 URI format: `pkcs11:token=TOKEN;object=KEY_LABEL;type=private`
+///
+/// Returns the value of the `object` attribute, which is the CKA_LABEL
+/// used to find the private key in the PKCS#11 token.
+///
+/// Per RFC 7512 §2.3, values may be percent-encoded; this function
+/// decodes `%XX` sequences.
+pub(crate) fn parse_pkcs11_object_label(uri: &str) -> Result<String, String> {
+    let path = uri
+        .strip_prefix("pkcs11:")
+        .ok_or_else(|| format!("not a pkcs11: URI: {uri}"))?;
+
+    for part in path.split(';') {
+        if let Some((key, value)) = part.split_once('=')
+            && key == "object"
+        {
+            return pkcs11_percent_decode(value);
+        }
+    }
+
+    Err(format!("pkcs11 URI missing 'object' attribute: {uri}"))
+}
+
+/// Percent-decode a PKCS#11 URI value per RFC 7512 §2.3.
+fn pkcs11_percent_decode(s: &str) -> Result<String, String> {
+    let mut result = Vec::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = hex_digit(bytes[i + 1])
+                .ok_or_else(|| format!("invalid percent-encoding at position {i}"))?;
+            let lo = hex_digit(bytes[i + 2])
+                .ok_or_else(|| format!("invalid percent-encoding at position {}", i + 1))?;
+            result.push((hi << 4) | lo);
+            i += 3;
+        } else {
+            result.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(result).map_err(|e| format!("invalid UTF-8 after percent-decoding: {e}"))
+}
+
+fn hex_digit(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
 /// Enrollment profile defining constraints for issued certificates.
 ///
 /// Supports classical (RSA, ECDSA), post-quantum (ML-DSA, ML-KEM),

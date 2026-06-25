@@ -63,6 +63,26 @@ pub async fn try_extract_gssapi(
         }
     };
 
+    // Safety gate: reject structural-only parsing when crypto verification
+    // is required (the default).  Without libgssapi integration, we can
+    // only extract the service name (sname) from the cleartext portion of
+    // the Kerberos ticket — the client principal is encrypted and cannot
+    // be authenticated.
+    if app.gssapi_require_crypto {
+        warn!(
+            "GSSAPI authentication rejected: `require_crypto_verification` is true (the default) \
+             but libgssapi integration is not compiled in.  Structural parsing of Kerberos tokens \
+             cannot verify client identity.  Set `require_crypto_verification = false` in \
+             [admin.gssapi] to allow structural-only parsing for development/logging."
+        );
+        return Some(Err((
+            StatusCode::FORBIDDEN,
+            "GSSAPI authentication requires libgssapi integration; \
+             structural-only parsing is disabled by default",
+        )
+            .into_response()));
+    }
+
     // Decode the base64 SPNEGO token.
     let token_bytes = match base64::engine::general_purpose::STANDARD.decode(token_b64) {
         Ok(t) => t,
@@ -210,6 +230,13 @@ fn negotiate_accept(
 ) -> Result<NegotiateSuccess, NegotiateError> {
     use synta_krb5::gss;
 
+    warn!(
+        "GSSAPI structural parsing only: Kerberos tickets are NOT cryptographically verified. \
+         The extracted identity is the service name (sname) from the cleartext portion of the \
+         ticket, not the authenticated client principal.  The client principal is inside the \
+         encrypted ticket data and requires libgssapi with a valid keytab to decrypt."
+    );
+
     let _ = channel_binding;
 
     // Step 1: Try parsing as a raw Kerberos GSS token (APPLICATION 0
@@ -295,13 +322,17 @@ fn try_extract_principal_from_gss_token(token: &[u8]) -> Option<String> {
     try_extract_principal_from_ap_req(payload)
 }
 
-/// Try to parse an AP-REQ DER blob and extract the client principal name
-/// from the ticket's `sname` field and `realm`.
+/// Try to parse an AP-REQ DER blob and extract the service principal name
+/// (sname) from the ticket's cleartext fields.
 ///
-/// The AP-REQ contains a Ticket which has a cleartext `sname` (the service
-/// principal the client is authenticating to) and `realm`.  The actual
-/// client principal is inside the encrypted part of the ticket, but the
-/// service principal + realm gives us useful audit information.
+/// **Important:** The returned identity is the *service* principal (sname)
+/// from the unencrypted portion of the ticket, NOT the authenticated client
+/// principal.  The client principal is inside the encrypted ticket data and
+/// requires libgssapi with a valid keytab to decrypt.
+///
+/// The returned string is prefixed with `krb5-sname:` to make it clear to
+/// callers that this is not a verified client identity.  For example:
+/// `krb5-sname:HTTP/host.example.com@EXAMPLE.COM`.
 ///
 /// For full client identity extraction, the ticket must be decrypted with
 /// the server's keytab — that requires the system GSS-API library.
@@ -314,13 +345,14 @@ fn try_extract_principal_from_ap_req(ap_req_der: &[u8]) -> Option<String> {
         .decode()
         .ok()?;
 
-    // Extract the service principal from the ticket.
+    // Extract the service principal from the ticket (cleartext sname field).
     let ticket = &ap_req.ticket;
     let realm = &ticket.realm;
     let sname = &ticket.sname;
 
-    // Format as "principal@REALM" for audit logging.
-    Some(sname.display(Some(realm)))
+    // Prefix with "krb5-sname:" to indicate this is the service name from
+    // structural parsing, not a cryptographically verified client identity.
+    Some(format!("krb5-sname:{}", sname.display(Some(realm))))
 }
 
 /// Extract the mechToken from an SPNEGO NegTokenInit.

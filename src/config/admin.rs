@@ -95,6 +95,26 @@ pub struct AdminGssapiConfig {
     /// Use gssproxy for credential management instead of a keytab.
     #[serde(default)]
     pub gssproxy: bool,
+
+    /// Require cryptographic verification of Kerberos tickets.
+    ///
+    /// When `true` (the default), GSSAPI authentication is rejected unless
+    /// libgssapi integration is compiled in and a valid keytab/gssproxy is
+    /// available to decrypt and verify the ticket.  When `false`, structural
+    /// parsing of the SPNEGO token is allowed — the service name (sname) is
+    /// extracted from the cleartext portion of the ticket, but no
+    /// cryptographic verification is performed and the client identity
+    /// cannot be authenticated.
+    ///
+    /// **Security warning:** Setting this to `false` should only be used
+    /// for development, logging, or environments where TLS client
+    /// certificates provide the primary authentication.
+    #[serde(default = "default_require_crypto_verification")]
+    pub require_crypto_verification: bool,
+}
+
+fn default_require_crypto_verification() -> bool {
+    true
 }
 
 fn default_session_ttl_secs() -> u64 {
