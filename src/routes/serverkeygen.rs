@@ -220,36 +220,92 @@ pub async fn post_serverkeygen(
     }
 
     // ── Software/HSM key generation path (no Dogtag) ────────────────────────
-    //
-    // TODO: Implement software/HSM server-side key generation.
-    //
-    // When an HSM is configured for this CA:
-    //   let (pub_key, priv_key_handle) = kipuka_hsm::generate_key_pair(
-    //       &state.hsm, ca.key_type_for_keygen()
-    //   ).await?;
-    //
-    // When using software key generation:
-    //   let (pub_key_der, priv_key_pkcs8) = kipuka_util::keygen::generate(
-    //       &ca.key_type
-    //   )?;
-    //
-    // Then:
-    // 1. Build a new CSR using the generated public key and the template's
-    //    requested subject/extensions
-    // 2. Sign the certificate with the CA key
-    // 3. Optionally archive the private key via KRA integration
 
-    let cert_pkcs7_der: Vec<u8> = Vec::new(); // Placeholder
-    let private_key_pkcs8: Vec<u8> = Vec::new(); // Placeholder
+    // Look up the CA backend (already checked above, but borrow it for signing).
+    let ca = state.get_ca(ca_id).ok_or(KipukaError::NotFound)?;
 
-    if cert_pkcs7_der.is_empty() || private_key_pkcs8.is_empty() {
-        return Err(KipukaError::Ca(
-            "server-side key generation not yet implemented (configure [dogtag] with kra_url for KRA-backed keygen)".into(),
-        ));
-    }
+    // Step 1: Determine key type from the CSR template.
+    //
+    // Parse the CSR to extract the SubjectPublicKeyInfo algorithm.
+    // Default to RSA-2048 if the template CSR uses a placeholder key.
+    let key_type = detect_key_type_from_csr(&csr_der);
 
-    // Build the multipart/mixed response.
-    let response_body = build_multipart_response(&cert_pkcs7_der, &private_key_pkcs8);
+    tracing::info!(
+        ca_id = %ca_id,
+        identity = %identity,
+        key_type = ?key_type,
+        "generating software key pair for serverkeygen"
+    );
+
+    // Step 2: Generate the key pair.
+    let keygen_config = crate::ca::keygen::KeyGenConfig::default();
+    let keygen_result = crate::ca::keygen::generate_key_pair(&key_type, &keygen_config)
+        .map_err(|e| KipukaError::Ca(format!("software key generation failed: {e}")))?;
+
+    // Step 3: Extract the subject from the template CSR and build a new CSR
+    // with the generated public key, signed by the generated private key.
+    //
+    // NOTE: The CSR construction and signing is done in a non-async block
+    // because `Box<dyn ErasedCertificateSigner>` is not Send, and we need
+    // to cross await points below for file I/O.
+    let new_csr_der = build_keygen_csr(
+        &csr_der,
+        &keygen_result.public_key_der,
+        &keygen_result.private_key_der,
+    )?;
+
+    // Step 4: Look up the CA config and resolve the CA signing key.
+    let ca_cfg = state
+        .config
+        .cas
+        .iter()
+        .find(|c| c.id == ca_id)
+        .ok_or_else(|| KipukaError::Ca(format!("CA config not found for id={ca_id}")))?;
+
+    let ca_key_pem: Vec<u8>;
+    let key_label_owned: String;
+
+    let signing_key = if ca_cfg.is_hsm_backed() {
+        let hsm_ctx = state
+            .hsm
+            .as_ref()
+            .ok_or_else(|| KipukaError::Ca("HSM not configured but CA has pkcs11_uri".into()))?;
+        key_label_owned = crate::routes::simpleenroll::parse_pkcs11_object_label(
+            ca_cfg.pkcs11_uri.as_deref().unwrap(),
+        )
+        .map_err(|e| KipukaError::Ca(format!("invalid pkcs11_uri: {e}")))?;
+        crate::ca::issue::CaSigningKey::Hsm {
+            context: hsm_ctx,
+            key_label: &key_label_owned,
+        }
+    } else {
+        ca_key_pem = tokio::fs::read(&ca_cfg.key_file).await.map_err(|e| {
+            KipukaError::Ca(format!("failed to read CA key {}: {e}", ca_cfg.key_file))
+        })?;
+        crate::ca::issue::CaSigningKey::Pem(&ca_key_pem)
+    };
+
+    // Step 5: Issue the certificate (CA signs using its own key).
+    let profile = crate::ca::issue::EnrollmentProfile {
+        max_validity_days: ca.validity_days.min(398),
+        ..crate::ca::issue::EnrollmentProfile::default()
+    };
+
+    let issuance_result = crate::ca::issue::issue_certificate(
+        &new_csr_der,
+        &profile,
+        &ca.cert_der,
+        signing_key,
+        &ca.hash_algorithm,
+    )
+    .map_err(|e| KipukaError::Ca(format!("certificate issuance for keygen failed: {e}")))?;
+
+    // Step 6: Wrap the certificate in PKCS#7 certs-only.
+    let cert_pkcs7_der =
+        crate::routes::cacerts::build_certs_only_pkcs7(&issuance_result.certificate_der)?;
+
+    // Step 7: Build the multipart/mixed response with cert + PKCS#8 private key.
+    let response_body = build_multipart_response(&cert_pkcs7_der, &keygen_result.private_key_der);
 
     let content_type = format!(
         "{}; boundary={}",
@@ -265,11 +321,108 @@ pub async fn post_serverkeygen(
     state
         .record_audit_event(
             "serverkeygen_success",
-            &format!("ca_id={ca_id}, identity={identity}"),
+            &format!(
+                "ca_id={ca_id}, identity={identity}, backend=software, key_type={key_type:?}, serial={}",
+                issuance_result.serial_number
+            ),
         )
         .await;
 
     Ok(resp)
+}
+
+/// Build a new CSR from the template subject and generated key pair.
+///
+/// Constructs a PKCS#10 CSR with the subject DN from the template CSR and the
+/// SPKI from the generated public key, signed by the generated private key
+/// (proof of possession). This CSR is then fed to `issue_certificate()`.
+///
+/// This is a synchronous function to avoid holding `Box<dyn ErasedCertificateSigner>`
+/// (which is not `Send`) across async await points.
+fn build_keygen_csr(
+    template_csr_der: &[u8],
+    public_key_der: &[u8],
+    private_key_pkcs8_der: &[u8],
+) -> Result<Vec<u8>, KipukaError> {
+    let template_csr =
+        synta_certificate::csr::CertificationRequest::from_der(template_csr_der)
+            .map_err(|e| KipukaError::BadRequest(format!("CSR template parse failed: {e}")))?;
+
+    let subject_der = template_csr
+        .certification_request_info
+        .subject
+        .to_der()
+        .map_err(|e| KipukaError::Ca(format!("CSR subject encode failed: {e}")))?;
+
+    // Load the generated private key for CSR signing.
+    let generated_key =
+        synta_certificate::BackendPrivateKey::from_der(private_key_pkcs8_der)
+            .map_err(|e| KipukaError::Ca(format!("failed to load generated key: {e}")))?;
+
+    let signer = {
+        use synta_certificate::PrivateKey as _;
+        generated_key.as_signer("sha256")
+    };
+
+    synta_certificate::CsrBuilder::new()
+        .subject_name(&subject_der)
+        .public_key_der(public_key_der)
+        .sign(&signer)
+        .map_err(|e| KipukaError::Ca(format!("CSR construction failed: {e}")))
+}
+
+/// Detect the desired key type from the CSR template's SubjectPublicKeyInfo.
+///
+/// Parses the CSR to inspect the public key algorithm OID and extracts
+/// the key type. Falls back to RSA-2048 if the CSR cannot be parsed or
+/// uses an unrecognised algorithm (e.g., a placeholder key).
+fn detect_key_type_from_csr(csr_der: &[u8]) -> crate::ca::keygen::KeyType {
+    use crate::ca::keygen::{EcCurve, KeyType};
+
+    let Ok(csr) = synta_certificate::csr::CertificationRequest::from_der(csr_der) else {
+        tracing::debug!("CSR template unparseable; defaulting to RSA-2048");
+        return KeyType::Rsa(2048);
+    };
+
+    let spki = &csr.certification_request_info.subject_pkinfo;
+    let key_bits = spki.subject_public_key.bit_len();
+
+    let pk_info = synta_certificate::decode_public_key_info(
+        &spki.algorithm.algorithm,
+        spki.algorithm.parameters.as_ref(),
+        spki.subject_public_key.as_bytes(),
+        key_bits,
+    );
+
+    match &pk_info {
+        synta_certificate::PublicKeyInfo::Rsa { bit_count, .. } => {
+            // Use the CSR's RSA key size, clamped to allowed values.
+            let bits = match *bit_count {
+                0..=2048 => 2048u32,
+                2049..=3072 => 3072,
+                _ => 4096,
+            };
+            tracing::debug!(bits, "detected RSA key type from CSR template");
+            KeyType::Rsa(bits)
+        }
+        synta_certificate::PublicKeyInfo::Ec {
+            curve_nist_name, ..
+        } => {
+            let curve = match curve_nist_name {
+                Some("P-384") => EcCurve::P384,
+                _ => EcCurve::P256, // default to P-256
+            };
+            tracing::debug!(curve = %curve, "detected EC key type from CSR template");
+            KeyType::Ecdsa(curve)
+        }
+        synta_certificate::PublicKeyInfo::Unknown { alg_name, .. } => {
+            tracing::debug!(
+                algorithm = %alg_name,
+                "unrecognised CSR template algorithm; defaulting to RSA-2048"
+            );
+            KeyType::Rsa(2048)
+        }
+    }
 }
 
 /// Build a `multipart/mixed` response body with the certificate and private key.

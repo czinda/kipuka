@@ -1302,6 +1302,7 @@ dependencies = [
  "kipuka-hsm",
  "kipuka-otp",
  "kipuka-util",
+ "native-ossl",
  "parking_lot",
  "rand 0.8.6",
  "reqwest",

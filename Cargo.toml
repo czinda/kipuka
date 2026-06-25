@@ -56,6 +56,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # Crypto
+native-ossl = "0.1"
 rand = "0.8"
 sha2 = "0.10"
 hmac = "0.12"
@@ -129,6 +130,7 @@ toml.workspace = true
 base64.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+native-ossl.workspace = true
 rand.workspace = true
 sha2.workspace = true
 hex.workspace = true

@@ -296,39 +296,154 @@ fn validate_key_type(key_type: &KeyType) -> Result<(), KeyGenError> {
 fn generate_software_key(key_type: &KeyType) -> Result<KeyGenResult, KeyGenError> {
     info!(key_type = ?key_type, "generating software key pair");
 
-    // TODO: wire to synta-certificate PrivateKeyBuilder.
-    // The integration path per key type:
+    // For classical key types (RSA, ECDSA), generate via native-ossl directly
+    // so we can extract both the SPKI DER (public key) and PKCS#8 DER (private key).
     //
-    //   KeyType::Rsa(bits) =>
-    //     PrivateKeyBuilder::rsa(*bits)?.build()?
-    //
-    //   KeyType::Ecdsa(EcCurve::P256) =>
-    //     PrivateKeyBuilder::ec_p256()?.build()?
-    //
-    //   KeyType::MlDsa(MlDsaLevel::MlDsa44) =>
-    //     PrivateKeyBuilder::ml_dsa(44)?.build()?   // FIPS 204
-    //   KeyType::MlDsa(MlDsaLevel::MlDsa65) =>
-    //     PrivateKeyBuilder::ml_dsa(65)?.build()?
-    //   KeyType::MlDsa(MlDsaLevel::MlDsa87) =>
-    //     PrivateKeyBuilder::ml_dsa(87)?.build()?
-    //
-    //   KeyType::MlKem(MlKemLevel::MlKem512) =>
-    //     PrivateKeyBuilder::ml_kem(512)?.build()?  // FIPS 203
-    //   KeyType::MlKem(MlKemLevel::MlKem768) =>
-    //     PrivateKeyBuilder::ml_kem(768)?.build()?
-    //   KeyType::MlKem(MlKemLevel::MlKem1024) =>
-    //     PrivateKeyBuilder::ml_kem(1024)?.build()?
-    //
-    //   KeyType::CompositeMlDsa { ml_dsa, classical } =>
-    //     PrivateKeyBuilder::composite_ml_dsa(sub_arc_for(ml_dsa, classical))?.build()?
-    //     // sub_arc values 37-54 per draft-ietf-lamps-pq-composite-sigs-19
+    // For PQC and composite key types, use synta-certificate's BackendPrivateKey
+    // which has public to_der() for PKCS#8 extraction.
+    match key_type {
+        KeyType::Rsa(bits) => generate_classical_key(key_type, c"RSA", |pb| {
+            pb.push_uint(c"bits", *bits)?
+                .push_uint(c"e", 65537u32)
+        }),
+        KeyType::Ecdsa(curve) => {
+            let curve_cstr: &std::ffi::CStr = match curve {
+                EcCurve::P256 => c"P-256",
+                EcCurve::P384 => c"P-384",
+            };
+            generate_classical_key(key_type, c"EC", |pb| {
+                pb.push_utf8_string(c"group", curve_cstr)
+            })
+        }
+        KeyType::MlDsa(level) => {
+            let param = match level {
+                MlDsaLevel::MlDsa44 => "ML-DSA-44",
+                MlDsaLevel::MlDsa65 => "ML-DSA-65",
+                MlDsaLevel::MlDsa87 => "ML-DSA-87",
+            };
+            generate_pqc_key(key_type, || {
+                synta_certificate::BackendPrivateKey::generate_ml_dsa(param)
+            })
+        }
+        KeyType::MlKem(level) => {
+            let param = match level {
+                MlKemLevel::MlKem512 => "ML-KEM-512",
+                MlKemLevel::MlKem768 => "ML-KEM-768",
+                MlKemLevel::MlKem1024 => "ML-KEM-1024",
+            };
+            generate_pqc_key(key_type, || {
+                synta_certificate::BackendPrivateKey::generate_ml_kem(param)
+            })
+        }
+        KeyType::CompositeMlDsa { ml_dsa, classical } => {
+            let sub_arc = composite_sub_arc(ml_dsa, classical).ok_or_else(|| {
+                KeyGenError::UnsupportedKeyType(format!(
+                    "unsupported composite ML-DSA combination: {ml_dsa}+{classical}"
+                ))
+            })?;
+            generate_pqc_key(key_type, || {
+                synta_certificate::BackendPrivateKey::generate_composite_ml_dsa(sub_arc)
+            })
+        }
+    }
+}
 
-    let placeholder_public = vec![0x30, 0x00];
-    let placeholder_private = vec![0x30, 0x00];
+/// Generate a classical key (RSA or ECDSA) via native-ossl `KeygenCtx`.
+///
+/// Returns both the SubjectPublicKeyInfo DER (for certificate issuance) and
+/// the PKCS#8 DER (for client delivery).
+fn generate_classical_key<F>(
+    key_type: &KeyType,
+    algorithm: &std::ffi::CStr,
+    configure: F,
+) -> Result<KeyGenResult, KeyGenError>
+where
+    F: FnOnce(
+        native_ossl::params::ParamBuilder,
+    ) -> Result<native_ossl::params::ParamBuilder, native_ossl::error::ErrorStack>,
+{
+    use native_ossl::pkey::KeygenCtx;
+    use native_ossl::params::ParamBuilder;
+
+    let pb = ParamBuilder::new()
+        .map_err(|e| KeyGenError::SoftwareError(format!("param builder init: {e}")))?;
+
+    let pb = configure(pb)
+        .map_err(|e| KeyGenError::SoftwareError(format!("param configure: {e}")))?;
+
+    let params = pb
+        .build()
+        .map_err(|e| KeyGenError::SoftwareError(format!("param build: {e}")))?;
+
+    let mut kgen = KeygenCtx::new(algorithm)
+        .map_err(|e| KeyGenError::SoftwareError(format!("keygen ctx init: {e}")))?;
+
+    kgen.set_params(&params)
+        .map_err(|e| KeyGenError::SoftwareError(format!("keygen set params: {e}")))?;
+
+    let pkey = kgen
+        .generate()
+        .map_err(|e| KeyGenError::SoftwareError(format!("key generation: {e}")))?;
+
+    // SPKI DER = SubjectPublicKeyInfo (public key for certificate).
+    let public_key_der = pkey
+        .public_key_to_der()
+        .map_err(|e| KeyGenError::SoftwareError(format!("SPKI extraction: {e}")))?;
+
+    // PKCS#8 DER = unencrypted private key for client delivery.
+    let private_key_der = pkey
+        .to_pkcs8_der()
+        .map_err(|e| KeyGenError::SoftwareError(format!("PKCS#8 extraction: {e}")))?;
+
+    info!(
+        key_type = ?key_type,
+        public_key_len = public_key_der.len(),
+        private_key_len = private_key_der.len(),
+        "classical software key pair generated"
+    );
 
     Ok(KeyGenResult {
-        public_key_der: placeholder_public,
-        private_key_der: placeholder_private,
+        public_key_der,
+        private_key_der,
+        key_type: key_type.clone(),
+    })
+}
+
+/// Generate a PQC key (ML-DSA, ML-KEM, or composite) via synta-certificate's
+/// `BackendPrivateKey`, which provides `to_der()` for PKCS#8 extraction and
+/// implements the `PrivateKey` trait for SPKI extraction.
+fn generate_pqc_key<F>(
+    key_type: &KeyType,
+    generator: F,
+) -> Result<KeyGenResult, KeyGenError>
+where
+    F: FnOnce() -> Result<synta_certificate::BackendPrivateKey, synta_certificate::PrivateKeyError>,
+{
+    use synta_certificate::PrivateKey as _;
+
+    let backend_key = generator()
+        .map_err(|e| KeyGenError::SoftwareError(format!("PQC key generation: {e}")))?;
+
+    // SPKI DER via the PrivateKey trait.
+    let public_key_der = backend_key
+        .public_key_spki_der()
+        .map_err(|e| KeyGenError::SoftwareError(format!("PQC SPKI extraction: {e}")))?;
+
+    // PKCS#8 DER via BackendPrivateKey::to_der().
+    let private_key_der = backend_key
+        .to_der()
+        .map_err(|e| KeyGenError::SoftwareError(format!("PQC PKCS#8 extraction: {e}")))?;
+
+    info!(
+        key_type = ?key_type,
+        public_key_len = public_key_der.len(),
+        private_key_len = private_key_der.len(),
+        "PQC software key pair generated"
+    );
+
+    Ok(KeyGenResult {
+        public_key_der,
+        private_key_der,
         key_type: key_type.clone(),
     })
 }
