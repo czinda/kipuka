@@ -40,31 +40,28 @@ pub enum EnrollStatus {
 ///
 /// Maps to the JSON payload for `POST /ca/rest/certrequests`.
 #[derive(Serialize)]
-#[serde(rename_all = "PascalCase")]
 struct EnrollmentRequest {
-    /// Enrollment profile ID (e.g., "caServerCert").
+    #[serde(rename = "ProfileID")]
     profile_id: String,
-    /// Renewal flag (false for new enrollments).
+    #[serde(rename = "Renewal")]
     renewal: bool,
-    /// Input containing the PKCS#10 CSR.
+    #[serde(rename = "Input")]
     input: Vec<ProfileInput>,
 }
 
 #[derive(Serialize)]
-#[serde(rename_all = "PascalCase")]
 struct ProfileInput {
-    /// Class name identifying the input type.
+    #[serde(rename = "ClassID")]
     class_id: String,
-    /// Input attributes (the CSR content).
+    #[serde(rename = "Attribute")]
     attributes: Vec<ProfileAttribute>,
 }
 
 #[derive(Serialize)]
-#[serde(rename_all = "PascalCase")]
 struct ProfileAttribute {
-    /// Attribute name (e.g., "cert_request").
+    #[serde(rename = "Name")]
     name: String,
-    /// Attribute value (the PEM-encoded CSR).
+    #[serde(rename = "Value")]
     value: String,
 }
 
