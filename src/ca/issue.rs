@@ -48,6 +48,10 @@ pub enum IssuanceError {
     /// Database storage error.
     #[error("storage error: {0}")]
     StorageError(String),
+
+    /// The CSR algorithm is not permitted by the enrollment profile.
+    #[error("algorithm not allowed: {algorithm} not in profile '{profile}'")]
+    AlgorithmNotAllowed { algorithm: String, profile: String },
 }
 
 /// Result of a successful certificate issuance.
@@ -759,116 +763,51 @@ fn check_key_size(csr_der: &[u8], profile: &EnrollmentProfile) -> Result<(), Iss
             bit_count,
             ..
         } => {
-            // Check if this is a known PQC algorithm by OID.
+            // FIPS 204 (ML-DSA) and FIPS 203 (ML-KEM) OID-to-level mapping
+            const PQC_ALGORITHMS: &[(&str, &str, &str)] = &[
+                ("2.16.840.1.101.3.4.3.17", "ML-DSA-44", "ml-dsa-44"),
+                ("2.16.840.1.101.3.4.3.18", "ML-DSA-65", "ml-dsa-65"),
+                ("2.16.840.1.101.3.4.3.19", "ML-DSA-87", "ml-dsa-87"),
+                ("2.16.840.1.101.3.4.4.1",  "ML-KEM-512", "ml-kem-512"),
+                ("2.16.840.1.101.3.4.4.2",  "ML-KEM-768", "ml-kem-768"),
+                ("2.16.840.1.101.3.4.4.3",  "ML-KEM-1024", "ml-kem-1024"),
+            ];
+
             let oid_str = alg_oid
                 .iter()
                 .map(|c| c.to_string())
                 .collect::<Vec<_>>()
                 .join(".");
 
-            match oid_str.as_str() {
-                // ML-DSA (FIPS 204): 2.16.840.1.101.3.4.3.{17,18,19}
-                "2.16.840.1.101.3.4.3.17" => {
-                    let level = "ml-dsa-44";
-                    debug!(algorithm = "ML-DSA-44", key_bits = bit_count, "CSR public key: ML-DSA Level 2");
-                    if !profile.allowed_ml_dsa_levels.is_empty()
-                        && !profile.allowed_ml_dsa_levels.iter().any(|l| l == level)
-                    {
-                        return Err(IssuanceError::KeyTooSmall {
-                            algorithm: "ML-DSA-44".into(),
-                            bits: *bit_count as u32,
-                            min_bits: 0,
-                        });
-                    }
+            if let Some(&(_, display_name, level)) = PQC_ALGORITHMS.iter().find(|(oid, _, _)| *oid == oid_str) {
+                debug!(algorithm = display_name, key_bits = bit_count, "CSR public key");
+                let allowed = if level.starts_with("ml-dsa") {
+                    &profile.allowed_ml_dsa_levels
+                } else {
+                    &profile.allowed_ml_kem_levels
+                };
+                if !allowed.is_empty() && !allowed.iter().any(|l| l == level) {
+                    return Err(IssuanceError::AlgorithmNotAllowed {
+                        algorithm: display_name.into(),
+                        profile: profile.name.clone(),
+                    });
                 }
-                "2.16.840.1.101.3.4.3.18" => {
-                    let level = "ml-dsa-65";
-                    debug!(algorithm = "ML-DSA-65", key_bits = bit_count, "CSR public key: ML-DSA Level 3");
-                    if !profile.allowed_ml_dsa_levels.is_empty()
-                        && !profile.allowed_ml_dsa_levels.iter().any(|l| l == level)
-                    {
-                        return Err(IssuanceError::KeyTooSmall {
-                            algorithm: "ML-DSA-65".into(),
-                            bits: *bit_count as u32,
-                            min_bits: 0,
-                        });
-                    }
+            } else if oid_str.starts_with("2.16.840.1.114027.80.5.2.") {
+                // Composite ML-DSA (draft-ietf-lamps-pq-composite-sigs-19)
+                debug!(algorithm = %alg_name, oid = %oid_str, "CSR public key: composite ML-DSA");
+                if !profile.allow_composite_ml_dsa {
+                    return Err(IssuanceError::AlgorithmNotAllowed {
+                        algorithm: format!("composite ML-DSA ({oid_str})"),
+                        profile: profile.name.clone(),
+                    });
                 }
-                "2.16.840.1.101.3.4.3.19" => {
-                    let level = "ml-dsa-87";
-                    debug!(algorithm = "ML-DSA-87", key_bits = bit_count, "CSR public key: ML-DSA Level 5");
-                    if !profile.allowed_ml_dsa_levels.is_empty()
-                        && !profile.allowed_ml_dsa_levels.iter().any(|l| l == level)
-                    {
-                        return Err(IssuanceError::KeyTooSmall {
-                            algorithm: "ML-DSA-87".into(),
-                            bits: *bit_count as u32,
-                            min_bits: 0,
-                        });
-                    }
-                }
-                // ML-KEM (FIPS 203): 2.16.840.1.101.3.4.4.{1,2,3}
-                "2.16.840.1.101.3.4.4.1" => {
-                    let level = "ml-kem-512";
-                    debug!(algorithm = "ML-KEM-512", key_bits = bit_count, "CSR public key: ML-KEM Level 1");
-                    if !profile.allowed_ml_kem_levels.is_empty()
-                        && !profile.allowed_ml_kem_levels.iter().any(|l| l == level)
-                    {
-                        return Err(IssuanceError::KeyTooSmall {
-                            algorithm: "ML-KEM-512".into(),
-                            bits: *bit_count as u32,
-                            min_bits: 0,
-                        });
-                    }
-                }
-                "2.16.840.1.101.3.4.4.2" => {
-                    let level = "ml-kem-768";
-                    debug!(algorithm = "ML-KEM-768", key_bits = bit_count, "CSR public key: ML-KEM Level 3");
-                    if !profile.allowed_ml_kem_levels.is_empty()
-                        && !profile.allowed_ml_kem_levels.iter().any(|l| l == level)
-                    {
-                        return Err(IssuanceError::KeyTooSmall {
-                            algorithm: "ML-KEM-768".into(),
-                            bits: *bit_count as u32,
-                            min_bits: 0,
-                        });
-                    }
-                }
-                "2.16.840.1.101.3.4.4.3" => {
-                    let level = "ml-kem-1024";
-                    debug!(algorithm = "ML-KEM-1024", key_bits = bit_count, "CSR public key: ML-KEM Level 5");
-                    if !profile.allowed_ml_kem_levels.is_empty()
-                        && !profile.allowed_ml_kem_levels.iter().any(|l| l == level)
-                    {
-                        return Err(IssuanceError::KeyTooSmall {
-                            algorithm: "ML-KEM-1024".into(),
-                            bits: *bit_count as u32,
-                            min_bits: 0,
-                        });
-                    }
-                }
-                // Composite ML-DSA: 2.16.840.1.114027.80.5.2.{37-54}
-                s if s.starts_with("2.16.840.1.114027.80.5.2.") => {
-                    debug!(
-                        algorithm = %alg_name,
-                        oid = %oid_str,
-                        key_bits = bit_count,
-                        "CSR public key: composite ML-DSA"
-                    );
-                    if !profile.allow_composite_ml_dsa {
-                        return Err(IssuanceError::InvalidCsr(
-                            "composite ML-DSA not allowed for this profile".into(),
-                        ));
-                    }
-                }
-                _ => {
-                    debug!(
-                        algorithm = %alg_name,
-                        key_bits = bit_count,
-                        alg_oid = ?alg_oid,
-                        "CSR public key: unknown algorithm (skipping size check)"
-                    );
-                }
+            } else {
+                debug!(
+                    algorithm = %alg_name,
+                    key_bits = bit_count,
+                    alg_oid = ?alg_oid,
+                    "CSR public key: unknown algorithm (skipping size check)"
+                );
             }
         }
     }
