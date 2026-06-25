@@ -180,24 +180,24 @@ fn extract_constraints(profile: &ProfileDetail) -> ProfileConstraints {
     for policy_set in &profile.policy_sets {
         for policy in &policy_set.policies {
             // Extract key constraints.
-            if let Some(ref constraint) = policy.constraint {
-                if constraint.class_id.as_deref() == Some("keyConstraintImpl") {
-                    for param in &constraint.params {
-                        match param.name.as_str() {
-                            "keyType" => {
-                                if let Some(ref v) = param.value {
-                                    constraints.key_types.push(v.clone());
-                                }
+            if let Some(ref constraint) = policy.constraint
+                && constraint.class_id.as_deref() == Some("keyConstraintImpl")
+            {
+                for param in &constraint.params {
+                    match param.name.as_str() {
+                        "keyType" => {
+                            if let Some(ref v) = param.value {
+                                constraints.key_types.push(v.clone());
                             }
-                            "keyParameters" => {
-                                if let Some(ref v) = param.value {
-                                    for p in v.split(',') {
-                                        constraints.key_parameters.push(p.trim().to_owned());
-                                    }
-                                }
-                            }
-                            _ => {}
                         }
+                        "keyParameters" => {
+                            if let Some(ref v) = param.value {
+                                for p in v.split(',') {
+                                    constraints.key_parameters.push(p.trim().to_owned());
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -221,21 +221,21 @@ fn extract_constraints(profile: &ProfileDetail) -> ProfileConstraints {
                     }
                     Some("subjectNameDefaultImpl") | Some("nsSubjectNameDefaultImpl") => {
                         for param in &default.params {
-                            if param.name == "name" {
-                                if let Some(ref v) = param.value {
-                                    // Extract DN component names (CN, O, OU, etc.).
-                                    for component in v.split(',') {
-                                        if let Some(name) = component.split('=').next() {
-                                            let name = name.trim();
-                                            if !name.is_empty()
-                                                && !constraints
-                                                    .subject_dn_components
-                                                    .contains(&name.to_owned())
-                                            {
-                                                constraints
-                                                    .subject_dn_components
-                                                    .push(name.to_owned());
-                                            }
+                            if param.name == "name"
+                                && let Some(ref v) = param.value
+                            {
+                                // Extract DN component names (CN, O, OU, etc.).
+                                for component in v.split(',') {
+                                    if let Some(name) = component.split('=').next() {
+                                        let name = name.trim();
+                                        if !name.is_empty()
+                                            && !constraints
+                                                .subject_dn_components
+                                                .contains(&name.to_owned())
+                                        {
+                                            constraints
+                                                .subject_dn_components
+                                                .push(name.to_owned());
                                         }
                                     }
                                 }

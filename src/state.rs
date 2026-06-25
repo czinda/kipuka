@@ -56,6 +56,12 @@ pub struct AppState {
     /// layer uses it to validate `Authorization: Negotiate` tokens.
     pub gss_cred: Option<Arc<dyn std::any::Any + Send + Sync>>,
 
+    /// Dogtag PKI client pool (present when `[dogtag]` is configured).
+    ///
+    /// Routes enrollment, CMC, and key generation requests to Dogtag CA/KRA
+    /// backends when configured as an alternative to direct signing.
+    pub dogtag: Option<Arc<kipuka_dogtag::DogtagPool>>,
+
     /// STAR certificate manager (present when `[star]` is enabled).
     ///
     /// Manages active STAR orders and their renewal state (RFC 8739).
@@ -194,6 +200,7 @@ pub struct AppStateBuilder {
     audit: Option<Arc<AuditState>>,
     ha_manager: Option<Arc<crate::ha::HaManager>>,
     gss_cred: Option<Arc<dyn std::any::Any + Send + Sync>>,
+    dogtag: Option<Arc<kipuka_dogtag::DogtagPool>>,
     star_manager: Option<Arc<crate::star::StarManager>>,
 }
 
@@ -212,6 +219,7 @@ impl AppStateBuilder {
             audit: None,
             ha_manager: None,
             gss_cred: None,
+            dogtag: None,
             star_manager: None,
         }
     }
@@ -271,6 +279,11 @@ impl AppStateBuilder {
         self
     }
 
+    pub fn dogtag(mut self, pool: Arc<kipuka_dogtag::DogtagPool>) -> Self {
+        self.dogtag = Some(pool);
+        self
+    }
+
     pub fn star_manager(mut self, manager: Arc<crate::star::StarManager>) -> Self {
         self.star_manager = Some(manager);
         self
@@ -298,6 +311,7 @@ impl AppStateBuilder {
             audit: self.audit.expect("audit is required"),
             ha_manager: self.ha_manager,
             gss_cred: self.gss_cred,
+            dogtag: self.dogtag,
             star_manager: self.star_manager,
             startup_time: Instant::now(),
         }

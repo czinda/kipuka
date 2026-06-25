@@ -122,6 +122,14 @@ pub struct Config {
     #[serde(default)]
     pub cmp: Option<CmpConfig>,
 
+    /// Dogtag PKI backend configuration (CA + KRA).
+    ///
+    /// When present, enrollment and CMC requests are forwarded to a
+    /// Dogtag PKI CA via its REST API instead of using direct signing.
+    /// Absent → direct signing only (no Dogtag integration).
+    #[serde(default)]
+    pub dogtag: Option<kipuka_dogtag::DogtagConfig>,
+
     /// STAR certificate configuration (RFC 8739).  Absent → STAR disabled.
     #[serde(default)]
     pub star: Option<StarConfig>,
@@ -237,6 +245,25 @@ impl Config {
         // ── CMP ─────────────────────────────────────────────────────────────
         if let Some(ref cmp) = self.cmp {
             let _ = cmp; // No validation needed yet beyond serde
+        }
+
+        // ── Dogtag ───────────────────────────────────────────────────────
+        if let Some(ref dogtag) = self.dogtag {
+            if dogtag.ca_url.scheme() != "https" {
+                return Err("dogtag.ca_url must use HTTPS".into());
+            }
+            if dogtag.agent_cert_file.is_empty() {
+                return Err("dogtag.agent_cert_file must not be empty".into());
+            }
+            if dogtag.agent_key_file.is_empty() {
+                return Err("dogtag.agent_key_file must not be empty".into());
+            }
+            if dogtag.ca_cert_file.is_empty() {
+                return Err("dogtag.ca_cert_file must not be empty".into());
+            }
+            if dogtag.profile_id.is_empty() {
+                return Err("dogtag.profile_id must not be empty".into());
+            }
         }
 
         // ── STAR ────────────────────────────────────────────────────────────

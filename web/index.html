@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="https://unpkg.com/@patternfly/patternfly@5/patternfly.min.css">
   <link rel="stylesheet" href="css/kipuka.css">
 </head>
-<body class="pf-v5-c-page">
+<body>
 
   <!-- ── Login Overlay ──────────────────────────────────────────── -->
   <div id="login-overlay" class="kipuka-login-overlay" style="display:none;">
@@ -57,7 +57,7 @@
   </div>
 
   <!-- ── Page Shell ─────────────────────────────────────────────── -->
-  <div id="app-shell" style="display:none;">
+  <div id="app-shell" class="pf-v5-c-page" style="display:none;">
 
     <!-- Masthead -->
     <header class="pf-v5-c-masthead">
@@ -85,8 +85,6 @@
         </div>
       </div>
     </header>
-
-    <div class="pf-v5-c-page__body">
 
       <!-- Sidebar -->
       <div class="pf-v5-c-page__sidebar pf-m-dark" id="page-sidebar">
@@ -129,7 +127,6 @@
           <!-- Rendered by JavaScript -->
         </section>
       </main>
-    </div>
   </div>
 
   <!-- ── OTP Modal ──────────────────────────────────────────────── -->

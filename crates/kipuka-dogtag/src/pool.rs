@@ -122,12 +122,11 @@ impl DogtagPool {
                 .enumerate()
                 .filter_map(|(i, e)| {
                     // Skip unhealthy backends still in cooldown.
-                    if e.health == BackendHealth::Unhealthy {
-                        if let Some(last) = e.last_healthy {
-                            if last.elapsed() < self.cooldown {
-                                return None;
-                            }
-                        }
+                    if e.health == BackendHealth::Unhealthy
+                        && let Some(last) = e.last_healthy
+                        && last.elapsed() < self.cooldown
+                    {
+                        return None;
                     }
                     Some((
                         i,

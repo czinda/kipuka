@@ -127,6 +127,52 @@ pub async fn post_fullcmc(
         return Err(KipukaError::BadRequest("empty CMC request".into()));
     }
 
+    // ── Dogtag CMC passthrough ──────────────────────────────────────────────
+    //
+    // If a Dogtag backend is configured, forward the raw CMC request to
+    // Dogtag's profileSubmitCMCFull endpoint and relay the response.
+    // This is a pure passthrough: kipuka does not interpret the CMC
+    // message content when Dogtag handles it.
+    if let Some(ref dogtag_pool) = state.dogtag {
+        let client = dogtag_pool.get_client().map_err(|e| {
+            KipukaError::ServiceUnavailable(format!("Dogtag CA unavailable: {e}"))
+        })?;
+
+        tracing::info!(
+            ca_id = %ca_id,
+            identity = %identity,
+            cmc_size = cmc_request_der.len(),
+            "forwarding Full CMC request to Dogtag CA"
+        );
+
+        let response_der = client
+            .submit_cmc_request(&cmc_request_der)
+            .await
+            .map_err(|e| KipukaError::Ca(format!("Dogtag CMC passthrough failed: {e}")))?;
+
+        let body = encode_est_base64(&response_der);
+        let mut resp = (StatusCode::OK, body).into_response();
+        resp.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static(content_types::CMC_RESPONSE),
+        );
+        resp.headers_mut().insert(
+            header::HeaderName::from_static("content-transfer-encoding"),
+            HeaderValue::from_static(content_types::TRANSFER_ENCODING_BASE64),
+        );
+
+        state
+            .record_audit_event(
+                "fullcmc_success",
+                &format!("ca_id={ca_id}, identity={identity}, backend=dogtag"),
+            )
+            .await;
+
+        return Ok(resp);
+    }
+
+    // ── Direct-signing path (no Dogtag) ─────────────────────────────────────
+
     // Look up the CA backend.
     let ca = state.get_ca(ca_id).ok_or(KipukaError::NotFound)?;
 

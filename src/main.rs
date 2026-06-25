@@ -205,6 +205,24 @@ async fn run() -> Result<(), String> {
         None
     };
 
+    // ── Dogtag PKI pool ──────────────────────────────────────────────────────
+    let dogtag = if let Some(ref dogtag_cfg) = config.dogtag {
+        tracing::info!(
+            ca_url = %dogtag_cfg.ca_url,
+            profile_id = %dogtag_cfg.profile_id,
+            "initializing Dogtag PKI client pool"
+        );
+        let pool = kipuka_dogtag::DogtagPool::new(
+            std::slice::from_ref(dogtag_cfg),
+            3,  // failure_threshold: mark unhealthy after 3 consecutive failures
+            60, // cooldown_secs: wait 60s before re-checking unhealthy backends
+        )
+        .map_err(|e| format!("Dogtag pool init failed: {e}"))?;
+        Some(Arc::new(pool))
+    } else {
+        None
+    };
+
     // ── Audit state ──────────────────────────────────────────────────────────
     let audit = Arc::new(AuditState::new());
 
@@ -235,6 +253,12 @@ async fn run() -> Result<(), String> {
 
     let state = if let Some(h) = hsm {
         state.hsm(h)
+    } else {
+        state
+    };
+
+    let state = if let Some(d) = dogtag {
+        state.dogtag(d)
     } else {
         state
     };

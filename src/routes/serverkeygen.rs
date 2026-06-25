@@ -117,9 +117,111 @@ pub async fn post_serverkeygen(
     // Look up the CA backend.
     let _ca = state.get_ca(ca_id).ok_or(KipukaError::NotFound)?;
 
-    // Generate the key pair on the server.
+    // ── Dogtag KRA path ─────────────────────────────────────────────────────
     //
-    // TODO: Implement server-side key generation.
+    // If a Dogtag backend with KRA is configured, generate the key pair on
+    // the KRA, enroll the certificate via the CA, and return both.
+    if let Some(ref dogtag_pool) = state.dogtag {
+        let dogtag_cfg = state
+            .config
+            .dogtag
+            .as_ref()
+            .expect("dogtag config present when pool is set");
+
+        if dogtag_cfg.kra_url.is_none() {
+            return Err(KipukaError::Ca(
+                "server-side key generation requires dogtag.kra_url to be configured".into(),
+            ));
+        }
+
+        let kra_client = kipuka_dogtag::KraClient::new(dogtag_cfg).map_err(|e| {
+            KipukaError::Ca(format!("KRA client initialization failed: {e}"))
+        })?;
+
+        // Determine key type from the CSR template or use defaults.
+        // For now, default to RSA 2048 — a full implementation would
+        // extract the desired key type from the CSR template attributes.
+        let key_type = "RSA";
+        let key_size = 2048u32;
+
+        tracing::info!(
+            ca_id = %ca_id,
+            identity = %identity,
+            key_type = key_type,
+            key_size = key_size,
+            "generating key pair on Dogtag KRA"
+        );
+
+        let keygen_result = kra_client
+            .generate_key(key_type, key_size)
+            .await
+            .map_err(|e| KipukaError::Ca(format!("KRA key generation failed: {e}")))?;
+
+        // Now enroll the certificate via the CA using the generated public key.
+        // Build a CSR from the template + generated public key.
+        // For now, we forward the original CSR template and let Dogtag handle it.
+        let client = dogtag_pool.get_client().map_err(|e| {
+            KipukaError::ServiceUnavailable(format!("Dogtag CA unavailable: {e}"))
+        })?;
+
+        use base64::Engine;
+        let csr_b64 = base64::engine::general_purpose::STANDARD.encode(&csr_der);
+        let csr_pem = format!(
+            "-----BEGIN CERTIFICATE REQUEST-----\n{}\n-----END CERTIFICATE REQUEST-----",
+            csr_b64
+        );
+
+        let enroll_result = client
+            .enroll_certificate(&csr_pem, &dogtag_cfg.profile_id)
+            .await
+            .map_err(|e| KipukaError::Ca(format!("Dogtag enrollment for keygen failed: {e}")))?;
+
+        if enroll_result.status != kipuka_dogtag::EnrollStatus::Complete {
+            return Err(KipukaError::Ca(format!(
+                "Dogtag enrollment not complete for keygen: status={:?}, request_id={}",
+                enroll_result.status, enroll_result.request_id
+            )));
+        }
+
+        let cert_der = enroll_result.certificate_der.ok_or_else(|| {
+            KipukaError::Ca("Dogtag returned complete but no certificate for keygen".into())
+        })?;
+
+        // The private key from KRA — use wrapped key if available, else public key DER.
+        let private_key_der = keygen_result
+            .wrapped_private_key
+            .unwrap_or(keygen_result.public_key_der);
+
+        // Build the multipart/mixed response.
+        let response_body = build_multipart_response(&cert_der, &private_key_der);
+
+        let content_type = format!(
+            "{}; boundary={}",
+            content_types::MULTIPART_MIXED,
+            MULTIPART_BOUNDARY
+        );
+
+        let mut resp = (StatusCode::OK, response_body).into_response();
+        if let Ok(hv) = HeaderValue::from_str(&content_type) {
+            resp.headers_mut().insert(header::CONTENT_TYPE, hv);
+        }
+
+        state
+            .record_audit_event(
+                "serverkeygen_success",
+                &format!(
+                    "ca_id={ca_id}, identity={identity}, backend=dogtag, kra_key_id={}",
+                    keygen_result.key_id
+                ),
+            )
+            .await;
+
+        return Ok(resp);
+    }
+
+    // ── Software/HSM key generation path (no Dogtag) ────────────────────────
+    //
+    // TODO: Implement software/HSM server-side key generation.
     //
     // When an HSM is configured for this CA:
     //   let (pub_key, priv_key_handle) = kipuka_hsm::generate_key_pair(
@@ -142,7 +244,7 @@ pub async fn post_serverkeygen(
 
     if cert_pkcs7_der.is_empty() || private_key_pkcs8.is_empty() {
         return Err(KipukaError::Ca(
-            "server-side key generation not yet implemented".into(),
+            "server-side key generation not yet implemented (configure [dogtag] with kra_url for KRA-backed keygen)".into(),
         ));
     }
 

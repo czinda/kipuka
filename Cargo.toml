@@ -101,6 +101,7 @@ name = "kipuka"
 path = "src/main.rs"
 
 [dependencies]
+kipuka-dogtag.workspace = true
 kipuka-est.workspace = true
 kipuka-hsm.workspace = true
 kipuka-otp.workspace = true
