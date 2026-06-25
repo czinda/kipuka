@@ -66,9 +66,7 @@ struct ProfileAttribute {
 
 /// Response from Dogtag certificate enrollment.
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
 struct EnrollmentResponse {
-    /// List of enrollment results (typically one).
     #[serde(default)]
     entries: Vec<EnrollmentEntry>,
 }
@@ -85,10 +83,8 @@ struct EnrollmentEntry {
 
 /// Certificate data response.
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
 struct CertDataResponse {
-    /// Base64-encoded certificate (PKCS#7 or raw).
-    #[serde(default)]
+    #[serde(default, alias = "Encoded")]
     encoded: Option<String>,
 }
 
