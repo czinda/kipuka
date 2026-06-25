@@ -33,8 +33,8 @@ use axum::response::{IntoResponse, Response};
 
 use synta::{Integer, Null, OctetStringRef, RawDer};
 use synta_certificate::cmp_types::{
-    CertOrEncCert, CertRepMessage, CertResponse, CertifiedKeyPair, PKIBody, PKIHeader,
-    PKIMessage, PKIStatusInfo, RevRepContent,
+    CertOrEncCert, CertRepMessage, CertResponse, CertifiedKeyPair, PBMParameter, PKIBody,
+    PKIHeader, PKIMessage, PKIStatusInfo, RevRepContent,
 };
 use synta_certificate::crmf_types::CertReqMsg;
 use synta_certificate::GeneralNameSpec;
@@ -716,25 +716,90 @@ pub async fn post_cmp(
                 ));
             }
 
-            // MAC verification requires a shared secret store that maps
-            // reference numbers (sender field) to secrets.  This is not
-            // yet implemented — log a clear warning and reject.
-            //
-            // A future implementation would:
-            // 1. Look up the shared secret by reference number from sender
-            // 2. Compute the MAC over protected_bytes using the algorithm
-            // 3. Compare with protection_bits (constant-time)
-            tracing::warn!(
+            tracing::debug!(
                 algorithm = %algorithm,
                 sender = %cmp_req.sender,
-                "CMP MAC protection: shared secret store not configured; \
-                 MAC verification cannot be performed"
+                "verifying MAC-based CMP protection"
             );
-            return Err(KipukaError::Auth(
-                "CMP MAC-based protection verification is not yet supported: \
-                 no shared secret store is configured"
-                    .into(),
-            ));
+
+            // 1. Extract PBMParameter from the protectionAlg parameters.
+            //
+            // RFC 4210 §5.1.3.1: the AlgorithmIdentifier for
+            // id-PasswordBasedMac has PBMParameter as its parameters.
+            let pbm_param_element = pki_msg_for_verify
+                .header
+                .protection_alg
+                .as_ref()
+                .and_then(|alg| alg.parameters.as_ref())
+                .ok_or_else(|| {
+                    KipukaError::Auth(
+                        "CMP MAC protection: protectionAlg has no PBMParameter".into(),
+                    )
+                })?;
+
+            // The parameters field is an Element — DER-encode it to get the
+            // raw bytes, then parse as PBMParameter.
+            let pbm_param_bytes =
+                synta::ToDer::to_der(pbm_param_element).map_err(|e| {
+                    KipukaError::Auth(format!(
+                        "CMP MAC protection: failed to encode PBMParameter element: {e}"
+                    ))
+                })?;
+
+            let pbm = PBMParameter::from_der(&pbm_param_bytes).map_err(|e| {
+                KipukaError::Auth(format!(
+                    "CMP MAC protection: failed to parse PBMParameter: {e}"
+                ))
+            })?;
+
+            // 2. Look up the shared secret by reference number (sender field).
+            let secret_entry = cmp_config
+                .mac_secrets
+                .iter()
+                .find(|s| s.reference == cmp_req.sender)
+                .ok_or_else(|| {
+                    tracing::warn!(
+                        sender = %cmp_req.sender,
+                        "CMP MAC protection: no shared secret configured for sender"
+                    );
+                    KipukaError::Auth(format!(
+                        "CMP MAC protection: no shared secret found for reference '{}'",
+                        cmp_req.sender,
+                    ))
+                })?;
+
+            let shared_secret = hex::decode(&secret_entry.secret_hex).map_err(|e| {
+                KipukaError::Internal(format!(
+                    "CMP MAC secret for '{}' has invalid hex encoding: {e}",
+                    secret_entry.reference,
+                ))
+            })?;
+
+            // 3. Derive the MAC key via iterated OWF (RFC 4210 §5.1.3.1).
+            //
+            // basekey = OWF(secret || salt)
+            // for i in 1..iterationCount:
+            //     basekey = OWF(basekey)
+            let derived_key = derive_pbm_key(
+                &shared_secret,
+                pbm.salt.as_bytes(),
+                &pbm.owf,
+                pbm.iteration_count.as_i64().unwrap_or(1) as u32,
+            )?;
+
+            // 4. Compute HMAC over protected_bytes using the MAC algorithm
+            //    from PBMParameter and the derived key.
+            let computed_mac = compute_pbm_hmac(&derived_key, &protected_bytes, &pbm.mac)?;
+
+            // 5. Constant-time compare with the protection bits.
+            use subtle::ConstantTimeEq;
+            if computed_mac.ct_eq(&protection_bits).into() {
+                tracing::info!("CMP MAC protection verified successfully");
+            } else {
+                return Err(KipukaError::Auth(
+                    "CMP MAC protection verification failed: MAC mismatch".into(),
+                ));
+            }
         }
     }
 
@@ -1211,6 +1276,149 @@ async fn process_revocation_request(
     })
 }
 
+/// Derive a MAC key using the Password-Based MAC scheme (RFC 4210 §5.1.3.1).
+///
+/// The derivation is:
+///   1. `basekey = OWF(secret || salt)`
+///   2. For `i` in `1..iteration_count`: `basekey = OWF(basekey)`
+///
+/// where `OWF` is the one-way function specified in the `PBMParameter`.
+///
+/// The `owf_alg` parameter is the `AlgorithmIdentifier` from the `owf` field
+/// of the `PBMParameter`, whose `.algorithm` OID identifies the hash function.
+fn derive_pbm_key(
+    secret: &[u8],
+    salt: &[u8],
+    owf_alg: &synta_certificate::AlgorithmIdentifier<'_>,
+    iteration_count: u32,
+) -> Result<Vec<u8>, KipukaError> {
+    use sha2::{Digest, Sha256, Sha384, Sha512};
+
+    let owf_oid = owf_alg.algorithm.to_string();
+
+    // Map the OWF OID to a hash function.
+    //
+    // Common OIDs:
+    //   SHA-1:   1.3.14.3.2.26  (id-sha1, NOT recommended)
+    //   SHA-256: 2.16.840.1.101.3.4.2.1  (id-sha256)
+    //   SHA-384: 2.16.840.1.101.3.4.2.2  (id-sha384)
+    //   SHA-512: 2.16.840.1.101.3.4.2.3  (id-sha512)
+    //
+    // We intentionally exclude SHA-1 as it is deprecated for new deployments.
+    enum OwfKind {
+        Sha256,
+        Sha384,
+        Sha512,
+    }
+
+    let owf_kind = if owf_oid.contains("2.16.840.1.101.3.4.2.1") {
+        OwfKind::Sha256
+    } else if owf_oid.contains("2.16.840.1.101.3.4.2.2") {
+        OwfKind::Sha384
+    } else if owf_oid.contains("2.16.840.1.101.3.4.2.3") {
+        OwfKind::Sha512
+    } else {
+        return Err(KipukaError::Auth(format!(
+            "CMP PBM: unsupported OWF algorithm OID: {owf_oid}"
+        )));
+    };
+
+    if iteration_count == 0 {
+        return Err(KipukaError::Auth(
+            "CMP PBM: iteration count must be positive".into(),
+        ));
+    }
+
+    // Cap iteration count to prevent DoS via absurdly large values.
+    if iteration_count > 100_000 {
+        return Err(KipukaError::Auth(
+            "CMP PBM: iteration count exceeds maximum (100000)".into(),
+        ));
+    }
+
+    // Step 1: basekey = OWF(secret || salt)
+    let mut input = Vec::with_capacity(secret.len() + salt.len());
+    input.extend_from_slice(secret);
+    input.extend_from_slice(salt);
+
+    let mut key = match owf_kind {
+        OwfKind::Sha256 => Sha256::digest(&input).to_vec(),
+        OwfKind::Sha384 => Sha384::digest(&input).to_vec(),
+        OwfKind::Sha512 => Sha512::digest(&input).to_vec(),
+    };
+
+    // Step 2: iterate OWF (iteration_count - 1 more times,
+    // since first application was step 1).
+    for _ in 1..iteration_count {
+        key = match owf_kind {
+            OwfKind::Sha256 => Sha256::digest(&key).to_vec(),
+            OwfKind::Sha384 => Sha384::digest(&key).to_vec(),
+            OwfKind::Sha512 => Sha512::digest(&key).to_vec(),
+        };
+    }
+
+    Ok(key)
+}
+
+/// Compute an HMAC over `data` using the MAC algorithm from `PBMParameter`
+/// and the derived key.
+///
+/// The `mac_alg` parameter is the `AlgorithmIdentifier` from the `mac` field
+/// of the `PBMParameter`, whose `.algorithm` OID identifies the HMAC variant.
+fn compute_pbm_hmac(
+    key: &[u8],
+    data: &[u8],
+    mac_alg: &synta_certificate::AlgorithmIdentifier<'_>,
+) -> Result<Vec<u8>, KipukaError> {
+    use hmac::{Hmac, Mac};
+    use sha2::{Sha256, Sha384, Sha512};
+
+    let mac_oid = mac_alg.algorithm.to_string();
+
+    // Map the MAC OID to an HMAC variant.
+    //
+    // Common OIDs:
+    //   hmac-SHA256: 1.2.840.113549.2.9
+    //   hmac-SHA384: 1.2.840.113549.2.10
+    //   hmac-SHA512: 1.2.840.113549.2.11
+    //   hmac-SHA1:   1.2.840.113549.2.7  (deprecated)
+    //
+    // The OWF hash OIDs (id-sha256 etc.) are also accepted as MAC algorithm
+    // identifiers since some CMP implementations use them interchangeably.
+    if mac_oid.contains("1.2.840.113549.2.9")
+        || mac_oid.contains("2.16.840.1.101.3.4.2.1")
+    {
+        let mut mac =
+            Hmac::<Sha256>::new_from_slice(key).map_err(|e| {
+                KipukaError::Internal(format!("HMAC-SHA256 key init failed: {e}"))
+            })?;
+        mac.update(data);
+        Ok(mac.finalize().into_bytes().to_vec())
+    } else if mac_oid.contains("1.2.840.113549.2.10")
+        || mac_oid.contains("2.16.840.1.101.3.4.2.2")
+    {
+        let mut mac =
+            Hmac::<Sha384>::new_from_slice(key).map_err(|e| {
+                KipukaError::Internal(format!("HMAC-SHA384 key init failed: {e}"))
+            })?;
+        mac.update(data);
+        Ok(mac.finalize().into_bytes().to_vec())
+    } else if mac_oid.contains("1.2.840.113549.2.11")
+        || mac_oid.contains("2.16.840.1.101.3.4.2.3")
+    {
+        let mut mac =
+            Hmac::<Sha512>::new_from_slice(key).map_err(|e| {
+                KipukaError::Internal(format!("HMAC-SHA512 key init failed: {e}"))
+            })?;
+        mac.update(data);
+        Ok(mac.finalize().into_bytes().to_vec())
+    } else {
+        Err(KipukaError::Auth(format!(
+            "CMP PBM: unsupported MAC algorithm OID: {mac_oid}"
+        )))
+    }
+}
+
 /// Process a CMP general message (genm).
 ///
 /// Parses the `GenMsgContent` (SEQUENCE OF InfoTypeAndValue) and returns
@@ -1582,5 +1790,200 @@ mod tests {
         assert!(!der.is_empty());
         assert_eq!(der[0], 0x30); // SEQUENCE tag
         assert_eq!(der[1], 0x00); // length 0 = empty sequence
+    }
+
+    // ── MAC verification tests ──────────────────────────────────────────
+
+    /// Helper: build an AlgorithmIdentifier with the given OID components
+    /// and no parameters (NULL).
+    fn build_alg_id(oid_components: &[u32]) -> synta_certificate::AlgorithmIdentifier<'static> {
+        synta_certificate::AlgorithmIdentifier {
+            algorithm: synta::ObjectIdentifier::new(oid_components).unwrap(),
+            parameters: None,
+        }
+    }
+
+    /// Test derive_pbm_key with SHA-256 OWF and known inputs.
+    ///
+    /// Verifies that:
+    /// - Key derivation produces a 32-byte output (SHA-256 digest size)
+    /// - The output changes when any input (secret, salt, iteration count) changes
+    #[test]
+    fn pbm_key_derivation_sha256() {
+        // SHA-256 OID: 2.16.840.1.101.3.4.2.1
+        let owf_alg = build_alg_id(&[2, 16, 840, 1, 101, 3, 4, 2, 1]);
+        let secret = b"shared-secret";
+        let salt = b"random-salt-value";
+
+        let key = derive_pbm_key(secret, salt, &owf_alg, 1000).unwrap();
+
+        // SHA-256 produces 32 bytes.
+        assert_eq!(key.len(), 32);
+
+        // Verify determinism: same inputs → same key.
+        let key2 = derive_pbm_key(secret, salt, &owf_alg, 1000).unwrap();
+        assert_eq!(key, key2);
+
+        // Different secret → different key.
+        let key_diff_secret =
+            derive_pbm_key(b"other-secret", salt, &owf_alg, 1000).unwrap();
+        assert_ne!(key, key_diff_secret);
+
+        // Different salt → different key.
+        let key_diff_salt =
+            derive_pbm_key(secret, b"other-salt", &owf_alg, 1000).unwrap();
+        assert_ne!(key, key_diff_salt);
+
+        // Different iteration count → different key.
+        let key_diff_iter =
+            derive_pbm_key(secret, salt, &owf_alg, 500).unwrap();
+        assert_ne!(key, key_diff_iter);
+    }
+
+    /// Test that derive_pbm_key rejects zero iteration count.
+    #[test]
+    fn pbm_key_derivation_rejects_zero_iterations() {
+        let owf_alg = build_alg_id(&[2, 16, 840, 1, 101, 3, 4, 2, 1]);
+        let result = derive_pbm_key(b"secret", b"salt", &owf_alg, 0);
+        assert!(result.is_err());
+    }
+
+    /// Test that derive_pbm_key rejects excessively large iteration count.
+    #[test]
+    fn pbm_key_derivation_rejects_excessive_iterations() {
+        let owf_alg = build_alg_id(&[2, 16, 840, 1, 101, 3, 4, 2, 1]);
+        let result = derive_pbm_key(b"secret", b"salt", &owf_alg, 200_000);
+        assert!(result.is_err());
+    }
+
+    /// Test that derive_pbm_key rejects unsupported OWF algorithms.
+    #[test]
+    fn pbm_key_derivation_rejects_unknown_owf() {
+        // Use a bogus OID.
+        let owf_alg = build_alg_id(&[1, 2, 3, 4, 5, 6, 7]);
+        let result = derive_pbm_key(b"secret", b"salt", &owf_alg, 100);
+        assert!(result.is_err());
+    }
+
+    /// End-to-end MAC verification: derive key + compute HMAC + verify.
+    ///
+    /// This simulates the complete PBM verification flow:
+    /// 1. Derive the MAC key from a shared secret using SHA-256 OWF
+    /// 2. Compute HMAC-SHA-256 over the protected bytes
+    /// 3. Verify the MAC matches via constant-time comparison
+    #[test]
+    fn pbm_mac_verification_roundtrip() {
+        use subtle::ConstantTimeEq;
+
+        let secret = b"test-shared-secret";
+        let salt = b"test-salt-1234";
+        let iteration_count = 500u32;
+        let data = b"this is the protected header || body data";
+
+        // SHA-256 OWF
+        let owf_alg = build_alg_id(&[2, 16, 840, 1, 101, 3, 4, 2, 1]);
+        // HMAC-SHA-256 MAC (OID 1.2.840.113549.2.9)
+        let mac_alg = build_alg_id(&[1, 2, 840, 113549, 2, 9]);
+
+        // Derive key.
+        let key = derive_pbm_key(secret, salt, &owf_alg, iteration_count).unwrap();
+
+        // Compute MAC.
+        let mac = compute_pbm_hmac(&key, data, &mac_alg).unwrap();
+
+        // HMAC-SHA-256 produces 32 bytes.
+        assert_eq!(mac.len(), 32);
+
+        // Verify: same inputs produce the same MAC.
+        let mac2 = compute_pbm_hmac(&key, data, &mac_alg).unwrap();
+        assert!(bool::from(mac.ct_eq(&mac2)));
+    }
+
+    /// MAC verification with wrong secret produces a different MAC.
+    #[test]
+    fn pbm_mac_wrong_secret_differs() {
+        use subtle::ConstantTimeEq;
+
+        let salt = b"salt-value";
+        let iteration_count = 100u32;
+        let data = b"protected-message-bytes";
+
+        let owf_alg = build_alg_id(&[2, 16, 840, 1, 101, 3, 4, 2, 1]);
+        let mac_alg = build_alg_id(&[1, 2, 840, 113549, 2, 9]);
+
+        // Correct secret.
+        let key_correct =
+            derive_pbm_key(b"correct-secret", salt, &owf_alg, iteration_count).unwrap();
+        let mac_correct = compute_pbm_hmac(&key_correct, data, &mac_alg).unwrap();
+
+        // Wrong secret.
+        let key_wrong =
+            derive_pbm_key(b"wrong-secret", salt, &owf_alg, iteration_count).unwrap();
+        let mac_wrong = compute_pbm_hmac(&key_wrong, data, &mac_alg).unwrap();
+
+        // MACs must differ.
+        assert!(!bool::from(mac_correct.ct_eq(&mac_wrong)));
+    }
+
+    /// MAC verification rejects unsupported MAC algorithms.
+    #[test]
+    fn pbm_mac_rejects_unknown_mac_alg() {
+        let owf_alg = build_alg_id(&[2, 16, 840, 1, 101, 3, 4, 2, 1]);
+        let key = derive_pbm_key(b"secret", b"salt", &owf_alg, 100).unwrap();
+
+        // Use a bogus MAC OID.
+        let bad_mac_alg = build_alg_id(&[1, 2, 3, 4, 5, 6, 7]);
+        let result = compute_pbm_hmac(&key, b"data", &bad_mac_alg);
+        assert!(result.is_err());
+    }
+
+    /// Test SHA-384 OWF key derivation.
+    #[test]
+    fn pbm_key_derivation_sha384() {
+        // SHA-384 OID: 2.16.840.1.101.3.4.2.2
+        let owf_alg = build_alg_id(&[2, 16, 840, 1, 101, 3, 4, 2, 2]);
+        let key = derive_pbm_key(b"secret", b"salt", &owf_alg, 10).unwrap();
+
+        // SHA-384 produces 48 bytes.
+        assert_eq!(key.len(), 48);
+    }
+
+    /// Test SHA-512 OWF key derivation.
+    #[test]
+    fn pbm_key_derivation_sha512() {
+        // SHA-512 OID: 2.16.840.1.101.3.4.2.3
+        let owf_alg = build_alg_id(&[2, 16, 840, 1, 101, 3, 4, 2, 3]);
+        let key = derive_pbm_key(b"secret", b"salt", &owf_alg, 10).unwrap();
+
+        // SHA-512 produces 64 bytes.
+        assert_eq!(key.len(), 64);
+    }
+
+    /// Test HMAC-SHA-384 computation.
+    #[test]
+    fn pbm_mac_hmac_sha384() {
+        let owf_alg = build_alg_id(&[2, 16, 840, 1, 101, 3, 4, 2, 2]);
+        let key = derive_pbm_key(b"secret", b"salt", &owf_alg, 10).unwrap();
+
+        // HMAC-SHA-384 OID: 1.2.840.113549.2.10
+        let mac_alg = build_alg_id(&[1, 2, 840, 113549, 2, 10]);
+        let mac = compute_pbm_hmac(&key, b"test data", &mac_alg).unwrap();
+
+        // HMAC-SHA-384 produces 48 bytes.
+        assert_eq!(mac.len(), 48);
+    }
+
+    /// Test HMAC-SHA-512 computation.
+    #[test]
+    fn pbm_mac_hmac_sha512() {
+        let owf_alg = build_alg_id(&[2, 16, 840, 1, 101, 3, 4, 2, 3]);
+        let key = derive_pbm_key(b"secret", b"salt", &owf_alg, 10).unwrap();
+
+        // HMAC-SHA-512 OID: 1.2.840.113549.2.11
+        let mac_alg = build_alg_id(&[1, 2, 840, 113549, 2, 11]);
+        let mac = compute_pbm_hmac(&key, b"test data", &mac_alg).unwrap();
+
+        // HMAC-SHA-512 produces 64 bytes.
+        assert_eq!(mac.len(), 64);
     }
 }

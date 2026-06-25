@@ -135,6 +135,7 @@ tracing-subscriber.workspace = true
 native-ossl.workspace = true
 rand.workspace = true
 sha2.workspace = true
+hmac.workspace = true
 hex.workspace = true
 subtle.workspace = true
 thiserror.workspace = true
@@ -148,12 +149,14 @@ bytes.workspace = true
 parking_lot.workspace = true
 dashmap.workspace = true
 reqwest.workspace = true
+libgssapi = { version = "0.11", optional = true }
 
 [features]
 default = ["backend-sqlite"]
 backend-sqlite = []
 backend-postgres = []
 backend-mariadb = []
+gssapi = ["dep:libgssapi"]
 
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["rustls-tls", "json"] }  # json feature only for tests

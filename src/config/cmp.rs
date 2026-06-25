@@ -17,6 +17,10 @@ use serde::Deserialize;
 /// allow_rr = false
 /// allow_mac_protection = true
 /// mac_algorithm = "hmac-sha256"
+///
+/// [[cmp.mac_secrets]]
+/// reference = "client-ref-01"
+/// secret_hex = "deadbeef01020304"
 /// ```
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -52,6 +56,23 @@ pub struct CmpConfig {
     /// Certificate profile for cross-certification requests.
     #[serde(default)]
     pub reference_cert_profile: Option<String>,
+
+    /// Shared secrets for CMP MAC-based protection (RFC 4210 §5.1.3.1).
+    /// Each entry maps a reference number to a shared secret.
+    #[serde(default)]
+    pub mac_secrets: Vec<CmpMacSecret>,
+}
+
+/// A shared secret entry for CMP MAC-based protection.
+///
+/// The reference number identifies the secret and is matched against the
+/// CMP sender field.  The secret is hex-encoded for safe storage in TOML.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CmpMacSecret {
+    /// Reference number identifying this secret (matched against CMP sender field).
+    pub reference: String,
+    /// Hex-encoded shared secret bytes.
+    pub secret_hex: String,
 }
 
 fn default_true() -> bool {
@@ -73,6 +94,7 @@ impl Default for CmpConfig {
             allow_mac_protection: true,
             mac_algorithm: default_mac_algorithm(),
             reference_cert_profile: None,
+            mac_secrets: Vec::new(),
         }
     }
 }

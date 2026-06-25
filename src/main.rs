@@ -235,6 +235,12 @@ async fn run() -> Result<(), String> {
     )
     .await;
 
+    // ── GSSAPI credential ────────────────────────────────────────────────────
+    let (gss_cred, gssapi_require_crypto): (
+        Option<Arc<dyn std::any::Any + Send + Sync>>,
+        bool,
+    ) = init_gssapi_cred(&config)?;
+
     // ── Build AppState ───────────────────────────────────────────────────────
     let state = AppStateBuilder::new()
         .config(config.clone())
@@ -262,6 +268,14 @@ async fn run() -> Result<(), String> {
     } else {
         state
     };
+
+    let state = if let Some(cred) = gss_cred {
+        state.gss_cred(cred)
+    } else {
+        state
+    };
+
+    let state = state.gssapi_require_crypto(gssapi_require_crypto);
 
     let app_state = state.build();
 
@@ -475,5 +489,82 @@ fn spawn_background_tasks(state: AppState) {
                 let _ = &state;
             }
         });
+    }
+}
+
+/// Initialize a GSSAPI server credential if GSSAPI authentication is configured.
+///
+/// When the `gssapi` feature is enabled, this acquires a GSS credential from
+/// the system's Kerberos keytab (or gssproxy) for accepting SPNEGO tokens.
+/// Without the feature, a placeholder `()` credential is stored so the auth
+/// layer can distinguish "GSSAPI configured but no FFI" from "GSSAPI not
+/// configured at all".
+///
+/// Returns `(credential, require_crypto_verification)`.
+fn init_gssapi_cred(
+    config: &Config,
+) -> Result<(Option<Arc<dyn std::any::Any + Send + Sync>>, bool), String> {
+    let gssapi_cfg = match config.admin.as_ref().and_then(|a| a.gssapi.as_ref()) {
+        Some(cfg) => cfg,
+        None => return Ok((None, true)),
+    };
+
+    let require_crypto = gssapi_cfg.require_crypto_verification;
+
+    // Set the keytab environment variable before credential acquisition.
+    if let Some(ref keytab) = gssapi_cfg.keytab_file {
+        // SAFETY: This is safe to set before any multi-threaded GSS-API
+        // calls occur, as we are still in the single-threaded startup path.
+        unsafe {
+            std::env::set_var("KRB5_KTNAME", keytab);
+        }
+        tracing::info!(keytab = %keytab, "KRB5_KTNAME set for GSSAPI");
+    }
+
+    #[cfg(feature = "gssapi")]
+    {
+        tracing::info!(
+            service = %gssapi_cfg.service_name,
+            require_crypto = require_crypto,
+            "acquiring GSSAPI server credential via libgssapi"
+        );
+
+        let service_str = format!("{}@", gssapi_cfg.service_name);
+        let name = libgssapi::name::Name::new(
+            service_str.as_bytes(),
+            Some(libgssapi::oid::GSS_NT_HOSTBASED_SERVICE),
+        )
+        .map_err(|e| format!("GSS name creation failed for '{}': {e}", service_str))?;
+
+        let cred = libgssapi::credential::Cred::acquire(
+            Some(&name),
+            None, // default lifetime
+            libgssapi::credential::CredUsage::Accept,
+            None, // default mechanisms (includes SPNEGO + Kerberos)
+        )
+        .map_err(|e| format!("GSS credential acquisition failed: {e}"))?;
+
+        tracing::info!("GSSAPI server credential acquired successfully");
+        #[allow(clippy::needless_return)]
+        return Ok((Some(Arc::new(cred)), require_crypto));
+    }
+
+    #[cfg(not(feature = "gssapi"))]
+    {
+        if require_crypto {
+            tracing::warn!(
+                "GSSAPI is configured with require_crypto_verification=true but the `gssapi` \
+                 feature is not compiled in.  GSSAPI authentication will be rejected at runtime.  \
+                 Either compile with `--features gssapi` or set require_crypto_verification=false."
+            );
+        } else {
+            tracing::info!(
+                "GSSAPI configured in structural-parsing mode (require_crypto_verification=false). \
+                 Kerberos tickets will NOT be cryptographically verified."
+            );
+        }
+
+        // Store a placeholder so the auth layer knows GSSAPI is configured.
+        Ok((Some(Arc::new(()) as Arc<dyn std::any::Any + Send + Sync>), require_crypto))
     }
 }

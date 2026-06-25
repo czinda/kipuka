@@ -3,6 +3,12 @@
 //! Implements the `Authorization: Negotiate` (SPNEGO) authentication
 //! mechanism, following the same pattern as Akamu's GSSAPI support.
 //!
+//! When the `gssapi` feature is enabled, Kerberos tickets are
+//! cryptographically verified via the system's GSS-API library
+//! (`libgssapi` crate wrapping `libgssapi_krb5.so`).  Without the
+//! feature, only structural parsing of the SPNEGO token is available
+//! (extracting the service name from the cleartext ticket fields).
+//!
 //! Channel binding to the TLS session (tls-server-end-point, RFC 5929)
 //! is supported to prevent credential forwarding attacks.
 
@@ -64,20 +70,20 @@ pub async fn try_extract_gssapi(
     };
 
     // Safety gate: reject structural-only parsing when crypto verification
-    // is required (the default).  Without libgssapi integration, we can
-    // only extract the service name (sname) from the cleartext portion of
-    // the Kerberos ticket — the client principal is encrypted and cannot
-    // be authenticated.
+    // is required (the default) AND the `gssapi` feature is not compiled in.
+    // When the `gssapi` feature IS enabled, we use the real GSS-API library
+    // to verify tickets cryptographically, so no gate is needed.
+    #[cfg(not(feature = "gssapi"))]
     if app.gssapi_require_crypto {
         warn!(
             "GSSAPI authentication rejected: `require_crypto_verification` is true (the default) \
-             but libgssapi integration is not compiled in.  Structural parsing of Kerberos tokens \
-             cannot verify client identity.  Set `require_crypto_verification = false` in \
-             [admin.gssapi] to allow structural-only parsing for development/logging."
+             but the `gssapi` feature is not compiled in.  Structural parsing of Kerberos tokens \
+             cannot verify client identity.  Either compile with `--features gssapi` or set \
+             `require_crypto_verification = false` in [admin.gssapi] for development/logging."
         );
         return Some(Err((
             StatusCode::FORBIDDEN,
-            "GSSAPI authentication requires libgssapi integration; \
+            "GSSAPI authentication requires the `gssapi` feature; \
              structural-only parsing is disabled by default",
         )
             .into_response()));
@@ -115,8 +121,9 @@ pub async fn try_extract_gssapi(
     // block a tokio worker thread.
     let binding_owned = channel_binding;
     let token_owned = token_bytes;
+    let require_crypto = app.gssapi_require_crypto;
     let result = tokio::task::spawn_blocking(move || {
-        negotiate_accept(&gss_cred, &token_owned, binding_owned.as_deref())
+        negotiate_accept(&gss_cred, &token_owned, binding_owned.as_deref(), require_crypto)
     })
     .await;
 
@@ -199,9 +206,17 @@ enum NegotiateError {
 /// Synchronous SPNEGO token validation.
 ///
 /// This function wraps the GSS-API context establishment and is designed
-/// to run inside `spawn_blocking`.  It uses `synta_krb5` for structural
-/// parsing of the SPNEGO/Kerberos token to extract the client principal
-/// name for logging and audit purposes.
+/// to run inside `spawn_blocking`.
+///
+/// When the `gssapi` feature is enabled and `require_crypto` is `true`,
+/// the token is verified cryptographically via `gss_accept_sec_context`
+/// (libgssapi FFI), producing a verified client principal and an optional
+/// mutual-authentication output token.
+///
+/// When `require_crypto` is `false` (or the `gssapi` feature is not
+/// compiled in), the function falls back to structural parsing via
+/// `synta_krb5` — extracting the service name (sname) from the cleartext
+/// portion of the Kerberos ticket.  This cannot authenticate the client.
 ///
 /// ## Token structure (RFC 4178 / RFC 4121)
 ///
@@ -218,12 +233,105 @@ enum NegotiateError {
 /// ```text
 /// 60 <len> 06 09 <KRB5 OID> 01 00 <AP-REQ DER>
 /// ```
-///
-/// We parse down to the AP-REQ to extract the client principal from the
-/// ticket's `sname` field.  Cryptographic validation (decrypting the
-/// ticket, verifying the authenticator) requires the server keytab and
-/// is delegated to the system's GSS-API library.
 fn negotiate_accept(
+    cred: &dyn std::any::Any,
+    token: &[u8],
+    channel_binding: Option<&[u8]>,
+    require_crypto: bool,
+) -> Result<NegotiateSuccess, NegotiateError> {
+    // ── Cryptographic verification via libgssapi ─────────────────────────
+    #[cfg(feature = "gssapi")]
+    if require_crypto {
+        return verify_gssapi_token(cred, token, channel_binding);
+    }
+
+    // ── Structural-only fallback (development / logging mode) ────────────
+    let _ = require_crypto; // suppress unused-variable warning without gssapi feature
+    negotiate_accept_structural(cred, token, channel_binding)
+}
+
+/// Cryptographic GSSAPI verification via `gss_accept_sec_context`.
+///
+/// The `cred` parameter is expected to be a `libgssapi::credential::Cred`
+/// stored inside `Arc<dyn Any>`.  We clone it (reference-counted handle)
+/// for each context establishment.
+///
+/// Returns the authenticated client principal and an optional output token
+/// for mutual authentication.
+#[cfg(feature = "gssapi")]
+fn verify_gssapi_token(
+    cred: &dyn std::any::Any,
+    token: &[u8],
+    channel_binding: Option<&[u8]>,
+) -> Result<NegotiateSuccess, NegotiateError> {
+    use libgssapi::context::{SecurityContext, ServerCtx};
+    use libgssapi::credential::Cred;
+
+    // Downcast to the actual Cred type stored at startup.
+    let gss_cred = cred
+        .downcast_ref::<Cred>()
+        .ok_or_else(|| {
+            NegotiateError::Failed(
+                "internal error: GSS credential has wrong type (expected libgssapi::Cred)".into(),
+            )
+        })?;
+
+    // Clone the credential (reference-counted GSS handle) for this context.
+    let cred_clone = gss_cred.clone();
+
+    let mut ctx = ServerCtx::new(Some(cred_clone));
+
+    // Process the client's token.  `step()` returns `Some(tok)` when a
+    // response token must be sent back (mutual auth), or `None` when the
+    // context is fully established from the server's perspective.
+    let out_buf = ctx
+        .step(token, channel_binding)
+        .map_err(|e| NegotiateError::Failed(format!("gss_accept_sec_context failed: {e}")))?;
+
+    if ctx.is_complete() {
+        // Context established — extract the authenticated client principal.
+        let client_name = ctx.source_name().map_err(|e| {
+            NegotiateError::Failed(format!("failed to retrieve client principal: {e}"))
+        })?;
+
+        let principal = client_name.to_string();
+        let out_token = out_buf.map(|b| b.to_vec()).unwrap_or_default();
+
+        debug!(
+            principal = %principal,
+            has_output_token = !out_token.is_empty(),
+            "GSSAPI cryptographic verification succeeded"
+        );
+
+        Ok(NegotiateSuccess {
+            principal,
+            out_token,
+        })
+    } else {
+        // Multi-leg negotiation: return the continuation token.
+        let out_token = out_buf
+            .map(|b| b.to_vec())
+            .unwrap_or_default();
+
+        if out_token.is_empty() {
+            return Err(NegotiateError::Failed(
+                "GSS context incomplete but no output token produced".into(),
+            ));
+        }
+
+        Err(NegotiateError::Continue(out_token))
+    }
+}
+
+/// Structural-only SPNEGO parsing (no cryptographic verification).
+///
+/// Extracts the service principal name (sname) from the cleartext portion
+/// of the Kerberos ticket.  The client principal is inside the encrypted
+/// ticket data and cannot be retrieved without a keytab.
+///
+/// **Security warning:** The returned identity is prefixed with
+/// `krb5-sname:` to indicate it is NOT a verified client identity.
+fn negotiate_accept_structural(
     _cred: &dyn std::any::Any,
     token: &[u8],
     channel_binding: Option<&[u8]>,
@@ -234,7 +342,7 @@ fn negotiate_accept(
         "GSSAPI structural parsing only: Kerberos tickets are NOT cryptographically verified. \
          The extracted identity is the service name (sname) from the cleartext portion of the \
          ticket, not the authenticated client principal.  The client principal is inside the \
-         encrypted ticket data and requires libgssapi with a valid keytab to decrypt."
+         encrypted ticket data and requires the `gssapi` feature with a valid keytab to decrypt."
     );
 
     let _ = channel_binding;
