@@ -73,11 +73,11 @@ struct EnrollmentResponse {
 
 #[derive(Deserialize)]
 struct EnrollmentEntry {
-    #[serde(alias = "requestID", alias = "requestId", alias = "RequestID")]
+    #[serde(rename = "requestId")]
     request_id: Option<String>,
-    #[serde(alias = "requestStatus", alias = "RequestStatus")]
+    #[serde(rename = "requestStatus")]
     request_status: Option<String>,
-    #[serde(default, alias = "certId", alias = "CertId")]
+    #[serde(default, rename = "certId")]
     cert_id: Option<String>,
 }
 
