@@ -21,6 +21,7 @@ repository = "https://codeberg.org/czinda/kipuka"
 # ASN.1 / X.509 / CMS (Synta)
 synta = { git = "https://codeberg.org/abbra/synta.git", branch = "main" }
 synta-certificate = { git = "https://codeberg.org/abbra/synta.git", branch = "main", features = ["openssl"] }
+synta-cmc = { git = "https://codeberg.org/czinda/synta.git", branch = "feature/synta-cmc" }
 
 # Web framework
 axum = { version = "0.8", features = ["macros"] }
@@ -106,6 +107,7 @@ kipuka-otp.workspace = true
 kipuka-util.workspace = true
 synta.workspace = true
 synta-certificate.workspace = true
+synta-cmc.workspace = true
 axum.workspace = true
 axum-extra.workspace = true
 tower.workspace = true
