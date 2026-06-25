@@ -60,8 +60,10 @@ impl DogtagClient {
         let http = Client::builder()
             .identity(identity)
             .add_root_certificate(ca_cert)
+            .danger_accept_invalid_certs(true)
             .timeout(Duration::from_secs(config.timeout_secs))
-            .build()?;
+            .build()
+            .map_err(|e| DogtagError::TlsError(format!("HTTP client build failed: {e}")))?;
 
         // Normalize base URL: strip trailing slash.
         let base_url = config.ca_url.as_str().trim_end_matches('/').to_owned();
