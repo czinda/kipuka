@@ -15,7 +15,7 @@ inspired by the [Akamu](https://codeberg.org/abbra/akamu) ACME server.
 | **Container image** | `registry.kipuka.dev/heebus/kipuka` |
 | **API docs** | [kipuka.dev/api/](https://kipuka.dev/api/) |
 | **Project site** | [kipuka.dev](https://kipuka.dev) |
-| **CI/CD** | GitLab CI on `gitlab.heebh.st` and `gitlab.cee.redhat.com` |
+| **CI/CD** | GitLab CI on [codeberg.org](https://codeberg.org/czinda/kipuka) and `gitlab.cee.redhat.com` |
 
 ## Features
 
@@ -107,11 +107,36 @@ key = "/etc/kipuka/ca.key"
 
 ## Compliance
 
+### Protocol Standards
+
 | Standard | Scope | Status |
 |----------|-------|--------|
-| RFC 7030 | EST protocol | Core implementation |
+| RFC 7030 | EST (Enrollment over Secure Transport) | Core implementation |
 | RFC 8951 | EST clarifications | Implemented |
-| RFC 5272 | CMC (Full) | /fullcmc endpoint |
+| RFC 5272 | CMC (Certificate Management over CMS) | /fullcmc endpoint via synta-cmc |
+| RFC 6402 | CMC Updates | Implemented |
+| RFC 5273 | CMC Transport Protocols | HTTP transport |
+| RFC 5274 | CMC Compliance Requirements | Per-agent-type validation |
+| RFC 5652 | CMS (Cryptographic Message Syntax) | SignedData, EnvelopedData |
+| RFC 4211 | CRMF (Certificate Request Message Format) | In TaggedRequest |
+| RFC 2986 | PKCS#10 (Certification Request Syntax) | Primary CSR format |
+| RFC 5280 | X.509 PKI Certificate and CRL Profile | Via synta-certificate |
+
+### Algorithm and Security Standards
+
+| Standard | Scope | Status |
+|----------|-------|--------|
+| RFC 5753 | ECC Algorithms in CMS | ECDSA/ECDH OIDs |
+| RFC 5754 | SHA-2 Algorithms with CMS | Algorithm conventions |
+| RFC 5816 | ESSCertIDv2 for CMS | Signing cert attribute |
+| RFC 8603 | CNSA Suite Profile | Profile validation |
+| RFC 9688/9882/9936 | Post-Quantum CMS (ML-DSA/ML-KEM) | Algorithm pairing validation |
+| RFC 7906 | NSA CMS Key Management Attributes | Key provenance OIDs |
+
+### Compliance Frameworks
+
+| Standard | Scope | Status |
+|----------|-------|--------|
 | CA/B Forum BR | Certificate profiles, validity | Enforced |
 | NIAP CA PP v2.0 | Protection Profile | Mapped ([docs](docs/compliance/niap-ca-pp.md)) |
 | FIPS 140-3 | Cryptographic modules | Via HSM integration |
