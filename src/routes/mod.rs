@@ -15,6 +15,7 @@ pub mod admin;
 pub mod cacerts;
 pub mod cmp;
 pub mod cms_est;
+pub mod coap;
 pub mod csrattrs;
 pub mod est;
 pub mod fullcmc;

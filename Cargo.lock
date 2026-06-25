@@ -1289,6 +1289,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "indexmap",
+ "kipuka-coap",
  "kipuka-dogtag",
  "kipuka-est",
  "kipuka-hsm",
@@ -1328,7 +1329,9 @@ name = "kipuka-coap"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "openssl",
  "serde",
+ "synta-certificate 0.2.6 (git+https://codeberg.org/abbra/synta.git?branch=main)",
  "thiserror",
  "tokio",
  "tracing",

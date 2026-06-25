@@ -24,6 +24,8 @@ pub mod content_format;
 pub mod dtls;
 pub mod server;
 
+pub use server::{CoapDtlsServer, EstHandler};
+
 use thiserror::Error;
 
 /// Errors arising from CoAP/EST-coaps protocol handling.

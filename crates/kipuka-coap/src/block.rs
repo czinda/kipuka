@@ -296,7 +296,7 @@ impl BlockDisassembler {
         if self.payload.is_empty() {
             return 1; // Empty payload still requires one (empty) block
         }
-        ((self.payload.len() + block_size - 1) / block_size) as u32
+        self.payload.len().div_ceil(block_size) as u32
     }
 
     /// Returns the full payload length in bytes.

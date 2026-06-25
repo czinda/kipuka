@@ -142,7 +142,7 @@ pub async fn get_csrattrs(
 /// Each configured OID string is resolved against `synta_certificate::oids`
 /// well-known constants where possible, falling back to dotted-decimal
 /// parsing for custom OIDs.
-fn encode_csr_attrs(oid_strings: &[String]) -> Result<Vec<u8>, KipukaError> {
+pub(crate) fn encode_csr_attrs(oid_strings: &[String]) -> Result<Vec<u8>, KipukaError> {
     use synta::{Encoding, Encoder, ObjectIdentifier, Tag, tag};
 
     if oid_strings.is_empty() {

@@ -1,9 +1,8 @@
 //! DTLS session management for EST-coaps transport security.
 //!
 //! RFC 9483 §5 mandates DTLS to secure all EST-coaps exchanges. This module
-//! provides session tracking and caching abstractions that a concrete DTLS
-//! implementation (e.g., OpenSSL, mbedTLS, or `rustls` with DTLS support)
-//! would integrate with.
+//! provides session tracking, caching abstractions, and a concrete OpenSSL-based
+//! DTLS implementation using memory BIOs for UDP transport.
 //!
 //! # Session Resumption
 //!
@@ -14,7 +13,18 @@
 //!
 //! The [`DtlsSessionCache`] provides a bounded, TTL-expiring cache of
 //! established sessions keyed by peer address.
+//!
+//! # OpenSSL DTLS Integration
+//!
+//! The [`DtlsContext`] wraps an `openssl::ssl::SslContext` configured for
+//! DTLS server operation with optional client certificate authentication.
+//! [`DtlsConnection`] handles individual peer sessions using memory BIOs
+//! for non-blocking UDP I/O.
 
+use crate::CoapError;
+use openssl::pkey::PKey;
+use openssl::ssl::{SslContext, SslMethod, SslVerifyMode};
+use openssl::x509::X509;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
@@ -127,17 +137,14 @@ impl DtlsSession {
 
     /// Extracts client certificate information from this session.
     ///
+    /// Parses the DER-encoded client certificate using `synta_certificate`
+    /// to extract the subject DN (RFC 4514 string form) and serial number.
+    ///
     /// Returns `None` if no client certificate was presented or if the
     /// certificate cannot be parsed.
     pub fn client_cert_info(&self) -> Option<ClientCertInfo> {
         let der = self.client_cert.as_ref()?;
-        // In production, this would parse the DER certificate to extract
-        // the subject DN and serial number. For now, return the raw bytes.
-        Some(ClientCertInfo {
-            subject_dn: String::new(),
-            serial: Vec::new(),
-            der_bytes: der.clone(),
-        })
+        ClientCertInfo::from_der(der)
     }
 }
 
@@ -148,13 +155,31 @@ impl DtlsSession {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientCertInfo {
     /// Subject distinguished name (RFC 4514 string form).
-    ///
-    /// Empty if the DN could not be parsed from the DER certificate.
     pub subject_dn: String,
     /// Certificate serial number (big-endian unsigned integer).
     pub serial: Vec<u8>,
     /// Full DER-encoded certificate.
     pub der_bytes: Vec<u8>,
+}
+
+impl ClientCertInfo {
+    /// Parses a DER-encoded X.509 certificate and extracts identity fields.
+    ///
+    /// Uses `synta_certificate::Certificate::from_der()` for ASN.1 parsing
+    /// and `synta_certificate::format_dn()` for RFC 4514 DN formatting.
+    ///
+    /// Returns `None` if the DER bytes cannot be parsed as a valid certificate.
+    pub fn from_der(der: &[u8]) -> Option<Self> {
+        let cert = synta_certificate::Certificate::from_der(der).ok()?;
+        let subject_dn = synta_certificate::format_dn(cert.tbs_certificate.subject.0);
+        let serial = cert.tbs_certificate.serial_number.as_bytes().to_vec();
+
+        Some(Self {
+            subject_dn,
+            serial,
+            der_bytes: der.to_vec(),
+        })
+    }
 }
 
 /// A bounded, TTL-expiring cache of DTLS sessions keyed by peer address.
@@ -204,10 +229,10 @@ impl DtlsSessionCache {
             self.cleanup_expired();
 
             // If still full after cleanup, evict the oldest session.
-            if self.sessions.len() >= self.max_sessions {
-                if let Some(oldest_addr) = self.oldest_session_addr() {
-                    self.sessions.remove(&oldest_addr);
-                }
+            if self.sessions.len() >= self.max_sessions
+                && let Some(oldest_addr) = self.oldest_session_addr()
+            {
+                self.sessions.remove(&oldest_addr);
             }
         }
 
@@ -220,11 +245,11 @@ impl DtlsSessionCache {
     /// Expired sessions are removed on access.
     pub fn get(&mut self, peer_addr: &SocketAddr) -> Option<&DtlsSession> {
         // Check expiry and remove if stale.
-        if let Some(session) = self.sessions.get(peer_addr) {
-            if session.is_expired(self.ttl) {
-                self.sessions.remove(peer_addr);
-                return None;
-            }
+        if let Some(session) = self.sessions.get(peer_addr)
+            && session.is_expired(self.ttl)
+        {
+            self.sessions.remove(peer_addr);
+            return None;
         }
 
         self.sessions.get(peer_addr)
@@ -277,6 +302,194 @@ impl DtlsSessionCache {
     }
 }
 
+/// OpenSSL DTLS server context for EST-coaps.
+///
+/// Wraps an `openssl::ssl::SslContext` configured with the server certificate,
+/// private key, and trusted CA for optional client certificate verification.
+///
+/// RFC 9483 §5 requires DTLS for all EST-coaps exchanges. The server presents
+/// its certificate during the handshake and optionally requests a client
+/// certificate for mTLS-based enrollment authentication.
+///
+/// # Example
+///
+/// ```no_run
+/// # use kipuka_coap::dtls::DtlsContext;
+/// let cert_pem = std::fs::read("server.crt").unwrap();
+/// let key_pem = std::fs::read("server.key").unwrap();
+/// let ca_pem = std::fs::read("ca.crt").unwrap();
+/// let ctx = DtlsContext::new(&cert_pem, &key_pem, &ca_pem).unwrap();
+/// ```
+pub struct DtlsContext {
+    ctx: SslContext,
+}
+
+impl DtlsContext {
+    /// Creates a new DTLS server context.
+    ///
+    /// # Arguments
+    ///
+    /// * `cert_pem` - PEM-encoded server certificate.
+    /// * `key_pem` - PEM-encoded server private key.
+    /// * `ca_pem` - PEM-encoded CA certificate for verifying client certificates.
+    ///
+    /// The context is configured to request (but not require) a client certificate
+    /// during the DTLS handshake. EST operations that need mTLS authentication
+    /// should check `DtlsConnection::client_cert()` after the handshake completes.
+    pub fn new(cert_pem: &[u8], key_pem: &[u8], ca_pem: &[u8]) -> Result<Self, CoapError> {
+        let mut ctx_builder = SslContext::builder(SslMethod::dtls()).map_err(|e| {
+            CoapError::DtlsError(format!("Failed to create DTLS context: {e}"))
+        })?;
+
+        let cert = X509::from_pem(cert_pem).map_err(|e| {
+            CoapError::DtlsError(format!("Failed to parse server certificate PEM: {e}"))
+        })?;
+        ctx_builder.set_certificate(&cert).map_err(|e| {
+            CoapError::DtlsError(format!("Failed to set server certificate: {e}"))
+        })?;
+
+        let key = PKey::private_key_from_pem(key_pem).map_err(|e| {
+            CoapError::DtlsError(format!("Failed to parse server private key PEM: {e}"))
+        })?;
+        ctx_builder.set_private_key(&key).map_err(|e| {
+            CoapError::DtlsError(format!("Failed to set server private key: {e}"))
+        })?;
+
+        ctx_builder.check_private_key().map_err(|e| {
+            CoapError::DtlsError(format!("Server certificate/key mismatch: {e}"))
+        })?;
+
+        // Request client certificate but do not require it — EST operations
+        // that need mTLS will check the certificate after handshake.
+        ctx_builder.set_verify(SslVerifyMode::PEER);
+
+        // Load the CA certificate for client certificate verification.
+        let ca = X509::from_pem(ca_pem).map_err(|e| {
+            CoapError::DtlsError(format!("Failed to parse CA certificate PEM: {e}"))
+        })?;
+        ctx_builder.cert_store_mut().add_cert(ca).map_err(|e| {
+            CoapError::DtlsError(format!("Failed to add CA to trust store: {e}"))
+        })?;
+
+        Ok(Self {
+            ctx: ctx_builder.build(),
+        })
+    }
+
+    /// Returns a reference to the underlying `SslContext`.
+    ///
+    /// Used by [`DtlsConnection`] to create per-peer SSL instances.
+    pub fn ssl_context(&self) -> &SslContext {
+        &self.ctx
+    }
+}
+
+impl std::fmt::Debug for DtlsContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DtlsContext")
+            .field("ctx", &"<SslContext>")
+            .finish()
+    }
+}
+
+/// An established DTLS connection to a single CoAP peer.
+///
+/// Wraps an OpenSSL `Ssl` instance with memory BIOs for non-blocking UDP I/O.
+/// The connection tracks the peer address and the client certificate presented
+/// during the DTLS handshake (if any).
+///
+/// # Memory BIO Architecture
+///
+/// OpenSSL's DTLS API uses BIO (Basic I/O) abstractions. For UDP transport,
+/// we use memory BIOs instead of socket BIOs:
+///
+/// 1. Write received UDP datagram into the read BIO.
+/// 2. Call `SSL_read` to get decrypted application data.
+/// 3. Call `SSL_write` to encrypt response data.
+/// 4. Read from the write BIO to get the encrypted datagram.
+/// 5. Send the encrypted datagram via UDP socket.
+#[derive(Debug)]
+pub struct DtlsConnection {
+    /// OpenSSL SSL instance for this peer.
+    ssl: openssl::ssl::Ssl,
+    /// Peer network address.
+    peer_addr: SocketAddr,
+    /// Client certificate extracted after successful handshake.
+    client_cert: Option<ClientCertInfo>,
+    /// Whether the DTLS handshake has completed.
+    handshake_complete: bool,
+}
+
+impl DtlsConnection {
+    /// Creates a new DTLS connection for the given peer.
+    ///
+    /// The connection is in the pre-handshake state. Call [`accept_handshake`]
+    /// to begin the DTLS server-side handshake.
+    pub fn new(ctx: &DtlsContext, peer_addr: SocketAddr) -> Result<Self, CoapError> {
+        let ssl = openssl::ssl::Ssl::new(ctx.ssl_context()).map_err(|e| {
+            CoapError::DtlsError(format!("Failed to create SSL instance: {e}"))
+        })?;
+
+        Ok(Self {
+            ssl,
+            peer_addr,
+            client_cert: None,
+            handshake_complete: false,
+        })
+    }
+
+    /// Returns the peer network address.
+    pub fn peer_addr(&self) -> SocketAddr {
+        self.peer_addr
+    }
+
+    /// Returns client certificate information, if a client certificate was
+    /// presented and successfully parsed during the DTLS handshake.
+    pub fn client_cert(&self) -> Option<&ClientCertInfo> {
+        self.client_cert.as_ref()
+    }
+
+    /// Returns whether the DTLS handshake has completed successfully.
+    pub fn is_handshake_complete(&self) -> bool {
+        self.handshake_complete
+    }
+
+    /// Extracts and caches the client certificate from the SSL session.
+    ///
+    /// Called after the handshake completes to parse the peer certificate
+    /// (if any) into a [`ClientCertInfo`].
+    fn extract_client_cert(&mut self) {
+        if let Some(peer_cert) = self.ssl.peer_certificate()
+            && let Ok(der) = peer_cert.to_der()
+        {
+            self.client_cert = ClientCertInfo::from_der(&der);
+        }
+    }
+
+    /// Marks the handshake as complete and extracts the client certificate.
+    ///
+    /// This should be called by the server loop once the DTLS handshake
+    /// has finished successfully.
+    pub fn complete_handshake(&mut self) {
+        self.handshake_complete = true;
+        self.extract_client_cert();
+    }
+
+    /// Returns a reference to the underlying `Ssl` instance.
+    ///
+    /// Used by the server implementation for memory BIO operations.
+    pub fn ssl(&self) -> &openssl::ssl::Ssl {
+        &self.ssl
+    }
+
+    /// Returns a mutable reference to the underlying `Ssl` instance.
+    ///
+    /// Used by the server implementation for memory BIO operations.
+    pub fn ssl_mut(&mut self) -> &mut openssl::ssl::Ssl {
+        &mut self.ssl
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -304,14 +517,81 @@ mod tests {
     }
 
     #[test]
-    fn test_session_with_client_cert() {
+    fn test_session_with_client_cert_raw_access() {
         let addr = test_addr(5683);
         let cert_der = vec![0x30, 0x82, 0x01, 0x00];
         let session =
             DtlsSession::with_client_cert(vec![1, 2, 3], addr, DtlsVersion::V1_2, cert_der.clone());
 
+        // Raw DER bytes are always accessible.
         assert_eq!(session.client_cert(), Some(cert_der.as_slice()));
-        assert!(session.client_cert_info().is_some());
+        // But parsing dummy bytes as an X.509 certificate correctly returns None.
+        assert!(session.client_cert_info().is_none());
+    }
+
+    #[test]
+    fn test_session_with_real_client_cert() {
+        // Generate a real self-signed certificate for testing.
+        use openssl::asn1::Asn1Time;
+        use openssl::bn::BigNum;
+        use openssl::hash::MessageDigest;
+        use openssl::pkey::PKey;
+        use openssl::rsa::Rsa;
+        use openssl::x509::{X509Builder, X509NameBuilder};
+
+        let rsa = Rsa::generate(2048).unwrap();
+        let key = PKey::from_rsa(rsa).unwrap();
+
+        let mut name_builder = X509NameBuilder::new().unwrap();
+        name_builder
+            .append_entry_by_text("CN", "test-client")
+            .unwrap();
+        let name = name_builder.build();
+
+        let mut builder = X509Builder::new().unwrap();
+        builder.set_version(2).unwrap();
+        builder.set_subject_name(&name).unwrap();
+        builder.set_issuer_name(&name).unwrap();
+        builder.set_pubkey(&key).unwrap();
+
+        let serial = BigNum::from_u32(42).unwrap();
+        builder
+            .set_serial_number(&serial.to_asn1_integer().unwrap())
+            .unwrap();
+
+        let not_before = Asn1Time::days_from_now(0).unwrap();
+        let not_after = Asn1Time::days_from_now(365).unwrap();
+        builder.set_not_before(&not_before).unwrap();
+        builder.set_not_after(&not_after).unwrap();
+
+        builder.sign(&key, MessageDigest::sha256()).unwrap();
+        let cert = builder.build();
+        let cert_der = cert.to_der().unwrap();
+
+        let addr = test_addr(5683);
+        let session = DtlsSession::with_client_cert(
+            vec![1, 2, 3],
+            addr,
+            DtlsVersion::V1_2,
+            cert_der.clone(),
+        );
+
+        assert_eq!(session.client_cert(), Some(cert_der.as_slice()));
+        let info = session.client_cert_info().unwrap();
+        assert!(
+            info.subject_dn.contains("test-client"),
+            "Expected subject DN to contain 'test-client', got: {}",
+            info.subject_dn
+        );
+        assert!(!info.serial.is_empty());
+        assert_eq!(info.der_bytes, cert_der);
+    }
+
+    #[test]
+    fn test_client_cert_info_from_der_invalid() {
+        // Invalid DER should return None, not panic.
+        assert!(ClientCertInfo::from_der(&[0x00, 0x01]).is_none());
+        assert!(ClientCertInfo::from_der(&[]).is_none());
     }
 
     #[test]
