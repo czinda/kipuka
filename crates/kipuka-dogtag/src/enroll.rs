@@ -122,10 +122,16 @@ impl DogtagClient {
             renewal: false,
             input: vec![ProfileInput {
                 class_id: "certReqInputImpl".to_owned(),
-                attributes: vec![ProfileAttribute {
-                    name: "cert_request".to_owned(),
-                    value: csr_pem.to_owned(),
-                }],
+                attributes: vec![
+                    ProfileAttribute {
+                        name: "cert_request_type".to_owned(),
+                        value: "pkcs10".to_owned(),
+                    },
+                    ProfileAttribute {
+                        name: "cert_request".to_owned(),
+                        value: csr_pem.to_owned(),
+                    },
+                ],
             }],
         };
 
