@@ -141,29 +141,94 @@ impl CaBackendPool {
         }))
     }
 
-    /// Send a CSR to a specific CA backend.
+    /// Send a CSR to a specific CA backend via EST simple enrollment.
     ///
-    /// TODO: implement actual HTTP/CMP request to the CA endpoint.
-    /// For local CAs, this calls `ca::issue::issue_certificate` directly.
+    /// For remote CAs, issues an HTTP POST to the CA's EST endpoint
+    /// (`/.well-known/est/simpleenroll`) per RFC 7030 §4.2.
+    /// The CSR is base64-encoded (DER) and the response is a base64-encoded
+    /// PKCS#7 (`application/pkcs7-mime`) containing the issued certificate.
     async fn send_to_ca(
         &self,
         ca_id: &CaId,
         endpoint: &str,
-        _csr_der: &[u8],
-        _profile: &str,
+        csr_der: &[u8],
+        profile: &str,
     ) -> Result<Vec<u8>, CaBackendError> {
+        use base64::Engine as _;
+
         // Apply request timeout.
         let result = tokio::time::timeout(self.config.request_timeout, async {
-            // TODO: for remote CAs, issue an HTTP request to `endpoint`.
-            // For local CAs, call the issuance pipeline directly.
             debug!(
                 ca_id = %ca_id,
                 endpoint = %endpoint,
-                "sending enrollment request (integration pending)"
+                profile = %profile,
+                csr_len = csr_der.len(),
+                "sending EST simpleenroll request to remote CA"
             );
 
-            // Placeholder: simulate successful issuance.
-            Ok::<Vec<u8>, CaBackendError>(vec![0x30, 0x00])
+            // 1. Base64-encode the DER CSR (RFC 7030 §4.2: base64 of DER PKCS#10).
+            let csr_b64 = base64::engine::general_purpose::STANDARD.encode(csr_der);
+
+            // 2. Build the EST enrollment URL.
+            let url = format!(
+                "{}/.well-known/est/simpleenroll",
+                endpoint.trim_end_matches('/')
+            );
+
+            // 3. POST to the remote CA's EST endpoint.
+            let client = reqwest::Client::builder()
+                .timeout(self.config.request_timeout)
+                .danger_accept_invalid_certs(false)
+                .build()
+                .map_err(|e| CaBackendError::BackendError {
+                    ca_id: ca_id.to_string(),
+                    message: format!("HTTP client error: {e}"),
+                })?;
+
+            let response = client
+                .post(&url)
+                .header("Content-Type", "application/pkcs10")
+                .header("Content-Transfer-Encoding", "base64")
+                .body(csr_b64)
+                .send()
+                .await
+                .map_err(|e| CaBackendError::BackendError {
+                    ca_id: ca_id.to_string(),
+                    message: format!("HTTP request to {url} failed: {e}"),
+                })?;
+
+            let status = response.status();
+            if !status.is_success() {
+                let body = response.text().await.unwrap_or_default();
+                return Err(CaBackendError::BackendError {
+                    ca_id: ca_id.to_string(),
+                    message: format!("EST enrollment failed: HTTP {status} from {url}: {body}"),
+                });
+            }
+
+            // 4. Read the response body (base64-encoded PKCS#7 / CMS).
+            let body_bytes = response.bytes().await.map_err(|e| {
+                CaBackendError::BackendError {
+                    ca_id: ca_id.to_string(),
+                    message: format!("failed to read EST response body: {e}"),
+                }
+            })?;
+
+            // 5. Decode the base64 PKCS#7 response to DER.
+            let cert_der = base64::engine::general_purpose::STANDARD
+                .decode(body_bytes.as_ref())
+                .map_err(|e| CaBackendError::BackendError {
+                    ca_id: ca_id.to_string(),
+                    message: format!("failed to decode base64 PKCS#7 response: {e}"),
+                })?;
+
+            info!(
+                ca_id = %ca_id,
+                cert_len = cert_der.len(),
+                "EST simpleenroll succeeded"
+            );
+
+            Ok(cert_der)
         })
         .await;
 
