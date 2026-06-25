@@ -123,7 +123,11 @@ async fn run() -> Result<(), String> {
             key_type: ca_cfg.key_type.clone(),
             cert_der,
             cert_chain: cert_chain_der,
-            hash_algorithm: ca_cfg.hash_algorithm.clone(),
+            hash_algorithm: if ca_cfg.key_type.starts_with("ml-dsa") {
+                "none".to_string()
+            } else {
+                ca_cfg.hash_algorithm.clone()
+            },
             validity_days: ca_cfg.validity_days,
             crl_url: ca_cfg.crl_url.clone(),
             ocsp_url: ca_cfg.ocsp_url.clone(),

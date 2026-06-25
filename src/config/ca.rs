@@ -102,6 +102,9 @@ pub struct CaConfig {
     /// Hash algorithm for certificate and CRL signing.
     ///
     /// Supported: `"sha256"`, `"sha384"`, `"sha512"`.
+    /// For ML-DSA CAs, set to `"none"` — the hash is built into the
+    /// algorithm per FIPS 204. Auto-detected when `key_type` starts
+    /// with `"ml-dsa"`.
     /// Default: `"sha256"`.
     #[serde(default = "default_hash_algorithm")]
     pub hash_algorithm: String,

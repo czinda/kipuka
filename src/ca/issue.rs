@@ -536,12 +536,16 @@ pub fn issue_certificate(
     }
 
     // Step 11: Sign the certificate.
+    // For ML-DSA CAs, the hash algorithm is built into the signing algorithm
+    // (FIPS 204) — pass "none" so synta-certificate uses the key's native
+    // algorithm without a separate hash. For classical keys (RSA, ECDSA),
+    // the hash_algorithm selects SHA-256/384/512.
     let cert_der = match &signing_key {
         CaSigningKey::Pem(_) => {
-            // PEM path: use the synta-certificate OpenSSL signer.
             use synta_certificate::PrivateKey as _;
             let ca_pkey = pem_key.as_ref().expect("PEM key loaded in step 7");
-            let signer = ca_pkey.as_signer(hash_algorithm);
+            let effective_hash = if hash_algorithm == "none" { "" } else { hash_algorithm };
+            let signer = ca_pkey.as_signer(effective_hash);
             builder.sign(&signer).map_err(|e| {
                 IssuanceError::SigningError(format!("certificate signing failed: {e}"))
             })?
@@ -755,12 +759,117 @@ fn check_key_size(csr_der: &[u8], profile: &EnrollmentProfile) -> Result<(), Iss
             bit_count,
             ..
         } => {
-            debug!(
-                algorithm = %alg_name,
-                key_bits = bit_count,
-                alg_oid = ?alg_oid,
-                "CSR public key: unknown algorithm (skipping size check)"
-            );
+            // Check if this is a known PQC algorithm by OID.
+            let oid_str = alg_oid
+                .iter()
+                .map(|c| c.to_string())
+                .collect::<Vec<_>>()
+                .join(".");
+
+            match oid_str.as_str() {
+                // ML-DSA (FIPS 204): 2.16.840.1.101.3.4.3.{17,18,19}
+                "2.16.840.1.101.3.4.3.17" => {
+                    let level = "ml-dsa-44";
+                    debug!(algorithm = "ML-DSA-44", key_bits = bit_count, "CSR public key: ML-DSA Level 2");
+                    if !profile.allowed_ml_dsa_levels.is_empty()
+                        && !profile.allowed_ml_dsa_levels.iter().any(|l| l == level)
+                    {
+                        return Err(IssuanceError::KeyTooSmall {
+                            algorithm: "ML-DSA-44".into(),
+                            bits: *bit_count as u32,
+                            min_bits: 0,
+                        });
+                    }
+                }
+                "2.16.840.1.101.3.4.3.18" => {
+                    let level = "ml-dsa-65";
+                    debug!(algorithm = "ML-DSA-65", key_bits = bit_count, "CSR public key: ML-DSA Level 3");
+                    if !profile.allowed_ml_dsa_levels.is_empty()
+                        && !profile.allowed_ml_dsa_levels.iter().any(|l| l == level)
+                    {
+                        return Err(IssuanceError::KeyTooSmall {
+                            algorithm: "ML-DSA-65".into(),
+                            bits: *bit_count as u32,
+                            min_bits: 0,
+                        });
+                    }
+                }
+                "2.16.840.1.101.3.4.3.19" => {
+                    let level = "ml-dsa-87";
+                    debug!(algorithm = "ML-DSA-87", key_bits = bit_count, "CSR public key: ML-DSA Level 5");
+                    if !profile.allowed_ml_dsa_levels.is_empty()
+                        && !profile.allowed_ml_dsa_levels.iter().any(|l| l == level)
+                    {
+                        return Err(IssuanceError::KeyTooSmall {
+                            algorithm: "ML-DSA-87".into(),
+                            bits: *bit_count as u32,
+                            min_bits: 0,
+                        });
+                    }
+                }
+                // ML-KEM (FIPS 203): 2.16.840.1.101.3.4.4.{1,2,3}
+                "2.16.840.1.101.3.4.4.1" => {
+                    let level = "ml-kem-512";
+                    debug!(algorithm = "ML-KEM-512", key_bits = bit_count, "CSR public key: ML-KEM Level 1");
+                    if !profile.allowed_ml_kem_levels.is_empty()
+                        && !profile.allowed_ml_kem_levels.iter().any(|l| l == level)
+                    {
+                        return Err(IssuanceError::KeyTooSmall {
+                            algorithm: "ML-KEM-512".into(),
+                            bits: *bit_count as u32,
+                            min_bits: 0,
+                        });
+                    }
+                }
+                "2.16.840.1.101.3.4.4.2" => {
+                    let level = "ml-kem-768";
+                    debug!(algorithm = "ML-KEM-768", key_bits = bit_count, "CSR public key: ML-KEM Level 3");
+                    if !profile.allowed_ml_kem_levels.is_empty()
+                        && !profile.allowed_ml_kem_levels.iter().any(|l| l == level)
+                    {
+                        return Err(IssuanceError::KeyTooSmall {
+                            algorithm: "ML-KEM-768".into(),
+                            bits: *bit_count as u32,
+                            min_bits: 0,
+                        });
+                    }
+                }
+                "2.16.840.1.101.3.4.4.3" => {
+                    let level = "ml-kem-1024";
+                    debug!(algorithm = "ML-KEM-1024", key_bits = bit_count, "CSR public key: ML-KEM Level 5");
+                    if !profile.allowed_ml_kem_levels.is_empty()
+                        && !profile.allowed_ml_kem_levels.iter().any(|l| l == level)
+                    {
+                        return Err(IssuanceError::KeyTooSmall {
+                            algorithm: "ML-KEM-1024".into(),
+                            bits: *bit_count as u32,
+                            min_bits: 0,
+                        });
+                    }
+                }
+                // Composite ML-DSA: 2.16.840.1.114027.80.5.2.{37-54}
+                s if s.starts_with("2.16.840.1.114027.80.5.2.") => {
+                    debug!(
+                        algorithm = %alg_name,
+                        oid = %oid_str,
+                        key_bits = bit_count,
+                        "CSR public key: composite ML-DSA"
+                    );
+                    if !profile.allow_composite_ml_dsa {
+                        return Err(IssuanceError::InvalidCsr(
+                            "composite ML-DSA not allowed for this profile".into(),
+                        ));
+                    }
+                }
+                _ => {
+                    debug!(
+                        algorithm = %alg_name,
+                        key_bits = bit_count,
+                        alg_oid = ?alg_oid,
+                        "CSR public key: unknown algorithm (skipping size check)"
+                    );
+                }
+            }
         }
     }
     Ok(())

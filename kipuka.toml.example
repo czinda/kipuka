@@ -119,6 +119,17 @@ key = "/etc/kipuka/ca/ecdsa-ca.key"
 # default_key_usage = ["digitalSignature"]
 # default_ext_key_usage = ["serverAuth", "clientAuth"]
 
+# Post-Quantum CA (FIPS 204, requires OpenSSL 3.5+).
+# ML-DSA uses a built-in hash — no separate hash_algorithm needed.
+# [[ca]]
+# id = "pqc-ca"
+# name = "ML-DSA-65 Issuing CA"
+# cert = "/etc/kipuka/ca/mldsa65-ca.pem"
+# key = "/etc/kipuka/ca/mldsa65-ca.key"
+# key_type = "ml-dsa-65"
+# hash_algorithm = "none"
+# validity_days = 398
+
 # ── EST Protocol ──────────────────────────────────────────────────────────────
 
 [est]
@@ -185,6 +196,14 @@ csrattrs = true
 # max_validity_days = 825
 # # Restrict to specific Subject DN pattern.
 # subject_pattern = "CN=device-.*,O=Example Corp"
+
+# Post-quantum enrollment label (requires pqc-ca above).
+# [[est.label]]
+# name = "pqc"
+# ca_id = "pqc-ca"
+# allowed_key_types = ["ml-dsa-44", "ml-dsa-65", "ml-dsa-87"]
+# required_ext_key_usage = ["clientAuth"]
+# max_validity_days = 398
 
 # ── HSM ───────────────────────────────────────────────────────────────────────
 # PKCS#11 HSM integration for protecting CA private keys.

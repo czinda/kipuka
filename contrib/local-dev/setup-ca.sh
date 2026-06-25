@@ -141,6 +141,30 @@ EOF
     ok "Agent mTLS certificate created"
 fi
 
+# ── ML-DSA-65 CA (Post-Quantum, FIPS 204) ─────────────────────────────
+# Requires OpenSSL 3.5+ with PQC provider.
+if [[ ! -f "${CA_DIR}/mldsa65-ca.pem" ]]; then
+    info "Generating ML-DSA-65 CA (post-quantum)..."
+    if openssl genpkey -algorithm mldsa65 -out /dev/null 2>/dev/null; then
+        openssl genpkey -algorithm mldsa65 \
+            -out "${CA_DIR}/mldsa65-ca-key.pem" 2>/dev/null
+
+        openssl req -new -x509 \
+            -key "${CA_DIR}/mldsa65-ca-key.pem" \
+            -out "${CA_DIR}/mldsa65-ca.pem" \
+            -days 3650 \
+            -subj "/CN=Kipuka ML-DSA-65 Test CA/O=Kipuka EST/C=US" \
+            -addext "basicConstraints=critical,CA:TRUE" \
+            -addext "keyUsage=critical,keyCertSign,cRLSign" \
+            -addext "subjectKeyIdentifier=hash" 2>/dev/null
+
+        chmod 600 "${CA_DIR}/mldsa65-ca-key.pem"
+        ok "ML-DSA-65 CA created"
+    else
+        warn "OpenSSL does not support ML-DSA (requires 3.5+), skipping PQC CA"
+    fi
+fi
+
 # ── Cleanup serial file ─────────────────────────────────────────────────
 rm -f "${CA_DIR}/ca.srl"
 
@@ -152,6 +176,10 @@ echo "=========================================="
 echo ""
 echo "  CA certificate:     ${CA_DIR}/ca.pem"
 echo "  CA private key:     ${CA_DIR}/ca-key.pem"
+if [[ -f "${CA_DIR}/mldsa65-ca.pem" ]]; then
+echo "  ML-DSA-65 CA cert:  ${CA_DIR}/mldsa65-ca.pem"
+echo "  ML-DSA-65 CA key:   ${CA_DIR}/mldsa65-ca-key.pem"
+fi
 echo ""
 echo "  Server TLS cert:    ${TLS_DIR}/server.pem"
 echo "  Server TLS key:     ${TLS_DIR}/server-key.pem"
