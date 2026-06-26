@@ -12,7 +12,7 @@
 use std::sync::Arc;
 
 use kipuka_coap::dtls::ClientCertInfo;
-use kipuka_coap::server::EstOperation;
+use kipuka_coap::server::{AuditInfo, EstOperation, EstResponse};
 use kipuka_coap::CoapError;
 
 use crate::state::AppState;
@@ -41,7 +41,7 @@ impl kipuka_coap::EstHandler for CoapEstHandler {
         payload: &[u8],
         _content_format: Option<u16>,
         client_cert: Option<&ClientCertInfo>,
-    ) -> Result<(Vec<u8>, u16), CoapError> {
+    ) -> Result<EstResponse, CoapError> {
         match operation {
             EstOperation::CaCerts => handle_cacerts(&self.state),
             EstOperation::SimpleEnroll => handle_simpleenroll(payload, &self.state),
@@ -60,7 +60,7 @@ impl kipuka_coap::EstHandler for CoapEstHandler {
 /// (`application/pkcs7-mime; smime-type=certs-only`).
 ///
 /// Unlike the HTTP handler, the CoAP response is raw DER (not base64).
-fn handle_cacerts(state: &Arc<AppState>) -> Result<(Vec<u8>, u16), CoapError> {
+fn handle_cacerts(state: &Arc<AppState>) -> Result<EstResponse, CoapError> {
     let ca = state.default_ca();
 
     let pkcs7_der = crate::routes::cacerts::build_certs_only_pkcs7(&ca.cert_der)
@@ -68,10 +68,14 @@ fn handle_cacerts(state: &Arc<AppState>) -> Result<(Vec<u8>, u16), CoapError> {
 
     tracing::debug!(ca_id = %ca.id, "CoAP /cacerts served");
 
-    Ok((
-        pkcs7_der,
-        kipuka_coap::content_format::APPLICATION_PKCS7_MIME_CERTS_ONLY,
-    ))
+    Ok(EstResponse {
+        payload: pkcs7_der,
+        content_format: kipuka_coap::content_format::APPLICATION_PKCS7_MIME_CERTS_ONLY,
+        audit_event: Some(AuditInfo {
+            event_type: "coap_cacerts".into(),
+            detail: format!("ca_id={}", ca.id),
+        }),
+    })
 }
 
 /// Handle POST /simpleenroll — issue a certificate from a PKCS#10 CSR.
@@ -85,7 +89,7 @@ fn handle_cacerts(state: &Arc<AppState>) -> Result<(Vec<u8>, u16), CoapError> {
 fn handle_simpleenroll(
     csr_der: &[u8],
     state: &Arc<AppState>,
-) -> Result<(Vec<u8>, u16), CoapError> {
+) -> Result<EstResponse, CoapError> {
     if csr_der.is_empty() {
         return Err(CoapError::InvalidMessage("empty CSR payload".into()));
     }
@@ -129,23 +133,21 @@ fn handle_simpleenroll(
         "CoAP simpleenroll: certificate issued"
     );
 
-    // TODO(audit): Emit CertIssue / CertReenroll audit events for NIAP
-    // FAU_GEN.1 compliance.  The EstHandler trait is currently synchronous,
-    // so we cannot call the async `audit::record()` here.  Options:
-    //   1. Make EstHandler async (requires tokio runtime in handler).
-    //   2. Return audit metadata and let the server loop emit the event.
-    //   3. Use `tokio::task::block_in_place` with a handle to the runtime.
-    // Tracked as a follow-up to avoid coupling transport and audit layers
-    // in a single change.
-
     // Wrap the issued certificate in PKCS#7 certs-only (reuses cacerts builder).
     let pkcs7_der = crate::routes::cacerts::build_certs_only_pkcs7(&result.certificate_der)
         .map_err(|e| CoapError::Internal(format!("PKCS#7 wrap failed: {e}")))?;
 
-    Ok((
-        pkcs7_der,
-        kipuka_coap::content_format::APPLICATION_PKCS7_MIME_CERTS_ONLY,
-    ))
+    Ok(EstResponse {
+        payload: pkcs7_der,
+        content_format: kipuka_coap::content_format::APPLICATION_PKCS7_MIME_CERTS_ONLY,
+        audit_event: Some(AuditInfo {
+            event_type: "coap_simpleenroll".into(),
+            detail: format!(
+                "serial={} subject={}",
+                result.serial_number, result.subject_dn
+            ),
+        }),
+    })
 }
 
 /// Handle POST /simplereenroll — re-enroll using existing DTLS client certificate.
@@ -156,7 +158,7 @@ fn handle_simplereenroll(
     csr_der: &[u8],
     client_cert: Option<&ClientCertInfo>,
     state: &Arc<AppState>,
-) -> Result<(Vec<u8>, u16), CoapError> {
+) -> Result<EstResponse, CoapError> {
     // Re-enrollment requires a client certificate from the DTLS handshake.
     let _cert = client_cert.ok_or_else(|| {
         CoapError::Unauthorized(
@@ -166,29 +168,44 @@ fn handle_simplereenroll(
 
     // The certificate issuance logic is the same as simpleenroll — the auth
     // difference is in the DTLS layer (client cert vs. PSK/OTP).
-    handle_simpleenroll(csr_der, state)
+    let mut resp = handle_simpleenroll(csr_der, state)?;
+
+    // Override the audit event type to distinguish re-enrollment.
+    if let Some(ref mut audit) = resp.audit_event {
+        audit.event_type = "coap_simplereenroll".into();
+    }
+
+    Ok(resp)
 }
 
 /// Handle GET /csrattrs — return CSR attributes the server expects.
 ///
 /// RFC 9483 §5.1: The response Content-Format is 287
 /// (`application/csrattrs`).
-fn handle_csrattrs(state: &Arc<AppState>) -> Result<(Vec<u8>, u16), CoapError> {
+fn handle_csrattrs(state: &Arc<AppState>) -> Result<EstResponse, CoapError> {
     let attributes = &state.config.est.csr_attributes;
 
     if attributes.is_empty() {
         // No attributes configured — return empty payload.
-        return Ok((
-            Vec::new(),
-            kipuka_coap::content_format::APPLICATION_CSRATTRS,
-        ));
+        return Ok(EstResponse {
+            payload: Vec::new(),
+            content_format: kipuka_coap::content_format::APPLICATION_CSRATTRS,
+            audit_event: Some(AuditInfo {
+                event_type: "coap_csrattrs".into(),
+                detail: "empty attributes".into(),
+            }),
+        });
     }
 
     let csrattrs_der = crate::routes::csrattrs::encode_csr_attrs(attributes)
         .map_err(|e| CoapError::Internal(format!("CSR attributes encoding failed: {e}")))?;
 
-    Ok((
-        csrattrs_der,
-        kipuka_coap::content_format::APPLICATION_CSRATTRS,
-    ))
+    Ok(EstResponse {
+        payload: csrattrs_der,
+        content_format: kipuka_coap::content_format::APPLICATION_CSRATTRS,
+        audit_event: Some(AuditInfo {
+            event_type: "coap_csrattrs".into(),
+            detail: format!("{} attributes", attributes.len()),
+        }),
+    })
 }

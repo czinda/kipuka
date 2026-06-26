@@ -24,7 +24,7 @@ pub mod content_format;
 pub mod dtls;
 pub mod server;
 
-pub use server::{CoapDtlsServer, EstHandler};
+pub use server::{AuditInfo, CoapDtlsServer, EstHandler, EstResponse};
 
 use thiserror::Error;
 

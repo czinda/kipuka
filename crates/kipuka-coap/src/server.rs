@@ -38,7 +38,7 @@ use crate::{CoapError, CoapResult};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
@@ -1163,6 +1163,34 @@ mod tests {
 // CoapServer — UDP/DTLS listener for EST-coaps
 // ---------------------------------------------------------------------------
 
+/// Audit metadata returned by EST handlers for NIAP FAU_GEN.1 compliance.
+///
+/// The `EstHandler` trait is synchronous, so handlers cannot call async
+/// audit-recording functions directly.  Instead, they populate an
+/// `AuditInfo` value which the async server loop records after sending the
+/// CoAP response.
+#[derive(Debug, Clone)]
+pub struct AuditInfo {
+    /// Audit event type string (e.g. `"coap_simpleenroll"`).
+    pub event_type: String,
+    /// Human-readable detail (e.g. serial number / subject DN).
+    pub detail: String,
+}
+
+/// Structured response from an EST handler.
+///
+/// Combines the CoAP response payload, content-format, and optional audit
+/// metadata in a single return value.
+#[derive(Debug, Clone)]
+pub struct EstResponse {
+    /// DER-encoded response payload.
+    pub payload: Vec<u8>,
+    /// CoAP Content-Format ID for the response.
+    pub content_format: u16,
+    /// Optional audit event to record asynchronously.
+    pub audit_event: Option<AuditInfo>,
+}
+
 /// Callback trait for processing EST operations.
 ///
 /// Implementors handle the actual EST logic (certificate issuance, CSR
@@ -1170,10 +1198,11 @@ mod tests {
 /// transport concerns.
 ///
 /// The callback receives the EST operation, request payload, and optional
-/// client certificate information (from DTLS mTLS). It returns the response
-/// payload and CoAP content-format ID.
+/// client certificate information (from DTLS mTLS). It returns an
+/// [`EstResponse`] containing the response payload, content-format, and
+/// optional audit metadata for NIAP FAU_GEN.1 event recording.
 pub trait EstHandler: Send + Sync + 'static {
-    /// Processes an EST operation and returns the response payload.
+    /// Processes an EST operation and returns the response.
     ///
     /// # Arguments
     ///
@@ -1184,16 +1213,18 @@ pub trait EstHandler: Send + Sync + 'static {
     ///
     /// # Returns
     ///
-    /// A tuple of `(response_payload, response_content_format)` on success,
-    /// or a `CoapError` on failure.
+    /// An [`EstResponse`] on success, or a `CoapError` on failure.
     fn handle(
         &self,
         operation: EstOperation,
         payload: &[u8],
         content_format: Option<u16>,
         client_cert: Option<&crate::dtls::ClientCertInfo>,
-    ) -> Result<(Vec<u8>, u16), CoapError>;
+    ) -> Result<EstResponse, CoapError>;
 }
+
+/// Cached response entry: (disassembler, content-format, response code, timestamp).
+type ResponseCacheEntry = (BlockDisassembler, u16, CoapCode, Instant);
 
 /// CoAP/DTLS server for EST-coaps (RFC 9483).
 ///
@@ -1226,17 +1257,27 @@ pub struct CoapDtlsServer {
     /// In-progress block-wise request assemblies.
     ///
     /// Keyed by `(peer_addr, message_token_hash)` to distinguish concurrent
-    /// block transfers from the same or different peers.
+    /// block transfers from the same or different peers.  Each entry is
+    /// paired with an [`Instant`] recording the last activity; entries
+    /// older than `block_ttl` are reaped on each incoming datagram.
     ///
     /// Bounded to `max_block_assemblers` entries to prevent resource
     /// exhaustion from peers that start but never complete block transfers.
-    block_assemblers: Mutex<HashMap<(SocketAddr, u16), BlockAssembler>>,
+    block_assemblers: Mutex<HashMap<(SocketAddr, u16), (BlockAssembler, Instant)>>,
+    /// Cached multi-block responses awaiting subsequent Block2 GETs.
+    ///
+    /// Keyed by `(peer_addr, token_hash)`.  Entries older than `block_ttl`
+    /// are reaped alongside stale block assemblers.  Capped at
+    /// `max_block_assemblers` entries.
+    response_cache: Mutex<HashMap<(SocketAddr, u16), ResponseCacheEntry>>,
     /// Configured block size exponent for response fragmentation.
     block_szx: u8,
     /// Maximum reassembled payload size.
     max_payload: usize,
     /// Maximum number of concurrent block-wise assemblers (DoS guard).
     max_block_assemblers: usize,
+    /// Time-to-live for block assembler and response cache entries.
+    block_ttl: Duration,
 }
 
 impl CoapDtlsServer {
@@ -1286,12 +1327,14 @@ impl CoapDtlsServer {
             session_cache: Mutex::new(DtlsSessionCache::new(max_sessions, session_timeout)),
             connections: Mutex::new(HashMap::new()),
             block_assemblers: Mutex::new(HashMap::new()),
+            response_cache: Mutex::new(HashMap::new()),
             block_szx,
             max_payload,
             // Cap assemblers at 2x session limit — each peer should have at
             // most one active block transfer, but allow headroom for token
             // hash collisions and rapid reconnects.
             max_block_assemblers: max_sessions.saturating_mul(2),
+            block_ttl: Duration::from_secs(60),
         })
     }
 
@@ -1356,6 +1399,34 @@ impl CoapDtlsServer {
         }
     }
 
+    /// Reaps stale block assembler and response cache entries.
+    ///
+    /// Called at the start of every datagram to bound memory usage from
+    /// abandoned block transfers.
+    async fn reap_stale_entries(&self) {
+        let deadline = Instant::now() - self.block_ttl;
+
+        {
+            let mut assemblers = self.block_assemblers.lock().await;
+            let before = assemblers.len();
+            assemblers.retain(|_key, (_asm, ts)| *ts > deadline);
+            let reaped = before - assemblers.len();
+            if reaped > 0 {
+                debug!(reaped = reaped, "Reaped stale block assemblers");
+            }
+        }
+
+        {
+            let mut cache = self.response_cache.lock().await;
+            let before = cache.len();
+            cache.retain(|_key, (_disasm, _cf, _code, ts)| *ts > deadline);
+            let reaped = before - cache.len();
+            if reaped > 0 {
+                debug!(reaped = reaped, "Reaped stale response cache entries");
+            }
+        }
+    }
+
     /// Processes a single received datagram (after DTLS decryption).
     async fn process_datagram(
         &self,
@@ -1363,6 +1434,9 @@ impl CoapDtlsServer {
         peer_addr: SocketAddr,
         handler: &dyn EstHandler,
     ) -> Result<(), CoapError> {
+        // Reap stale block assembler and response cache entries.
+        self.reap_stale_entries().await;
+
         let message = CoapMessage::parse(data)?;
 
         debug!(
@@ -1377,6 +1451,50 @@ impl CoapDtlsServer {
         if !message.code.is_request() {
             debug!(peer = %peer_addr, "Ignoring non-request message");
             return Ok(());
+        }
+
+        // --- Handle Block2 continuation requests (GET with Block2 option) ---
+        //
+        // When a client requests a subsequent block of a multi-block response,
+        // the Block2 option carries the requested block number.  Look up the
+        // cached disassembler for this peer/token and return the requested block.
+        if let Some(block2) = message.block2()
+            && block2.num > 0
+        {
+            let cache_key = (peer_addr, token_hash(&message.token));
+            let mut cache = self.response_cache.lock().await;
+            if let Some((disasm, cf, code, ts)) = cache.get_mut(&cache_key) {
+                // Refresh TTL on each access.
+                *ts = Instant::now();
+                if let Some((block_data, block_opt)) = disasm.get_block(block2.num) {
+                    let is_last = !block_opt.more;
+                    let response = CoapMessage {
+                        version: COAP_VERSION,
+                        msg_type: CoapMessageType::Acknowledgement,
+                        code: *code,
+                        message_id: message.message_id,
+                        token: message.token.clone(),
+                        options: vec![
+                            CoapOption::from_uint(OPTION_CONTENT_FORMAT, u32::from(*cf)),
+                            CoapOption::from_uint(OPTION_BLOCK2, block_opt.encode()),
+                            CoapOption::from_uint(OPTION_SIZE2, disasm.payload_len() as u32),
+                        ],
+                        payload: block_data,
+                    };
+                    // If this is the final block, remove the cache entry.
+                    if is_last {
+                        cache.remove(&cache_key);
+                    }
+                    drop(cache);
+                    self.send_response(peer_addr, &response).await?;
+                    return Ok(());
+                } else {
+                    // Block number out of range — remove the stale entry.
+                    cache.remove(&cache_key);
+                }
+            }
+            drop(cache);
+            // Fall through to re-process the request if cache miss.
         }
 
         // Check for block-wise request (Block1).
@@ -1421,9 +1539,12 @@ impl CoapDtlsServer {
                 ));
             }
 
-            let assembler = assemblers
+            let (assembler, ts) = assemblers
                 .entry(assembler_key)
-                .or_insert_with(|| BlockAssembler::new(self.max_payload));
+                .or_insert_with(|| (BlockAssembler::new(self.max_payload), Instant::now()));
+
+            // Refresh the timestamp on each block received.
+            *ts = Instant::now();
 
             let complete = assembler.process_block(&block, &est_request.message.payload)?;
 
@@ -1448,7 +1569,7 @@ impl CoapDtlsServer {
             }
 
             // All blocks received — remove the assembler and extract the full payload.
-            let assembler = assemblers.remove(&assembler_key).unwrap();
+            let (assembler, _ts) = assemblers.remove(&assembler_key).unwrap();
             assembler.into_payload()?
         } else {
             est_request.message.payload.clone()
@@ -1461,7 +1582,7 @@ impl CoapDtlsServer {
         };
 
         // Dispatch to the EST handler.
-        let (response_payload, response_cf) = match handler.handle(
+        let est_response = match handler.handle(
             est_request.operation,
             &request_payload,
             content_format,
@@ -1474,6 +1595,11 @@ impl CoapDtlsServer {
                 return Ok(());
             }
         };
+
+        // Extract audit info before consuming the response fields.
+        let audit_event = est_response.audit_event.clone();
+        let response_payload = est_response.payload;
+        let response_cf = est_response.content_format;
 
         // Determine response code based on operation.
         let response_code = match est_request.operation {
@@ -1494,7 +1620,7 @@ impl CoapDtlsServer {
                     msg_type: CoapMessageType::Acknowledgement,
                     code: response_code,
                     message_id: msg_id,
-                    token: msg_token,
+                    token: msg_token.clone(),
                     options: vec![
                         CoapOption::from_uint(OPTION_CONTENT_FORMAT, u32::from(response_cf)),
                         CoapOption::from_uint(OPTION_BLOCK2, block_opt.encode()),
@@ -1504,9 +1630,21 @@ impl CoapDtlsServer {
                 };
                 self.send_response(peer_addr, &response).await?;
             }
-            // Subsequent blocks are requested by the client via Block2 GET.
-            // The server should cache the disassembler keyed by token.
-            // For now, the client must re-request the full resource.
+
+            // Cache the disassembler for subsequent Block2 requests.
+            let cache_key = (peer_addr, token_hash(&msg_token));
+            let mut cache = self.response_cache.lock().await;
+            // Enforce the same size cap as block assemblers.
+            if cache.len() < self.max_block_assemblers {
+                cache.insert(cache_key, (disasm, response_cf, response_code, Instant::now()));
+            } else {
+                warn!(
+                    peer = %peer_addr,
+                    active = cache.len(),
+                    limit = self.max_block_assemblers,
+                    "Response cache full, client must re-request"
+                );
+            }
         } else {
             // Single-block response.
             let response = CoapMessage {
@@ -1521,6 +1659,19 @@ impl CoapDtlsServer {
                 payload: response_payload,
             };
             self.send_response(peer_addr, &response).await?;
+        }
+
+        // Record audit event asynchronously (NIAP FAU_GEN.1).
+        if let Some(audit) = audit_event {
+            info!(
+                event_type = %audit.event_type,
+                detail = %audit.detail,
+                peer = %peer_addr,
+                "CoAP audit event"
+            );
+            // When integrated with AppState, the caller can invoke
+            // state.record_audit_event(&audit.event_type, &audit.detail).await
+            // from the server loop after this method returns.
         }
 
         Ok(())
@@ -1639,7 +1790,7 @@ mod server_tests {
             _payload: &[u8],
             _content_format: Option<u16>,
             _client_cert: Option<&crate::dtls::ClientCertInfo>,
-        ) -> Result<(Vec<u8>, u16), CoapError> {
+        ) -> Result<EstResponse, CoapError> {
             let name = match operation {
                 EstOperation::CaCerts => "cacerts",
                 EstOperation::SimpleEnroll => "simpleenroll",
@@ -1647,7 +1798,14 @@ mod server_tests {
                 EstOperation::ServerKeygen => "serverkeygen",
                 EstOperation::CsrAttrs => "csrattrs",
             };
-            Ok((name.as_bytes().to_vec(), crate::content_format::APPLICATION_PKCS7_MIME_CERTS_ONLY))
+            Ok(EstResponse {
+                payload: name.as_bytes().to_vec(),
+                content_format: crate::content_format::APPLICATION_PKCS7_MIME_CERTS_ONLY,
+                audit_event: Some(AuditInfo {
+                    event_type: format!("coap_{name}"),
+                    detail: format!("test operation: {name}"),
+                }),
+            })
         }
     }
 
@@ -1675,11 +1833,13 @@ mod server_tests {
     #[test]
     fn test_echo_handler() {
         let handler = EchoHandler;
-        let (payload, cf) = handler
+        let resp = handler
             .handle(EstOperation::CaCerts, &[], None, None)
             .unwrap();
-        assert_eq!(payload, b"cacerts");
-        assert_eq!(cf, crate::content_format::APPLICATION_PKCS7_MIME_CERTS_ONLY);
+        assert_eq!(resp.payload, b"cacerts");
+        assert_eq!(resp.content_format, crate::content_format::APPLICATION_PKCS7_MIME_CERTS_ONLY);
+        let audit = resp.audit_event.unwrap();
+        assert_eq!(audit.event_type, "coap_cacerts");
     }
 
     #[test]
@@ -1722,9 +1882,11 @@ mod server_tests {
             session_cache: Mutex::new(DtlsSessionCache::new(10, Duration::from_secs(300))),
             connections: Mutex::new(HashMap::new()),
             block_assemblers: Mutex::new(HashMap::new()),
+            response_cache: Mutex::new(HashMap::new()),
             block_szx: crate::block::DEFAULT_SZX,
             max_payload: 65536,
             max_block_assemblers: 20,
+            block_ttl: Duration::from_secs(60),
         };
 
         let handler = EchoHandler;
@@ -1763,9 +1925,11 @@ mod server_tests {
             session_cache: Mutex::new(DtlsSessionCache::new(10, Duration::from_secs(300))),
             connections: Mutex::new(HashMap::new()),
             block_assemblers: Mutex::new(HashMap::new()),
+            response_cache: Mutex::new(HashMap::new()),
             block_szx: crate::block::DEFAULT_SZX,
             max_payload: 65536,
             max_block_assemblers: 20,
+            block_ttl: Duration::from_secs(60),
         };
 
         let handler = EchoHandler;
