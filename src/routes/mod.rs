@@ -97,6 +97,9 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         // STAR certificate routes (RFC 8739).
         .nest("/.well-known/est/star", star::star_router())
         // Renewal info (draft-ietf-lamps-est-renewal-info).
+        // Intentionally label-independent: the cert_id (AKI + serial) uniquely
+        // identifies a certificate regardless of which EST label was used for
+        // enrollment.  Per-label renewal-info can be added later if needed.
         .route(
             "/.well-known/est/renewal-info/{cert_id}",
             get(renewal_info::get_renewal_info),

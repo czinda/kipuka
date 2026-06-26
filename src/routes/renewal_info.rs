@@ -62,6 +62,19 @@ pub async fn get_renewal_info(
 ) -> Result<Response, KipukaError> {
     tracing::debug!(cert_id = %cert_id, "renewal-info request");
 
+    // Reject oversized cert_id values.  A legitimate cert_id is
+    // base64url(AKI ~20 bytes) + "." + base64url(serial ~20 bytes) ≈ 55 chars.
+    // Cap at 256 to prevent memory amplification from the base64 decode.
+    if cert_id.len() > 256 {
+        tracing::debug!(
+            cert_id_len = cert_id.len(),
+            "cert_id exceeds 256-character limit"
+        );
+        return Err(KipukaError::BadRequest(
+            "cert_id exceeds maximum length".into(),
+        ));
+    }
+
     // Step 1: Parse the cert_id — split on "." into AKI and serial parts.
     let (aki_b64, serial_b64) = cert_id.split_once('.').ok_or_else(|| {
         tracing::debug!(cert_id = %cert_id, "cert_id missing '.' separator");
@@ -127,6 +140,13 @@ pub async fn get_renewal_info(
             serial = %serial_hex,
             "AKI mismatch — cert_id references wrong issuer"
         );
+        // Audit AKI mismatch — potential issuer enumeration attempt (NIAP FAU_GEN.1).
+        state
+            .record_audit_event(
+                "renewal_info_aki_mismatch",
+                &format!("serial={serial_hex} aki_mismatch"),
+            )
+            .await;
         return Err(KipukaError::NotFound);
     }
 
@@ -140,9 +160,15 @@ pub async fn get_renewal_info(
         KipukaError::Internal("failed to parse certificate expiry".into())
     })?;
 
-    let window_days = state.config.est.renewal_window_days as i64;
+    // Clamp window_days to a minimum of 2 so that `start < end` always holds
+    // (the draft MUST NOT have end <= start).  With window_days=1 both would
+    // equal `not_after - 1d`; with window_days=0, end would precede start.
+    let window_days = std::cmp::max(state.config.est.renewal_window_days, 2) as i64;
     let window_start = not_after - Duration::days(window_days);
     let window_end = not_after - Duration::days(1);
+
+    // Defensive: ensure start < end even if Duration arithmetic overflows.
+    debug_assert!(window_start < window_end, "renewal window start must precede end");
 
     let body = serde_json::json!({
         "suggestedWindow": {
@@ -157,6 +183,14 @@ pub async fn get_renewal_info(
         window_end = %window_end,
         "renewal-info response"
     );
+
+    // Audit successful renewal-info query (NIAP FAU_GEN.1).
+    state
+        .record_audit_event(
+            "renewal_info_query",
+            &format!("serial={serial_hex}"),
+        )
+        .await;
 
     // Step 6: Build the HTTP response.
     let retry_after = state.config.est.renewal_retry_after_secs;
@@ -323,6 +357,8 @@ fn parse_not_after(s: &str) -> Option<DateTime<Utc>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Datelike;
+    use chrono::Timelike;
 
     #[test]
     fn parse_aki_from_well_formed_der() {
@@ -401,7 +437,4 @@ mod tests {
         let decoded = URL_SAFE_NO_PAD.decode(&encoded).unwrap();
         assert_eq!(data, decoded);
     }
-
-    use chrono::Datelike;
-    use chrono::Timelike;
 }
