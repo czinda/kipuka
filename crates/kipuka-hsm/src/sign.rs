@@ -1,7 +1,7 @@
 //! HSM signing operations with PQC support.
 
 use crate::error::{HsmError, HsmResult};
-use crate::key::{HsmKeyPair, KeyAlgorithm, MlDsaLevel, MlKemLevel, PqcMechanismIds};
+use crate::key::{HsmKeyPair, KeyAlgorithm, MlDsaLevel, MlKemLevel};
 use cryptoki::mechanism::dsa::{HedgeType, SignAdditionalContext};
 use cryptoki::mechanism::rsa::{PkcsMgfType, PkcsOaepParams, PkcsOaepSource, PkcsPssParams};
 use cryptoki::mechanism::{Mechanism, MechanismType};
@@ -55,7 +55,6 @@ pub trait HsmSigner {
     ///
     /// * `session` - PKCS#11 session
     /// * `public_key` - ML-KEM public key
-    /// * `pqc_mechanisms` - PQC mechanism IDs (ignored for standard PKCS#11 v3.2)
     ///
     /// # Returns
     ///
@@ -66,7 +65,6 @@ pub trait HsmSigner {
         &self,
         session: &Session,
         public_key: ObjectHandle,
-        pqc_mechanisms: &PqcMechanismIds,
     ) -> HsmResult<(Vec<u8>, Vec<u8>)>;
 
     /// ML-KEM decapsulate operation via PKCS#11 v3.2 C_DecapsulateKey.
@@ -76,7 +74,6 @@ pub trait HsmSigner {
     /// * `session` - PKCS#11 session
     /// * `private_key` - ML-KEM private key
     /// * `ciphertext` - Ciphertext from encapsulate
-    /// * `pqc_mechanisms` - PQC mechanism IDs (ignored for standard PKCS#11 v3.2)
     ///
     /// # Returns
     ///
@@ -86,7 +83,6 @@ pub trait HsmSigner {
         session: &Session,
         private_key: ObjectHandle,
         ciphertext: &[u8],
-        pqc_mechanisms: &PqcMechanismIds,
     ) -> HsmResult<Vec<u8>>;
 }
 
@@ -170,7 +166,6 @@ impl HsmSigner for DefaultHsmSigner {
         &self,
         session: &Session,
         public_key: ObjectHandle,
-        _pqc_mechanisms: &PqcMechanismIds,
     ) -> HsmResult<(Vec<u8>, Vec<u8>)> {
         // Use the standard PKCS#11 v3.2 CKM_ML_KEM mechanism for encapsulation.
         // C_EncapsulateKey produces a ciphertext and derives a CKK_GENERIC_SECRET
@@ -238,7 +233,6 @@ impl HsmSigner for DefaultHsmSigner {
         session: &Session,
         private_key: ObjectHandle,
         ciphertext: &[u8],
-        _pqc_mechanisms: &PqcMechanismIds,
     ) -> HsmResult<Vec<u8>> {
         // Use the standard PKCS#11 v3.2 CKM_ML_KEM mechanism for decapsulation.
         // C_DecapsulateKey takes the ciphertext and private key, and derives
@@ -361,16 +355,12 @@ pub fn sign_ecdsa(key: &HsmKeyPair, digest: &[u8]) -> HsmResult<Vec<u8>> {
 /// Sign with ML-DSA (FIPS 204) using the standard PKCS#11 v3.2 CKM_ML_DSA mechanism.
 ///
 /// ML-DSA signing internally hashes the message before signing.
-/// The HSM performs both hashing and signing.
-///
-/// The `_pqc_mechanisms` parameter is retained for backward compatibility
-/// with vendor-specific configurations but is no longer needed — cryptoki
-/// 0.12 provides the standard `Mechanism::MlDsa` variant directly.
+/// The HSM performs both hashing and signing.  The standard
+/// `Mechanism::MlDsa` variant from cryptoki 0.12+ is used directly.
 pub fn sign_ml_dsa(
     key: &HsmKeyPair,
     message: &[u8],
     _level: MlDsaLevel,
-    _pqc_mechanisms: &PqcMechanismIds,
 ) -> HsmResult<Vec<u8>> {
     // Use the standard PKCS#11 v3.2 CKM_ML_DSA mechanism with default
     // hedging (HedgeType::Preferred — the token may create either a

@@ -9,87 +9,8 @@ use cryptoki::object::{
 };
 use cryptoki::session::Session;
 use cryptoki::types::Ulong;
-use serde::Deserialize;
 use std::collections::HashMap;
 use url::Url;
-
-/// Vendor-specific PQC mechanism IDs.
-///
-/// PKCS#11 v3.2 standardizes ML-DSA and ML-KEM mechanisms.  These standard
-/// mechanism IDs are now used by default via the `cryptoki` crate's
-/// `MechanismType::ML_DSA*` and `MechanismType::ML_KEM*` constants.
-///
-/// This struct is retained for backward compatibility with vendor-specific
-/// configurations that predate PKCS#11 v3.2.  When `None`, the standard
-/// PKCS#11 v3.2 mechanism IDs are used automatically.
-#[derive(Debug, Clone, Deserialize)]
-pub struct PqcMechanismIds {
-    /// ML-DSA key pair generation (FIPS 204).
-    ///
-    /// Standard PKCS#11 v3.2: CKM_ML_DSA_KEY_PAIR_GEN (0x00004030)
-    #[serde(default)]
-    pub ml_dsa_keygen: Option<u64>,
-
-    /// ML-DSA-44 signing.
-    ///
-    /// Standard PKCS#11 v3.2: CKM_ML_DSA (0x00004031)
-    #[serde(default)]
-    pub ml_dsa_44: Option<u64>,
-
-    /// ML-DSA-65 signing.
-    ///
-    /// Standard PKCS#11 v3.2: CKM_ML_DSA (0x00004031) — level selected via CKA_PARAMETER_SET.
-    #[serde(default)]
-    pub ml_dsa_65: Option<u64>,
-
-    /// ML-DSA-87 signing.
-    ///
-    /// Standard PKCS#11 v3.2: CKM_ML_DSA (0x00004031) — level selected via CKA_PARAMETER_SET.
-    #[serde(default)]
-    pub ml_dsa_87: Option<u64>,
-
-    /// ML-KEM key pair generation (FIPS 203).
-    ///
-    /// Standard PKCS#11 v3.2: CKM_ML_KEM_KEY_PAIR_GEN (0x00004024)
-    #[serde(default)]
-    pub ml_kem_keygen: Option<u64>,
-
-    /// ML-KEM-512 encapsulate/decapsulate.
-    ///
-    /// Standard PKCS#11 v3.2: CKM_ML_KEM (0x00004025)
-    #[serde(default)]
-    pub ml_kem_512: Option<u64>,
-
-    /// ML-KEM-768 encapsulate/decapsulate.
-    ///
-    /// Standard PKCS#11 v3.2: CKM_ML_KEM (0x00004025)
-    #[serde(default)]
-    pub ml_kem_768: Option<u64>,
-
-    /// ML-KEM-1024 encapsulate/decapsulate.
-    ///
-    /// Standard PKCS#11 v3.2: CKM_ML_KEM (0x00004025)
-    #[serde(default)]
-    pub ml_kem_1024: Option<u64>,
-}
-
-impl Default for PqcMechanismIds {
-    fn default() -> Self {
-        // Use the standard PKCS#11 v3.2 mechanism values.
-        // The cryptoki crate constants (MechanismType::ML_DSA_KEY_PAIR_GEN, etc.)
-        // carry these values, so we store them as u64 for config-file compatibility.
-        Self {
-            ml_dsa_keygen: Some(*MechanismType::ML_DSA_KEY_PAIR_GEN),
-            ml_dsa_44: Some(*MechanismType::ML_DSA),
-            ml_dsa_65: Some(*MechanismType::ML_DSA),
-            ml_dsa_87: Some(*MechanismType::ML_DSA),
-            ml_kem_keygen: Some(*MechanismType::ML_KEM_KEY_PAIR_GEN),
-            ml_kem_512: Some(*MechanismType::ML_KEM),
-            ml_kem_768: Some(*MechanismType::ML_KEM),
-            ml_kem_1024: Some(*MechanismType::ML_KEM),
-        }
-    }
-}
 
 /// Key algorithm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,7 +87,7 @@ impl HsmKeyPair {
     /// * `algorithm` - Key algorithm
     /// * `label` - Key label (CKA_LABEL)
     /// * `id` - Key ID (CKA_ID), typically SHA-1 hash of public key
-    /// * `provider_config` - Provider configuration (for PQC mechanism IDs)
+    /// * `provider_config` - Provider configuration
     ///
     /// # NIAP CA PP Compliance
     ///
@@ -184,7 +105,6 @@ impl HsmKeyPair {
         label: &str,
         id: &[u8],
         provider_config: &HsmProviderConfig,
-        pqc_mechanisms: &PqcMechanismIds,
     ) -> HsmResult<Self> {
         let session = slot.open_rw_session()?;
 
@@ -196,10 +116,10 @@ impl HsmKeyPair {
                 Self::generate_ecdsa(&session, curve, label, id, provider_config)?
             }
             KeyAlgorithm::MlDsa(level) => {
-                Self::generate_ml_dsa(&session, level, label, id, provider_config, pqc_mechanisms)?
+                Self::generate_ml_dsa(&session, level, label, id, provider_config)?
             }
             KeyAlgorithm::MlKem(level) => {
-                Self::generate_ml_kem(&session, level, label, id, provider_config, pqc_mechanisms)?
+                Self::generate_ml_kem(&session, level, label, id, provider_config)?
             }
         };
 
@@ -308,7 +228,6 @@ impl HsmKeyPair {
         label: &str,
         id: &[u8],
         config: &HsmProviderConfig,
-        _pqc_mechanisms: &PqcMechanismIds,
     ) -> HsmResult<(ObjectHandle, ObjectHandle)> {
         // Check if HSM supports the standard ML-DSA mechanism
         if !config
@@ -372,7 +291,6 @@ impl HsmKeyPair {
         label: &str,
         id: &[u8],
         config: &HsmProviderConfig,
-        _pqc_mechanisms: &PqcMechanismIds,
     ) -> HsmResult<(ObjectHandle, ObjectHandle)> {
         // Check if HSM supports the standard ML-KEM mechanism
         if !config
@@ -579,33 +497,6 @@ mod tests {
         assert_eq!(EcdsaCurve::P256.oid().len(), 10);
         assert_eq!(EcdsaCurve::P384.oid().len(), 7);
         assert_eq!(EcdsaCurve::P521.oid().len(), 7);
-    }
-
-    #[test]
-    fn test_pqc_mechanism_ids_default() {
-        let ids = PqcMechanismIds::default();
-        assert!(ids.ml_dsa_keygen.is_some());
-        assert!(ids.ml_kem_keygen.is_some());
-    }
-
-    #[test]
-    fn test_pqc_mechanism_ids_use_standard_values() {
-        let ids = PqcMechanismIds::default();
-        // Verify default mechanism IDs match the standard PKCS#11 v3.2 values
-        assert_eq!(
-            ids.ml_dsa_keygen.unwrap(),
-            *MechanismType::ML_DSA_KEY_PAIR_GEN
-        );
-        assert_eq!(ids.ml_dsa_44.unwrap(), *MechanismType::ML_DSA);
-        assert_eq!(ids.ml_dsa_65.unwrap(), *MechanismType::ML_DSA);
-        assert_eq!(ids.ml_dsa_87.unwrap(), *MechanismType::ML_DSA);
-        assert_eq!(
-            ids.ml_kem_keygen.unwrap(),
-            *MechanismType::ML_KEM_KEY_PAIR_GEN
-        );
-        assert_eq!(ids.ml_kem_512.unwrap(), *MechanismType::ML_KEM);
-        assert_eq!(ids.ml_kem_768.unwrap(), *MechanismType::ML_KEM);
-        assert_eq!(ids.ml_kem_1024.unwrap(), *MechanismType::ML_KEM);
     }
 
     #[test]

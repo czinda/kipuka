@@ -128,6 +128,13 @@ pub struct AuditConfig {
     /// When empty (default), all events are audited.
     #[serde(default)]
     pub auditable_events: Vec<String>,
+
+    /// Override the interval (in seconds) between rotation checks.
+    ///
+    /// When `None` (the default), the interval is derived from the
+    /// `rotation_policy`: 3600s for `size`, 86400s for `daily`/`weekly`.
+    #[serde(default)]
+    pub rotation_check_interval_secs: Option<u64>,
 }
 
 fn bool_true() -> bool {
@@ -169,6 +176,7 @@ impl Default for AuditConfig {
             alarm_threshold: default_alarm_threshold(),
             alarm_action: default_alarm_action(),
             auditable_events: Vec::new(),
+            rotation_check_interval_secs: None,
         }
     }
 }

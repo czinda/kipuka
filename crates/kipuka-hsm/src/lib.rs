@@ -18,8 +18,8 @@
 //!
 //! # Post-Quantum Cryptography
 //!
-//! PQC mechanisms (ML-DSA, ML-KEM) are vendor-specific until PKCS#11 v3.2 standardization.
-//! Each provider configuration includes vendor-specific mechanism IDs via `PqcMechanismIds`.
+//! PQC mechanisms (ML-DSA, ML-KEM) use the standard PKCS#11 v3.2 mechanism IDs
+//! provided by the `cryptoki` crate (e.g. `MechanismType::ML_DSA`, `MechanismType::ML_KEM`).
 //!
 //! When HSM does not support PQC, the library can fall back to software implementations
 //! using `synta-certificate`.
@@ -72,7 +72,6 @@
 //!     HsmSlot, HsmKeyPair, KeyAlgorithm, EcdsaCurve,
 //!     Pkcs11Context, sign_ecdsa,
 //!     providers::HsmProvider,
-//!     key::PqcMechanismIds,
 //! };
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -85,14 +84,12 @@
 //! let slot = HsmSlot::find_first_slot(&context)?;
 //!
 //! // Generate ECDSA P-256 key pair
-//! let pqc_mechanisms = PqcMechanismIds::default();
 //! let key = HsmKeyPair::generate(
 //!     &slot,
 //!     KeyAlgorithm::Ecdsa(EcdsaCurve::P256),
 //!     "my-signing-key",
 //!     &[0x01, 0x02, 0x03], // CKA_ID
 //!     &config,
-//!     &pqc_mechanisms,
 //! )?;
 //!
 //! // Sign a message digest
@@ -109,7 +106,6 @@
 //!     HsmSlot, HsmKeyPair, KeyAlgorithm, MlDsaLevel,
 //!     Pkcs11Context, sign_ml_dsa,
 //!     providers::HsmProvider,
-//!     key::PqcMechanismIds,
 //! };
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -118,13 +114,6 @@
 //! let context = Pkcs11Context::new(&config.library_path)?;
 //! let slot = HsmSlot::find_first_slot(&context)?;
 //!
-//! // Configure vendor-specific PQC mechanism IDs
-//! let pqc_mechanisms = PqcMechanismIds {
-//!     ml_dsa_keygen: Some(0x8000_0001),
-//!     ml_dsa_65: Some(0x8000_0003),
-//!     ..Default::default()
-//! };
-//!
 //! // Generate ML-DSA-65 key pair
 //! let key = HsmKeyPair::generate(
 //!     &slot,
@@ -132,12 +121,11 @@
 //!     "ml-dsa-signing-key",
 //!     &[0x04, 0x05, 0x06],
 //!     &config,
-//!     &pqc_mechanisms,
 //! )?;
 //!
 //! // Sign a message (ML-DSA hashes internally)
 //! let message = b"Hello, post-quantum world!";
-//! let signature = sign_ml_dsa(&key, message, MlDsaLevel::L3, &pqc_mechanisms)?;
+//! let signature = sign_ml_dsa(&key, message, MlDsaLevel::L3)?;
 //! # Ok(())
 //! # }
 //! ```
@@ -154,7 +142,7 @@ pub mod providers;
 
 // Re-exports for convenience
 pub use error::{HsmError, HsmResult};
-pub use key::{EcdsaCurve, HsmKeyPair, KeyAlgorithm, MlDsaLevel, MlKemLevel, PqcMechanismIds};
+pub use key::{EcdsaCurve, HsmKeyPair, KeyAlgorithm, MlDsaLevel, MlKemLevel};
 pub use pkcs11::Pkcs11Context;
 pub use providers::HsmProvider;
 pub use sign::{
@@ -300,13 +288,6 @@ mod tests {
         let _provider = HsmProvider::Kryoptic;
         let _config = _provider.config();
         assert!(!_config.library_path.is_empty());
-    }
-
-    #[test]
-    fn test_pqc_mechanism_ids() {
-        let ids = PqcMechanismIds::default();
-        assert!(ids.ml_dsa_keygen.is_some());
-        assert!(ids.ml_kem_keygen.is_some());
     }
 
     #[test]

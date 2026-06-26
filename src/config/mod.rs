@@ -138,6 +138,16 @@ pub struct Config {
     /// Absent → OCSP checking disabled (RHELBU-3536 R21).
     #[serde(default)]
     pub ocsp: OcspConfig,
+
+    /// Interval in seconds between CRL regeneration cycles.
+    ///
+    /// Default: 3600 (1 hour).
+    #[serde(default = "default_crl_refresh_interval_secs")]
+    pub crl_refresh_interval_secs: u64,
+}
+
+fn default_crl_refresh_interval_secs() -> u64 {
+    3600
 }
 
 impl Config {

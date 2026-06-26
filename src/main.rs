@@ -515,9 +515,10 @@ async fn shutdown_signal(timeout_secs: u64) {
 fn spawn_background_tasks(state: AppState) {
     // ── CRL refresh ──────────────────────────────────────────────────────
     {
+        let crl_interval_secs = state.config.crl_refresh_interval_secs;
         let state = state.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(crl_interval_secs));
             loop {
                 interval.tick().await;
                 tracing::debug!("CRL refresh tick");
@@ -545,10 +546,14 @@ fn spawn_background_tasks(state: AppState) {
                 return;
             }
 
-            let check_interval = match audit.rotation_policy {
-                RotationPolicy::Size => std::time::Duration::from_secs(3600),
-                RotationPolicy::Weekly => std::time::Duration::from_secs(86400),
-                _ => std::time::Duration::from_secs(86400),
+            let check_interval = if let Some(override_secs) = audit.rotation_check_interval_secs {
+                std::time::Duration::from_secs(override_secs)
+            } else {
+                match audit.rotation_policy {
+                    RotationPolicy::Size => std::time::Duration::from_secs(3600),
+                    RotationPolicy::Weekly => std::time::Duration::from_secs(86400),
+                    _ => std::time::Duration::from_secs(86400),
+                }
             };
             let mut interval = tokio::time::interval(check_interval);
 
@@ -628,9 +633,10 @@ fn spawn_background_tasks(state: AppState) {
 
     // ── OTP cleanup ──────────────────────────────────────────────────────
     if state.otp_store.is_some() {
+        let otp_cleanup_secs = state.config.otp.cleanup_interval_secs;
         let state = state.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(otp_cleanup_secs));
             loop {
                 interval.tick().await;
                 tracing::debug!("OTP cleanup tick");

@@ -72,6 +72,12 @@ pub struct OtpConfig {
     /// LDAP connection configuration (required when `storage_backend = "ldap"`).
     #[serde(default)]
     pub ldap: Option<OtpLdapConfig>,
+
+    /// Interval in seconds between expired OTP cleanup sweeps.
+    ///
+    /// Default: 300 (5 minutes).
+    #[serde(default = "default_cleanup_interval_secs")]
+    pub cleanup_interval_secs: u64,
 }
 
 /// LDAP backend configuration for OTP storage (RHELBU-3536 R7).
@@ -133,6 +139,10 @@ fn default_ldap_timeout_secs() -> u64 {
     10
 }
 
+fn default_cleanup_interval_secs() -> u64 {
+    300
+}
+
 impl Default for OtpConfig {
     fn default() -> Self {
         Self {
@@ -142,6 +152,7 @@ impl Default for OtpConfig {
             max_usage: default_max_usage(),
             storage_backend: OtpStorageBackend::default(),
             ldap: None,
+            cleanup_interval_secs: default_cleanup_interval_secs(),
         }
     }
 }
