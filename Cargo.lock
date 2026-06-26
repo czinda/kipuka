@@ -245,26 +245,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bindgen"
-version = "0.72.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "993776b509cfb49c750f11b8f07a46fa23e0a1386ffc01fb1e7d343efc387895"
-dependencies = [
- "bitflags",
- "cexpr",
- "clang-sys",
- "itertools",
- "log",
- "prettyplease",
- "proc-macro2",
- "quote",
- "regex",
- "rustc-hash",
- "shlex 1.3.0",
- "syn",
-]
-
-[[package]]
 name = "bitflags"
 version = "2.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1443,7 +1423,7 @@ version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5103ac4557eacd36ff678b654b943f8966d3db9688fbd180a0b4c5464759ce17"
 dependencies = [
- "bindgen 0.71.1",
+ "bindgen",
  "pkg-config",
 ]
 
@@ -1599,7 +1579,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c119b52baed5c67a7178fb99e43aa1ffd9972d5047597d52503ab26fe7a631f6"
 dependencies = [
- "bindgen 0.72.1",
+ "bindgen",
  "pkg-config",
 ]
 
@@ -2682,15 +2662,6 @@ dependencies = [
 [[package]]
 name = "synta"
 version = "0.2.6"
-source = "git+https://codeberg.org/czinda/synta.git?branch=feature%2Fsynta-cmc#e1159fe297bb034b3b892a499618d26a1774d6cf"
-dependencies = [
- "smallvec",
- "synta-derive 0.2.6 (git+https://codeberg.org/czinda/synta.git?branch=feature%2Fsynta-cmc)",
-]
-
-[[package]]
-name = "synta"
-version = "0.2.6"
 source = "git+https://codeberg.org/abbra/synta.git?branch=main#3d649b801252375d68ccf51918adbb71f7a2229b"
 dependencies = [
  "smallvec",
@@ -2698,16 +2669,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "synta-certificate"
+name = "synta"
 version = "0.2.6"
-source = "git+https://codeberg.org/czinda/synta.git?branch=feature%2Fsynta-cmc#e1159fe297bb034b3b892a499618d26a1774d6cf"
+source = "git+https://codeberg.org/czinda/synta.git?rev=e1159fe#e1159fe297bb034b3b892a499618d26a1774d6cf"
 dependencies = [
- "cryptoki",
- "log",
- "native-ossl",
- "synta 0.2.6 (git+https://codeberg.org/czinda/synta.git?branch=feature%2Fsynta-cmc)",
- "synta-codegen 0.2.6 (git+https://codeberg.org/czinda/synta.git?branch=feature%2Fsynta-cmc)",
- "synta-derive 0.2.6 (git+https://codeberg.org/czinda/synta.git?branch=feature%2Fsynta-cmc)",
+ "smallvec",
+ "synta-derive 0.2.6 (git+https://codeberg.org/czinda/synta.git?rev=e1159fe)",
 ]
 
 [[package]]
@@ -2724,18 +2691,26 @@ dependencies = [
 ]
 
 [[package]]
-name = "synta-cmc"
+name = "synta-certificate"
 version = "0.2.6"
-source = "git+https://codeberg.org/czinda/synta.git?branch=feature%2Fsynta-cmc#e1159fe297bb034b3b892a499618d26a1774d6cf"
+source = "git+https://codeberg.org/czinda/synta.git?rev=e1159fe#e1159fe297bb034b3b892a499618d26a1774d6cf"
 dependencies = [
- "synta 0.2.6 (git+https://codeberg.org/czinda/synta.git?branch=feature%2Fsynta-cmc)",
- "synta-certificate 0.2.6 (git+https://codeberg.org/czinda/synta.git?branch=feature%2Fsynta-cmc)",
+ "cryptoki",
+ "log",
+ "native-ossl",
+ "synta 0.2.6 (git+https://codeberg.org/czinda/synta.git?rev=e1159fe)",
+ "synta-codegen 0.2.6 (git+https://codeberg.org/czinda/synta.git?rev=e1159fe)",
+ "synta-derive 0.2.6 (git+https://codeberg.org/czinda/synta.git?rev=e1159fe)",
 ]
 
 [[package]]
-name = "synta-codegen"
+name = "synta-cmc"
 version = "0.2.6"
-source = "git+https://codeberg.org/czinda/synta.git?branch=feature%2Fsynta-cmc#e1159fe297bb034b3b892a499618d26a1774d6cf"
+source = "git+https://codeberg.org/czinda/synta.git?rev=e1159fe#e1159fe297bb034b3b892a499618d26a1774d6cf"
+dependencies = [
+ "synta 0.2.6 (git+https://codeberg.org/czinda/synta.git?rev=e1159fe)",
+ "synta-certificate 0.2.6 (git+https://codeberg.org/czinda/synta.git?rev=e1159fe)",
+]
 
 [[package]]
 name = "synta-codegen"
@@ -2743,9 +2718,14 @@ version = "0.2.6"
 source = "git+https://codeberg.org/abbra/synta.git?branch=main#3d649b801252375d68ccf51918adbb71f7a2229b"
 
 [[package]]
+name = "synta-codegen"
+version = "0.2.6"
+source = "git+https://codeberg.org/czinda/synta.git?rev=e1159fe#e1159fe297bb034b3b892a499618d26a1774d6cf"
+
+[[package]]
 name = "synta-derive"
 version = "0.2.6"
-source = "git+https://codeberg.org/czinda/synta.git?branch=feature%2Fsynta-cmc#e1159fe297bb034b3b892a499618d26a1774d6cf"
+source = "git+https://codeberg.org/abbra/synta.git?branch=main#3d649b801252375d68ccf51918adbb71f7a2229b"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2755,7 +2735,7 @@ dependencies = [
 [[package]]
 name = "synta-derive"
 version = "0.2.6"
-source = "git+https://codeberg.org/abbra/synta.git?branch=main#3d649b801252375d68ccf51918adbb71f7a2229b"
+source = "git+https://codeberg.org/czinda/synta.git?rev=e1159fe#e1159fe297bb034b3b892a499618d26a1774d6cf"
 dependencies = [
  "proc-macro2",
  "quote",

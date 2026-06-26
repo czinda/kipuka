@@ -21,7 +21,7 @@ repository = "https://codeberg.org/czinda/kipuka"
 # ASN.1 / X.509 / CMS (Synta)
 synta = { git = "https://codeberg.org/abbra/synta.git", branch = "main" }
 synta-certificate = { git = "https://codeberg.org/abbra/synta.git", branch = "main", features = ["openssl"] }
-synta-cmc = { git = "https://codeberg.org/czinda/synta.git", branch = "feature/synta-cmc" }
+synta-cmc = { git = "https://codeberg.org/czinda/synta.git", rev = "e1159fe" }
 synta-krb5 = { git = "https://codeberg.org/abbra/synta.git", branch = "main", features = ["std"] }
 
 # Web framework
