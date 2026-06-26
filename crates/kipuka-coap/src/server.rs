@@ -738,8 +738,7 @@ impl CoapEstRouter {
             EstOperation::CaCerts | EstOperation::CsrAttrs => {
                 if method != CoapMethod::Get && method != CoapMethod::Fetch {
                     return Err(CoapError::UnsupportedMethod(format!(
-                        "{path} requires GET or FETCH, got {:?}",
-                        method
+                        "{path} requires GET or FETCH, got {method:?}"
                     )));
                 }
             }
@@ -748,8 +747,7 @@ impl CoapEstRouter {
             | EstOperation::ServerKeygen => {
                 if method != CoapMethod::Post {
                     return Err(CoapError::UnsupportedMethod(format!(
-                        "{path} requires POST, got {:?}",
-                        method
+                        "{path} requires POST, got {method:?}"
                     )));
                 }
             }

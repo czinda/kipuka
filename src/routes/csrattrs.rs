@@ -74,8 +74,7 @@ pub mod oids {
     pub const EXTENSION_REQ_TEMPLATE: &str = "1.2.840.113549.1.9.16.2.62";
 
     /// OID components for id-aa-extensionReqTemplate.
-    pub const EXTENSION_REQ_TEMPLATE_COMPONENTS: &[u32] =
-        &[1, 2, 840, 113549, 1, 9, 16, 2, 62];
+    pub const EXTENSION_REQ_TEMPLATE_COMPONENTS: &[u32] = &[1, 2, 840, 113549, 1, 9, 16, 2, 62];
 
     // ── X.500 attribute type OIDs used in CSR templates ──────────────
 
@@ -577,12 +576,8 @@ fn parse_key_algorithm(spec: &str) -> Result<(Vec<u32>, Option<Vec<u32>>), Kipuk
                 "P-256" | "p-256" | "secp256r1" | "prime256v1" => {
                     synta_certificate::oids::EC_CURVE_P256.to_vec()
                 }
-                "P-384" | "p-384" | "secp384r1" => {
-                    synta_certificate::oids::EC_CURVE_P384.to_vec()
-                }
-                "P-521" | "p-521" | "secp521r1" => {
-                    synta_certificate::oids::EC_CURVE_P521.to_vec()
-                }
+                "P-384" | "p-384" | "secp384r1" => synta_certificate::oids::EC_CURVE_P384.to_vec(),
+                "P-521" | "p-521" | "secp521r1" => synta_certificate::oids::EC_CURVE_P521.to_vec(),
                 other => {
                     return Err(KipukaError::Internal(format!(
                         "unsupported EC curve '{other}'"

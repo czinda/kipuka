@@ -14,7 +14,7 @@ all-features = true
 version = 2
 ignore = [
     # Transitive dependencies — no direct fix available, tracking upstream.
-    "RUSTSEC-2024-0436", # paste: unmaintained (used by synta, no alternative)
+    # "RUSTSEC-2024-0436", # paste: unmaintained — removed from dep tree
     "RUSTSEC-2023-0071", # rsa: Marvin Attack timing sidechannel (transitive via rustls)
     "RUSTSEC-2025-0134", # rustls-pemfile: unmaintained (migrating to rustls-pki-types)
 ]
@@ -49,6 +49,7 @@ allow = [
     "BSL-1.0",
     "CC0-1.0",
     "MPL-2.0",
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.8
 
@@ -77,4 +78,5 @@ unknown-git = "warn"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = [
     "https://codeberg.org/abbra/synta.git",
+    "https://codeberg.org/czinda/synta.git",
 ]
