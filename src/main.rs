@@ -589,7 +589,7 @@ fn spawn_background_tasks(state: AppState) {
                 }
 
                 let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-                let rotated_path = format!("{}.{}", log_path, timestamp);
+                let rotated_path = format!("{log_path}.{timestamp}");
 
                 match tokio::fs::rename(&log_path, &rotated_path).await {
                     Ok(()) => {
@@ -783,7 +783,7 @@ async fn regenerate_crl(state: &AppState, ca: &Arc<CaState>) -> Result<(), Strin
         &state.audit,
         kipuka::audit::AuditEvent::new(kipuka::audit::AuditEventType::CrlGenerate)
             .with_ca_id(&ca.id)
-            .with_detail(format!("CRL generated with {} revoked entries", count)),
+            .with_detail(format!("CRL generated with {count} revoked entries")),
     )
     .await;
 
@@ -832,7 +832,7 @@ fn init_gssapi_cred(
             service_str.as_bytes(),
             Some(libgssapi::oid::GSS_NT_HOSTBASED_SERVICE),
         )
-        .map_err(|e| format!("GSS name creation failed for '{}': {e}", service_str))?;
+        .map_err(|e| format!("GSS name creation failed for '{service_str}': {e}"))?;
 
         let cred = libgssapi::credential::Cred::acquire(
             Some(&name),
