@@ -15,7 +15,7 @@ inspired by the [Akamu](https://codeberg.org/abbra/akamu) ACME server.
 | **Container image** | `registry.kipuka.dev/heebus/kipuka` |
 | **API docs** | [kipuka.dev/api/](https://kipuka.dev/api/) |
 | **Project site** | [kipuka.dev](https://kipuka.dev) |
-| **CI/CD** | GitLab CI on [codeberg.org](https://codeberg.org/czinda/kipuka) |
+| **CI/CD** | GitLab CI on [gitlab.heebh.st](https://gitlab.heebh.st/heebus/kipuka) |
 
 ## Features
 
@@ -269,7 +269,7 @@ See [`docs/PROJECT.md`](docs/PROJECT.md) for EST protocol testing with `curl` an
 
 ## CI/CD
 
-GitLab CI pipelines run on [codeberg.org](https://codeberg.org/czinda/kipuka).
+GitLab CI pipelines run on [gitlab.heebh.st](https://gitlab.heebh.st/heebus/kipuka).
 Pipeline configuration lives in [`.gitlab-ci.yml`](.gitlab-ci.yml) with stage
 definitions in [`.gitlab/ci/`](.gitlab/ci/).
 
