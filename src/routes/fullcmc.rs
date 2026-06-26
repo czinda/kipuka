@@ -189,10 +189,22 @@ pub async fn post_fullcmc(
         let pem_data = tokio::fs::read(ts_file).await.map_err(|e| {
             KipukaError::Ca(format!("failed to read CMC truststore {ts_file}: {e}"))
         })?;
-        rustls_pemfile::certs(&mut std::io::BufReader::new(&pem_data[..]))
-            .filter_map(|r| r.ok())
+        let certs: Vec<Vec<u8>> = rustls_pemfile::certs(&mut std::io::BufReader::new(&pem_data[..]))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| {
+                KipukaError::Ca(format!(
+                    "malformed PEM certificate in CMC truststore {ts_file}: {e}"
+                ))
+            })?
+            .into_iter()
             .map(|c| c.to_vec())
-            .collect()
+            .collect();
+        if certs.is_empty() {
+            return Err(KipukaError::Ca(format!(
+                "CMC truststore {ts_file} contains no certificates"
+            )));
+        }
+        certs
     } else {
         vec![ca.cert_der.clone()]
     };

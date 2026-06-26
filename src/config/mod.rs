@@ -281,6 +281,11 @@ impl Config {
             star.validate()?;
         }
 
+        // ── CRL refresh interval ─────────────────────────────────────────────
+        if self.crl_refresh_interval_secs == 0 {
+            return Err("crl_refresh_interval_secs must be at least 1".into());
+        }
+
         // ── File path existence checks ───────────────────────────────────────
         // These are warnings rather than hard failures to allow config
         // validation before all files are deployed (--check-config).

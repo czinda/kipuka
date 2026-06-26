@@ -207,6 +207,12 @@ impl AuditConfig {
             );
         }
 
+        if let Some(0) = self.rotation_check_interval_secs {
+            return Err(
+                "[audit].rotation_check_interval_secs must be at least 1 when set".into(),
+            );
+        }
+
         Ok(())
     }
 }

@@ -179,6 +179,10 @@ impl OtpConfig {
             return Err("[otp].max_usage must be at least 1".into());
         }
 
+        if self.cleanup_interval_secs == 0 {
+            return Err("[otp].cleanup_interval_secs must be at least 1".into());
+        }
+
         if self.storage_backend == OtpStorageBackend::Ldap && self.ldap.is_none() {
             return Err("[otp].ldap section is required when storage_backend = \"ldap\"".into());
         }
