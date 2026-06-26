@@ -64,6 +64,15 @@ pub struct CsrTemplate {
     pub required_extensions: Vec<String>,
 }
 
+impl CsrTemplate {
+    /// Returns `true` when at least one template field carries content.
+    pub fn has_content(&self) -> bool {
+        !self.subject.is_empty()
+            || self.key_algorithm.is_some()
+            || !self.required_extensions.is_empty()
+    }
+}
+
 /// A single RDN component in the CSR template subject.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
