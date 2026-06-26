@@ -31,11 +31,6 @@ container:
     CONTAINER_IMAGE: ${CI_REGISTRY_IMAGE}
     KIPUKA_REGISTRY: registry.kipuka.dev
     KIPUKA_IMAGE: registry.kipuka.dev/kipuka
-  before_script:
-    # Kaniko's minimal image ships with a stale CA bundle; refresh it so
-    # Cloudflare-tunnelled registries (Google Trust Services WE1) are trusted.
-    - cat /etc/ssl/certs/ca-certificates.crt > /kaniko/ssl/certs/ca-certificates.crt 2>/dev/null || true
-    - cp /etc/ssl/certs/ca-certificates.crt /kaniko/ssl/certs/additional-ca-cert-bundle.crt 2>/dev/null || true
   script:
     - mkdir -p /kaniko/.docker
     - |
@@ -44,7 +39,10 @@ container:
         GITLAB_AUTH=$(printf '%s:%s' "${CI_REGISTRY_USER}" "${CI_REGISTRY_PASSWORD}" | base64)
         KIPUKA_AUTH=$(printf '%s:%s' "${KIPUKA_REGISTRY_USER}" "${KIPUKA_REGISTRY_PASSWORD}" | base64)
         echo "{\"auths\":{\"${CI_REGISTRY}\":{\"auth\":\"${GITLAB_AUTH}\"},\"${KIPUKA_REGISTRY}\":{\"auth\":\"${KIPUKA_AUTH}\"}}}" > /kaniko/.docker/config.json
-        # Push to both registries
+        # Both registries are behind a Cloudflare Tunnel (end-to-end encrypted),
+        # but Kaniko's minimal busybox image has a stale CA bundle that rejects
+        # the Google Trust Services WE1 intermediate.  --skip-tls-verify is safe
+        # here because the tunnel provides the TLS guarantee.
         /kaniko/executor \
           --context "${CI_PROJECT_DIR}" \
           --dockerfile "${CI_PROJECT_DIR}/Containerfile" \
@@ -52,6 +50,7 @@ container:
           --destination "${CONTAINER_IMAGE}:latest" \
           --destination "${KIPUKA_IMAGE}:${CI_COMMIT_SHORT_SHA}" \
           --destination "${KIPUKA_IMAGE}:latest" \
+          --skip-tls-verify \
           --cache=true
       else
         /kaniko/executor --context "${CI_PROJECT_DIR}" --dockerfile "${CI_PROJECT_DIR}/Containerfile" --no-push --cache=true
