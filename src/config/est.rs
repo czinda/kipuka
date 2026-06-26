@@ -53,6 +53,16 @@ pub struct EstConfig {
     #[serde(default)]
     pub fullcmc: bool,
 
+    /// PEM file containing trust anchors for CMC RA signer verification.
+    ///
+    /// When set, `/fullcmc` verifies the CMS SignedData signature against
+    /// these certificates instead of only the target CA cert. This allows
+    /// RA certificates issued by a different CA or intermediate to be
+    /// accepted. When absent, the target CA certificate is used as the
+    /// sole trust anchor.
+    #[serde(default)]
+    pub cmc_truststore_file: Option<String>,
+
     /// Enable the `/serverkeygen` endpoint (RFC 7030 §4.4).
     ///
     /// Server-side key generation requires HSM integration.
@@ -165,6 +175,7 @@ impl Default for EstConfig {
             simpleenroll: true,
             simplereenroll: true,
             fullcmc: false,
+            cmc_truststore_file: None,
             serverkeygen: false,
             csrattrs: true,
             default_profile: None,

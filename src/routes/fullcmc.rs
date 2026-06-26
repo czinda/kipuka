@@ -182,10 +182,20 @@ pub async fn post_fullcmc(
     // Step 1: Verify the CMS SignedData signature and extract the PKIData content.
     //
     // RFC 5272 §5 requires RA signature verification against the CA's
-    // truststore.  `verify_cms_signed_data` validates the signature,
-    // checks the signer's certificate chain, and returns the unwrapped
-    // payload (PKIData DER).
-    let truststore: Vec<Vec<u8>> = vec![ca.cert_der.clone()];
+    // truststore.  When `cmc_truststore_file` is configured, RA certs
+    // issued by a different CA or intermediate are accepted. Otherwise
+    // the target CA cert is the sole trust anchor.
+    let truststore: Vec<Vec<u8>> = if let Some(ref ts_file) = state.config.est.cmc_truststore_file {
+        let pem_data = tokio::fs::read(ts_file).await.map_err(|e| {
+            KipukaError::Ca(format!("failed to read CMC truststore {ts_file}: {e}"))
+        })?;
+        rustls_pemfile::certs(&mut std::io::BufReader::new(&pem_data[..]))
+            .filter_map(|r| r.ok())
+            .map(|c| c.to_vec())
+            .collect()
+    } else {
+        vec![ca.cert_der.clone()]
+    };
     let cms_result = crate::auth::cms_auth::verify_cms_signed_data(
         &cmc_request_der,
         &truststore,
