@@ -31,6 +31,11 @@ container:
     CONTAINER_IMAGE: ${CI_REGISTRY_IMAGE}
     KIPUKA_REGISTRY: registry.kipuka.dev
     KIPUKA_IMAGE: registry.kipuka.dev/kipuka
+  before_script:
+    # Kaniko's minimal image ships with a stale CA bundle; refresh it so
+    # Cloudflare-tunnelled registries (Google Trust Services WE1) are trusted.
+    - cat /etc/ssl/certs/ca-certificates.crt > /kaniko/ssl/certs/ca-certificates.crt 2>/dev/null || true
+    - cp /etc/ssl/certs/ca-certificates.crt /kaniko/ssl/certs/additional-ca-cert-bundle.crt 2>/dev/null || true
   script:
     - mkdir -p /kaniko/.docker
     - |
