@@ -30,7 +30,7 @@ container:
   variables:
     CONTAINER_IMAGE: ${CI_REGISTRY_IMAGE}
     KIPUKA_REGISTRY: registry.kipuka.dev
-    KIPUKA_IMAGE: registry.kipuka.dev/kipuka
+    KIPUKA_IMAGE: registry.kipuka.dev/heebus/kipuka
   script:
     - mkdir -p /kaniko/.docker
     - |
