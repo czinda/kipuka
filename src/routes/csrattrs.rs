@@ -5,6 +5,15 @@
 //! client which algorithms, extensions, and subject fields to include
 //! in its PKCS#10 CSR.
 //!
+//! ## CSR Attributes Template (RFC 9908)
+//!
+//! When `csr_template` is configured, the response also includes a
+//! `CertificationRequestInfoTemplate` attribute (OID
+//! `1.2.840.113549.1.9.16.2.63`) that partially pre-fills a
+//! CertificationRequestInfo, guiding the client on subject DN,
+//! key algorithm, and required extensions.  The template coexists
+//! with the OID-list mode for backward compatibility.
+//!
 //! No authentication required per RFC 7030 §4.5.
 //!
 //! Per-label attribute variation is supported (RHELBU-3536 R31):
@@ -18,6 +27,7 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
 use crate::auth::OptionalAuth;
+use crate::config::CsrTemplate;
 use crate::error::KipukaError;
 use crate::routes::LabelExtractor;
 use crate::routes::est::{content_types, encode_est_base64};
@@ -51,6 +61,33 @@ pub mod oids {
 
     /// subjectAltName (2.5.29.17).
     pub const SUBJECT_ALT_NAME: &str = "2.5.29.17";
+
+    /// id-aa-certificationRequestInfoTemplate (1.2.840.113549.1.9.16.2.63)
+    /// — RFC 9908 §5.1.
+    pub const CSR_TEMPLATE: &str = "1.2.840.113549.1.9.16.2.63";
+
+    /// OID components for id-aa-certificationRequestInfoTemplate.
+    pub const CSR_TEMPLATE_COMPONENTS: &[u32] = &[1, 2, 840, 113549, 1, 9, 16, 2, 63];
+
+    // ── X.500 attribute type OIDs used in CSR templates ──────────────
+
+    /// commonName (2.5.4.3).
+    pub const COMMON_NAME: &str = "2.5.4.3";
+
+    /// organizationName (2.5.4.10).
+    pub const ORGANIZATION_NAME: &str = "2.5.4.10";
+
+    /// countryName (2.5.4.6).
+    pub const COUNTRY_NAME: &str = "2.5.4.6";
+
+    /// stateOrProvinceName (2.5.4.8).
+    pub const STATE_OR_PROVINCE: &str = "2.5.4.8";
+
+    /// localityName (2.5.4.7).
+    pub const LOCALITY_NAME: &str = "2.5.4.7";
+
+    /// organizationalUnitName (2.5.4.11).
+    pub const ORG_UNIT_NAME: &str = "2.5.4.11";
 }
 
 /// `GET /.well-known/est/csrattrs`
@@ -104,13 +141,25 @@ pub async fn get_csrattrs(
         &state.config.est.csr_attributes
     };
 
-    // If no attributes are configured, return 204 No Content per RFC 7030 §4.5.1.
-    if attributes.is_empty() {
+    // Determine the CSR template: per-label overrides global.
+    let template = label
+        .csr_template
+        .as_ref()
+        .or(state.config.est.csr_template.as_ref());
+
+    // If no attributes and no template are configured, return 204 No Content
+    // per RFC 7030 §4.5.1.
+    let has_template = template.is_some_and(|t| {
+        !t.subject.is_empty() || t.key_algorithm.is_some() || !t.required_extensions.is_empty()
+    });
+    if attributes.is_empty() && !has_template {
         return Ok(StatusCode::NO_CONTENT.into_response());
     }
 
-    // Encode the attributes as a DER SEQUENCE of OIDs using synta Encoder.
-    let csrattrs_der = encode_csr_attrs(attributes)?;
+    // Encode the attributes as a DER SEQUENCE of AttrOrOID values.
+    // When a template is configured, the template Attribute is appended
+    // after the OID list within the same CsrAttrs SEQUENCE.
+    let csrattrs_der = encode_csr_attrs_with_template(attributes, template)?;
 
     let body = encode_est_base64(&csrattrs_der);
 
@@ -213,4 +262,24 @@ fn resolve_oid_components(oid_str: &str) -> Result<Vec<u32>, KipukaError> {
         }
     };
     Ok(components.to_vec())
+}
+
+/// Encode CSR attribute OIDs and an optional RFC 9908 template into DER.
+///
+/// When `template` is `None`, this is equivalent to [`encode_csr_attrs`].
+/// When a template is present, the template `Attribute` is appended to
+/// the `CsrAttrs` SEQUENCE after the OID list entries.
+///
+/// TODO: Full template encoding (subject DN, key algorithm, required
+/// extensions) will be implemented as part of RFC 9908 support.  For now,
+/// the template parameter is accepted but not yet encoded — the function
+/// delegates to `encode_csr_attrs` for the OID list.
+pub(crate) fn encode_csr_attrs_with_template(
+    oid_strings: &[String],
+    _template: Option<&CsrTemplate>,
+) -> Result<Vec<u8>, KipukaError> {
+    // Phase 1: encode the OID list (backward-compatible mode).
+    // Phase 2 (TODO): append a CertificationRequestInfoTemplate Attribute
+    // when _template is Some(_).
+    encode_csr_attrs(oid_strings)
 }

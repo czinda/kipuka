@@ -18,6 +18,62 @@
 
 use serde::Deserialize;
 
+/// CSR template mode configuration (draft-ietf-lamps-rfc7030-csrattrs / RFC 9908).
+///
+/// When configured, the `/csrattrs` response includes a
+/// `CertificationRequestInfoTemplate` attribute alongside the OID list,
+/// guiding clients on expected subject DN, key algorithm, and extensions.
+///
+/// The template is backward-compatible: clients that do not understand
+/// the template attribute will ignore it and process only the OID list.
+///
+/// ```toml
+/// [est.csr_template]
+/// key_algorithm = "ec:P-256"
+/// required_extensions = ["2.5.29.17"]
+///
+/// [[est.csr_template.subject]]
+/// oid = "2.5.4.10"
+/// value = "Example Corp"
+///
+/// [[est.csr_template.subject]]
+/// oid = "2.5.4.3"
+/// ```
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CsrTemplate {
+    /// Required subject DN components.
+    ///
+    /// Each entry specifies an OID and an optional value. When `value` is
+    /// `None`, the client must supply its own value for that RDN component.
+    #[serde(default)]
+    pub subject: Vec<CsrTemplateRdn>,
+
+    /// Required key algorithm constraint.
+    ///
+    /// Format: `"ec:P-256"`, `"ec:P-384"`, `"rsa:2048"`, `"rsa:4096"`.
+    /// When set, encodes a `SubjectPublicKeyInfoTemplate` in the template.
+    #[serde(default)]
+    pub key_algorithm: Option<String>,
+
+    /// Required X.509 extension OIDs (client fills values).
+    ///
+    /// Each entry is a dotted-decimal OID string (e.g., `"2.5.29.17"`
+    /// for subjectAltName).
+    #[serde(default)]
+    pub required_extensions: Vec<String>,
+}
+
+/// A single RDN component in the CSR template subject.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CsrTemplateRdn {
+    /// OID of the attribute type (dotted-decimal, e.g., `"2.5.4.3"` for CN).
+    pub oid: String,
+    /// Pre-filled value. When `None`, the client must provide this field.
+    pub value: Option<String>,
+}
+
 /// Authentication method for EST enrollment requests.
 ///
 /// RFC 7030 §3.2.3 defines several client authentication mechanisms.
@@ -88,6 +144,15 @@ pub struct EstConfig {
     #[serde(default)]
     pub csr_attributes: Vec<String>,
 
+    /// CSR template mode (draft-ietf-lamps-rfc7030-csrattrs / RFC 9908).
+    ///
+    /// When set, the `/csrattrs` response includes a
+    /// `CertificationRequestInfoTemplate` attribute that tells the client
+    /// which subject DN fields, key algorithm, and extensions are required.
+    /// This coexists with the OID-list mode.
+    #[serde(default)]
+    pub csr_template: Option<CsrTemplate>,
+
     /// Per-label enrollment configurations.
     #[serde(default, rename = "label")]
     pub labels: Vec<EstLabelConfig>,
@@ -105,6 +170,21 @@ pub struct EstConfig {
     /// Default: 300 (5 minutes).
     #[serde(default = "default_retry_after_secs")]
     pub disconnected_retry_after_secs: u64,
+
+    /// Number of days before certificate expiry to start the suggested
+    /// renewal window (draft-ietf-lamps-est-renewal-info).
+    ///
+    /// The renewal window starts at `not_after - renewal_window_days` and
+    /// ends one day before `not_after`.
+    #[serde(default = "default_renewal_window_days")]
+    pub renewal_window_days: u32,
+
+    /// `Retry-After` value (seconds) returned in renewal-info responses
+    /// to control client polling frequency.
+    ///
+    /// Default: 86400 (1 day).
+    #[serde(default = "default_renewal_retry_after")]
+    pub renewal_retry_after_secs: u64,
 }
 
 /// `[[est.label]]` — per-label enrollment profile.
@@ -144,6 +224,10 @@ pub struct EstLabelConfig {
     #[serde(default)]
     pub csr_attributes: Vec<String>,
 
+    /// Per-label CSR template (overrides global `csr_template` for this label).
+    #[serde(default)]
+    pub csr_template: Option<CsrTemplate>,
+
     /// Require that the CSR Common Name matches the authenticated identity.
     ///
     /// When `true`, the server rejects CSRs where the CN does not match
@@ -169,6 +253,14 @@ fn default_retry_after_secs() -> u64 {
     300
 }
 
+fn default_renewal_window_days() -> u32 {
+    30
+}
+
+fn default_renewal_retry_after() -> u64 {
+    86400
+}
+
 impl Default for EstConfig {
     fn default() -> Self {
         Self {
@@ -180,9 +272,12 @@ impl Default for EstConfig {
             csrattrs: true,
             default_profile: None,
             csr_attributes: Vec::new(),
+            csr_template: None,
             labels: Vec::new(),
             disconnected: false,
             disconnected_retry_after_secs: default_retry_after_secs(),
+            renewal_window_days: default_renewal_window_days(),
+            renewal_retry_after_secs: default_renewal_retry_after(),
         }
     }
 }

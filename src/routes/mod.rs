@@ -19,6 +19,7 @@ pub mod coap;
 pub mod csrattrs;
 pub mod est;
 pub mod fullcmc;
+pub mod renewal_info;
 pub mod serverkeygen;
 pub mod simpleenroll;
 pub mod simplereenroll;
@@ -95,6 +96,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .nest("/.well-known/est/cms", cms_est::cms_est_router())
         // STAR certificate routes (RFC 8739).
         .nest("/.well-known/est/star", star::star_router())
+        // Renewal info (draft-ietf-lamps-est-renewal-info).
+        .route(
+            "/.well-known/est/renewal-info/{cert_id}",
+            get(renewal_info::get_renewal_info),
+        )
         // CMP v3 endpoint (RFC 9810).
         .route("/.well-known/cmp", post(cmp::post_cmp))
         // Web dashboard (static files).
@@ -144,6 +150,8 @@ pub struct LabelExtractor {
     pub require_cn_match: bool,
     /// Per-label CSR attribute OIDs (overrides global when non-empty).
     pub csr_attributes: Vec<String>,
+    /// Per-label CSR template (RFC 9908); `None` means no template.
+    pub csr_template: Option<crate::config::CsrTemplate>,
     /// Per-label maximum validity (overrides CA default).
     pub max_validity_days: Option<u32>,
     /// Per-label disconnected mode override.
@@ -211,6 +219,7 @@ where
                     ca_id,
                     require_cn_match: label_config.require_cn_match,
                     csr_attributes: label_config.csr_attributes.clone(),
+                    csr_template: label_config.csr_template.clone(),
                     max_validity_days: label_config.max_validity_days,
                     disconnected: label_config.disconnected,
                 })
@@ -224,6 +233,7 @@ where
                     ca_id,
                     require_cn_match: false,
                     csr_attributes: est_config.csr_attributes.clone(),
+                    csr_template: est_config.csr_template.clone(),
                     max_validity_days: None,
                     disconnected: None,
                 })
