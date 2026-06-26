@@ -233,9 +233,7 @@ fn extract_constraints(profile: &ProfileDetail) -> ProfileConstraints {
                                                 .subject_dn_components
                                                 .contains(&name.to_owned())
                                         {
-                                            constraints
-                                                .subject_dn_components
-                                                .push(name.to_owned());
+                                            constraints.subject_dn_components.push(name.to_owned());
                                         }
                                     }
                                 }

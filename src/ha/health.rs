@@ -183,10 +183,7 @@ impl HealthChecker {
         // For generic CAs, try a simple GET against the endpoint root.
         let health_url = if endpoint.contains("/ca") {
             // Dogtag CA: use the agent status endpoint
-            format!(
-                "{}/admin/ca/getStatus",
-                endpoint.trim_end_matches('/')
-            )
+            format!("{}/admin/ca/getStatus", endpoint.trim_end_matches('/'))
         } else {
             // Generic CA: probe the endpoint root
             endpoint.clone()
@@ -201,38 +198,30 @@ impl HealthChecker {
             .build()
             .map_err(|e| format!("HTTP client build failed: {e}"))?;
 
-        let response = client
-            .get(&health_url)
-            .send()
-            .await
-            .map_err(|e| {
-                if e.is_timeout() {
-                    format!("health probe timed out after {:?}", self.config.probe_timeout)
-                } else if e.is_connect() {
-                    format!("health probe connection refused: {e}")
-                } else {
-                    format!("health probe failed: {e}")
-                }
-            })?;
+        let response = client.get(&health_url).send().await.map_err(|e| {
+            if e.is_timeout() {
+                format!(
+                    "health probe timed out after {:?}",
+                    self.config.probe_timeout
+                )
+            } else if e.is_connect() {
+                format!("health probe connection refused: {e}")
+            } else {
+                format!("health probe failed: {e}")
+            }
+        })?;
 
         let status = response.status();
         if status.is_server_error() {
-            return Err(format!(
-                "CA returned server error: HTTP {status}"
-            ));
+            return Err(format!("CA returned server error: HTTP {status}"));
         }
 
         // For Dogtag, verify the response indicates the CA subsystem is
         // running.  A 200 OK from /admin/ca/getStatus with a body
         // containing "running" confirms the CA is operational.
         if health_url.contains("getStatus") {
-            let body = response
-                .text()
-                .await
-                .unwrap_or_default();
-            if body.to_lowercase().contains("error")
-                && !body.to_lowercase().contains("running")
-            {
+            let body = response.text().await.unwrap_or_default();
+            if body.to_lowercase().contains("error") && !body.to_lowercase().contains("running") {
                 return Err(format!(
                     "Dogtag CA reports unhealthy status: {}",
                     body.chars().take(200).collect::<String>()

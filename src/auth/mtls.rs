@@ -20,7 +20,7 @@ use axum::http::request::Parts;
 use tracing::{debug, info, warn};
 
 use synta_certificate::{
-    cert_byte_ranges, crl::CertificateList, default_signature_verifier, SignatureVerifier,
+    SignatureVerifier, cert_byte_ranges, crl::CertificateList, default_signature_verifier,
 };
 
 use super::{AuthMethod, AuthResult};
@@ -258,7 +258,10 @@ fn extract_subject_alt_names(cert_der: &[u8]) -> Vec<String> {
             }
             synta_certificate::general_name::IP_ADDRESS if content.len() == 4 => {
                 // IPv4 address
-                format!("{}.{}.{}.{}", content[0], content[1], content[2], content[3])
+                format!(
+                    "{}.{}.{}.{}",
+                    content[0], content[1], content[2], content[3]
+                )
             }
             synta_certificate::general_name::IP_ADDRESS if content.len() == 16 => {
                 // IPv6 address
@@ -453,7 +456,9 @@ async fn check_crl_fallback(cert_der: &[u8], app: &Arc<AppState>) -> Result<(), 
         }
     }
 
-    Err(format!("all CRL distribution points failed; last error: {last_err}"))
+    Err(format!(
+        "all CRL distribution points failed; last error: {last_err}"
+    ))
 }
 
 /// Fetch a CRL from the given URL, verify its signature, and check
@@ -483,11 +488,10 @@ async fn fetch_and_check_crl(
 
     // Reject excessively large CRLs (> 10 MB) to prevent resource exhaustion.
     if let Some(len) = response.content_length()
-        && len > 10_000_000 {
-            return Err(format!(
-                "CRL from {url} too large ({len} bytes, max 10 MB)"
-            ));
-        }
+        && len > 10_000_000
+    {
+        return Err(format!("CRL from {url} too large ({len} bytes, max 10 MB)"));
+    }
 
     let crl_der = response
         .bytes()
@@ -495,8 +499,8 @@ async fn fetch_and_check_crl(
         .map_err(|e| format!("failed to read CRL response body: {e}"))?;
 
     // Parse the CRL.
-    let crl = CertificateList::from_der(&crl_der)
-        .map_err(|e| format!("failed to parse CRL DER: {e}"))?;
+    let crl =
+        CertificateList::from_der(&crl_der).map_err(|e| format!("failed to parse CRL DER: {e}"))?;
 
     // Verify the CRL signature against the issuer's SPKI.
     // The CRL has the same outer SEQUENCE { TBS, AlgId, Sig } structure

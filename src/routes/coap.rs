@@ -11,9 +11,9 @@
 
 use std::sync::Arc;
 
+use kipuka_coap::CoapError;
 use kipuka_coap::dtls::ClientCertInfo;
 use kipuka_coap::server::{AuditInfo, EstOperation, EstResponse};
-use kipuka_coap::CoapError;
 
 use crate::state::AppState;
 
@@ -45,7 +45,9 @@ impl kipuka_coap::EstHandler for CoapEstHandler {
         match operation {
             EstOperation::CaCerts => handle_cacerts(&self.state),
             EstOperation::SimpleEnroll => handle_simpleenroll(payload, &self.state),
-            EstOperation::SimpleReenroll => handle_simplereenroll(payload, client_cert, &self.state),
+            EstOperation::SimpleReenroll => {
+                handle_simplereenroll(payload, client_cert, &self.state)
+            }
             EstOperation::CsrAttrs => handle_csrattrs(&self.state),
             EstOperation::ServerKeygen => Err(CoapError::Internal(
                 "server key generation not yet implemented for CoAP transport".into(),
@@ -86,10 +88,7 @@ fn handle_cacerts(state: &Arc<AppState>) -> Result<EstResponse, CoapError> {
 /// Uses the synchronous key resolution path
 /// ([`crate::ca::issue::resolve_signing_key_sync`]) since the `EstHandler`
 /// trait is synchronous.
-fn handle_simpleenroll(
-    csr_der: &[u8],
-    state: &Arc<AppState>,
-) -> Result<EstResponse, CoapError> {
+fn handle_simpleenroll(csr_der: &[u8], state: &Arc<AppState>) -> Result<EstResponse, CoapError> {
     if csr_der.is_empty() {
         return Err(CoapError::InvalidMessage("empty CSR payload".into()));
     }
@@ -106,9 +105,8 @@ fn handle_simpleenroll(
         .ok_or_else(|| CoapError::Internal(format!("CA config not found for id={ca_id}")))?;
 
     // Resolve the signing key synchronously (filesystem read or HSM lookup).
-    let resolved_key =
-        crate::ca::issue::resolve_signing_key_sync(ca_cfg, state.hsm.as_ref())
-            .map_err(|e| CoapError::Internal(format!("signing key resolution failed: {e}")))?;
+    let resolved_key = crate::ca::issue::resolve_signing_key_sync(ca_cfg, state.hsm.as_ref())
+        .map_err(|e| CoapError::Internal(format!("signing key resolution failed: {e}")))?;
 
     // Build a default enrollment profile.
     let profile = crate::ca::issue::EnrollmentProfile {

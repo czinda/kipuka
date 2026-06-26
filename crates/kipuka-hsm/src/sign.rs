@@ -175,16 +175,14 @@ impl HsmSigner for DefaultHsmSigner {
 
         // Template for the derived shared-secret key object
         let template = vec![
-            Attribute::Token(false),        // session object, not persistent
-            Attribute::Extractable(true),    // allow CKA_VALUE extraction
-            Attribute::Sensitive(false),     // needed for extraction
+            Attribute::Token(false),      // session object, not persistent
+            Attribute::Extractable(true), // allow CKA_VALUE extraction
+            Attribute::Sensitive(false),  // needed for extraction
         ];
 
         let (ciphertext, secret_handle) = session
             .encapsulate_key(&mechanism, public_key, &template)
-            .map_err(|e| {
-                HsmError::PqcNotSupported(format!("ML-KEM encapsulate failed: {e}"))
-            })?;
+            .map_err(|e| HsmError::PqcNotSupported(format!("ML-KEM encapsulate failed: {e}")))?;
 
         // Extract the shared secret value from the derived key object.
         // The returned handle is a CKK_GENERIC_SECRET; read its CKA_VALUE.
@@ -248,9 +246,7 @@ impl HsmSigner for DefaultHsmSigner {
 
         let secret_handle = session
             .decapsulate_key(&mechanism, private_key, &template, ciphertext)
-            .map_err(|e| {
-                HsmError::PqcNotSupported(format!("ML-KEM decapsulate failed: {e}"))
-            })?;
+            .map_err(|e| HsmError::PqcNotSupported(format!("ML-KEM decapsulate failed: {e}")))?;
 
         // Extract the shared secret value
         let attrs = match session
@@ -357,11 +353,7 @@ pub fn sign_ecdsa(key: &HsmKeyPair, digest: &[u8]) -> HsmResult<Vec<u8>> {
 /// ML-DSA signing internally hashes the message before signing.
 /// The HSM performs both hashing and signing.  The standard
 /// `Mechanism::MlDsa` variant from cryptoki 0.12+ is used directly.
-pub fn sign_ml_dsa(
-    key: &HsmKeyPair,
-    message: &[u8],
-    _level: MlDsaLevel,
-) -> HsmResult<Vec<u8>> {
+pub fn sign_ml_dsa(key: &HsmKeyPair, message: &[u8], _level: MlDsaLevel) -> HsmResult<Vec<u8>> {
     // Use the standard PKCS#11 v3.2 CKM_ML_DSA mechanism with default
     // hedging (HedgeType::Preferred — the token may create either a
     // hedged or deterministic signature).

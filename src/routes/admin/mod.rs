@@ -214,7 +214,9 @@ fn validate_admin_cert(
     });
 
     if trust_certs_der.is_empty() {
-        return Err(format!("no CA certificates found in admin CA file '{ca_file}'"));
+        return Err(format!(
+            "no CA certificates found in admin CA file '{ca_file}'"
+        ));
     }
 
     // 3. Verify the client certificate signature against trust anchors.

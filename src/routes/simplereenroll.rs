@@ -140,8 +140,7 @@ pub async fn post_simplereenroll(
         .ok_or_else(|| KipukaError::Ca(format!("CA config not found for id={ca_id}")))?;
 
     // Resolve key material.
-    let resolved_key =
-        crate::ca::issue::resolve_signing_key(ca_cfg, state.hsm.as_ref()).await?;
+    let resolved_key = crate::ca::issue::resolve_signing_key(ca_cfg, state.hsm.as_ref()).await?;
 
     // Build the enrollment profile.
     let profile = crate::ca::issue::EnrollmentProfile {
@@ -249,12 +248,8 @@ fn validate_pop_linking_from_csr(
     // Check for challengePassword attribute (RFC 7030 §3.5 binding value).
     if let Some(ref attrs) = csr.certification_request_info.attributes {
         for attr in attrs.elements() {
-            if attr.attr_type.components()
-                == synta_certificate::oids::PKCS9_CHALLENGE_PASSWORD
-            {
-                tracing::debug!(
-                    "POP linking: challengePassword attribute present in CSR"
-                );
+            if attr.attr_type.components() == synta_certificate::oids::PKCS9_CHALLENGE_PASSWORD {
+                tracing::debug!("POP linking: challengePassword attribute present in CSR");
                 // The challengePassword provides additional binding between the
                 // CSR and the authenticated TLS session.  A full implementation
                 // would verify the value against a computed binding (e.g., hash of
@@ -266,9 +261,8 @@ fn validate_pop_linking_from_csr(
     }
 
     // Validate subject DN match using the mtls module's RFC 6125-compliant matcher.
-    crate::auth::mtls::validate_pop_linking(auth, &csr_subject).map_err(|e| {
-        KipukaError::BadRequest(format!("POP linking validation failed: {e}"))
-    })?;
+    crate::auth::mtls::validate_pop_linking(auth, &csr_subject)
+        .map_err(|e| KipukaError::BadRequest(format!("POP linking validation failed: {e}")))?;
 
     tracing::info!("POP linking: CSR subject matches TLS certificate subject");
 

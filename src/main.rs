@@ -240,10 +240,8 @@ async fn run() -> Result<(), String> {
     .await;
 
     // ── GSSAPI credential ────────────────────────────────────────────────────
-    let (gss_cred, gssapi_require_crypto): (
-        Option<Arc<dyn std::any::Any + Send + Sync>>,
-        bool,
-    ) = init_gssapi_cred(&config)?;
+    let (gss_cred, gssapi_require_crypto): (Option<Arc<dyn std::any::Any + Send + Sync>>, bool) =
+        init_gssapi_cred(&config)?;
 
     // ── Build AppState ───────────────────────────────────────────────────────
     let state = AppStateBuilder::new()
@@ -518,7 +516,8 @@ fn spawn_background_tasks(state: AppState) {
         let crl_interval_secs = state.config.crl_refresh_interval_secs;
         let state = state.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(crl_interval_secs));
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(crl_interval_secs));
             loop {
                 interval.tick().await;
                 tracing::debug!("CRL refresh tick");
@@ -536,8 +535,8 @@ fn spawn_background_tasks(state: AppState) {
     {
         let state = state.clone();
         tokio::spawn(async move {
-            use std::path::Path;
             use kipuka::config::audit::RotationPolicy;
+            use std::path::Path;
 
             let audit = &state.config.audit;
 
@@ -568,19 +567,17 @@ fn spawn_background_tasks(state: AppState) {
                 tracing::debug!("audit rotation tick");
 
                 let needs_rotation = match rotation_policy {
-                    RotationPolicy::Size => {
-                        match tokio::fs::metadata(&log_path).await {
-                            Ok(meta) => meta.len() >= max_file_size,
-                            Err(_) => false,
-                        }
-                    }
-                    RotationPolicy::Daily => {
-                        tokio::fs::metadata(&log_path).await.is_ok()
-                    }
+                    RotationPolicy::Size => match tokio::fs::metadata(&log_path).await {
+                        Ok(meta) => meta.len() >= max_file_size,
+                        Err(_) => false,
+                    },
+                    RotationPolicy::Daily => tokio::fs::metadata(&log_path).await.is_ok(),
                     RotationPolicy::Weekly => {
                         let should = match last_weekly_rotation {
                             None => true,
-                            Some(last) => last.elapsed() >= std::time::Duration::from_secs(7 * 86400),
+                            Some(last) => {
+                                last.elapsed() >= std::time::Duration::from_secs(7 * 86400)
+                            }
                         };
                         should && tokio::fs::metadata(&log_path).await.is_ok()
                     }
@@ -608,7 +605,9 @@ fn spawn_background_tasks(state: AppState) {
                 }
 
                 let path = Path::new(&log_path);
-                if let (Some(parent), Some(base)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) {
+                if let (Some(parent), Some(base)) =
+                    (path.parent(), path.file_name().and_then(|n| n.to_str()))
+                {
                     let base = base.to_string();
                     if let Ok(mut entries) = tokio::fs::read_dir(parent).await {
                         let mut rotated = Vec::new();
@@ -636,7 +635,8 @@ fn spawn_background_tasks(state: AppState) {
         let otp_cleanup_secs = state.config.otp.cleanup_interval_secs;
         let state = state.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(otp_cleanup_secs));
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(otp_cleanup_secs));
             loop {
                 interval.tick().await;
                 tracing::debug!("OTP cleanup tick");
@@ -659,19 +659,14 @@ fn spawn_background_tasks(state: AppState) {
 }
 
 /// Regenerate the CRL for a single CA.
-async fn regenerate_crl(
-    state: &AppState,
-    ca: &Arc<CaState>,
-) -> Result<(), String> {
+async fn regenerate_crl(state: &AppState, ca: &Arc<CaState>) -> Result<(), String> {
     use synta::ToDer as _;
     use synta_certificate::CertificateListBuilder;
 
-    let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
-        kipuka::db::pg_sql(
-            "SELECT serial, revocation_time, revocation_reason \
-             FROM certificates WHERE ca_id = ? AND status = 'revoked'"
-        ),
-    )
+    let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(kipuka::db::pg_sql(
+        "SELECT serial, revocation_time, revocation_reason \
+             FROM certificates WHERE ca_id = ? AND status = 'revoked'",
+    ))
     .bind(&ca.id)
     .fetch_all(&state.db)
     .await
@@ -688,19 +683,32 @@ async fn regenerate_crl(
         .map_err(|e| format!("issuer Name encode failed: {e}"))?;
 
     let sig_alg_der: &[u8] = match ca.hash_algorithm.as_str() {
-        "sha256" => &[0x30,0x0d,0x06,0x09,0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x0b,0x05,0x00],
-        "sha384" => &[0x30,0x0d,0x06,0x09,0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x0c,0x05,0x00],
-        "sha512" => &[0x30,0x0d,0x06,0x09,0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x0d,0x05,0x00],
+        "sha256" => &[
+            0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b, 0x05,
+            0x00,
+        ],
+        "sha384" => &[
+            0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0c, 0x05,
+            0x00,
+        ],
+        "sha512" => &[
+            0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0d, 0x05,
+            0x00,
+        ],
         // ML-DSA CAs use "none" — the signature algorithm is determined by
         // the key type (FIPS 204).  OID 2.16.840.1.101.3.4.3.18 = id-ml-dsa-65.
         // The actual OID is selected by synta-certificate based on the key.
-        "none" => &[0x30,0x0b,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x03,0x12],
+        "none" => &[
+            0x30, 0x0b, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x12,
+        ],
         other => return Err(format!("unsupported hash algorithm for CRL: {other}")),
     };
 
     let now = chrono::Utc::now();
     let this_update = now.format("%Y%m%d%H%M%SZ").to_string();
-    let next_update = (now + chrono::Duration::hours(1)).format("%Y%m%d%H%M%SZ").to_string();
+    let next_update = (now + chrono::Duration::hours(1))
+        .format("%Y%m%d%H%M%SZ")
+        .to_string();
 
     let mut builder = CertificateListBuilder::new()
         .issuer(&issuer_der)
@@ -711,17 +719,28 @@ async fn regenerate_crl(
     for (serial_hex, rev_time, rev_reason) in &rows {
         let serial_bytes = hex::decode(serial_hex).unwrap_or_default();
         let reason_code: Option<u8> = rev_reason.as_deref().map(|r| match r {
-            "keyCompromise" => 1, "cACompromise" => 2, "affiliationChanged" => 3,
-            "superseded" => 4, "cessationOfOperation" => 5, "certificateHold" => 6,
-            "removeFromCRL" => 8, "privilegeWithdrawn" => 9, "aACompromise" => 10,
+            "keyCompromise" => 1,
+            "cACompromise" => 2,
+            "affiliationChanged" => 3,
+            "superseded" => 4,
+            "cessationOfOperation" => 5,
+            "certificateHold" => 6,
+            "removeFromCRL" => 8,
+            "privilegeWithdrawn" => 9,
+            "aACompromise" => 10,
             _ => 0,
         });
         builder = builder.revoke(&serial_bytes, rev_time, reason_code);
     }
 
-    let tbs_der = builder.build().map_err(|e| format!("CRL TBS build failed: {e}"))?;
+    let tbs_der = builder
+        .build()
+        .map_err(|e| format!("CRL TBS build failed: {e}"))?;
 
-    let ca_cfg = state.config.cas.iter()
+    let ca_cfg = state
+        .config
+        .cas
+        .iter()
         .find(|c| c.id == ca.id)
         .ok_or_else(|| format!("no CaConfig for CA '{}'", ca.id))?;
 
@@ -735,9 +754,14 @@ async fn regenerate_crl(
     // uses the key's native algorithm without a separate hash step.
     let (signature, crl_der) = {
         use synta_certificate::PrivateKey as _;
-        let effective_hash = if ca.hash_algorithm == "none" { "" } else { &ca.hash_algorithm };
+        let effective_hash = if ca.hash_algorithm == "none" {
+            ""
+        } else {
+            &ca.hash_algorithm
+        };
         let signer = pem_key.as_signer(effective_hash);
-        let sig = signer.sign_tbs_erased(&tbs_der)
+        let sig = signer
+            .sign_tbs_erased(&tbs_der)
             .map_err(|e| format!("CRL signing failed: {e}"))?;
 
         let crl = CertificateListBuilder::assemble(&tbs_der, sig_alg_der, &sig)
@@ -839,6 +863,9 @@ fn init_gssapi_cred(
         }
 
         // Store a placeholder so the auth layer knows GSSAPI is configured.
-        Ok((Some(Arc::new(()) as Arc<dyn std::any::Any + Send + Sync>), require_crypto))
+        Ok((
+            Some(Arc::new(()) as Arc<dyn std::any::Any + Send + Sync>),
+            require_crypto,
+        ))
     }
 }

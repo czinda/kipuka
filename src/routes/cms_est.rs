@@ -222,8 +222,9 @@ pub async fn post_cms_simplereenroll(
     // MUST match the CSR subject.  This is analogous to the mTLS POP
     // linking check in standard re-enrollment.
     {
-        let csr = synta_certificate::csr::CertificationRequest::from_der(csr_der)
-            .map_err(|e| KipukaError::BadRequest(format!("CSR parse failed for POP linking: {e}")))?;
+        let csr = synta_certificate::csr::CertificationRequest::from_der(csr_der).map_err(|e| {
+            KipukaError::BadRequest(format!("CSR parse failed for POP linking: {e}"))
+        })?;
 
         let csr_subject_der = csr
             .certification_request_info
@@ -403,9 +404,11 @@ pub async fn post_cms_fullcmc(
     // certificate and verify the OID is present.
     {
         let signer_cert = synta_certificate::Certificate::from_der(&cms_result.signer_cert_der)
-            .map_err(|e| KipukaError::BadRequest(format!(
-                "failed to parse CMS signer certificate for EKU check: {e}"
-            )))?;
+            .map_err(|e| {
+                KipukaError::BadRequest(format!(
+                    "failed to parse CMS signer certificate for EKU check: {e}"
+                ))
+            })?;
 
         let has_cmc_ra = signer_cert
             .tbs_certificate
@@ -450,10 +453,8 @@ pub async fn post_cms_fullcmc(
     let cmc_request_der = &cms_result.payload;
 
     // Unwrap the inner CMC SignedData to get the PKIData content.
-    let (pki_data_der, _inner_signer_certs) =
-        synta_cmc::parser::unwrap_signed_cmc(cmc_request_der).map_err(|e| {
-            KipukaError::BadRequest(format!("CMC inner SignedData unwrap failed: {e}"))
-        })?;
+    let (pki_data_der, _inner_signer_certs) = synta_cmc::parser::unwrap_signed_cmc(cmc_request_der)
+        .map_err(|e| KipukaError::BadRequest(format!("CMC inner SignedData unwrap failed: {e}")))?;
 
     if pki_data_der.is_empty() {
         return Err(KipukaError::BadRequest(
@@ -462,9 +463,8 @@ pub async fn post_cms_fullcmc(
     }
 
     // Parse PKIData to extract controls and certification requests.
-    let pki_data = synta_cmc::parser::parse_pki_data(&pki_data_der).map_err(|e| {
-        KipukaError::BadRequest(format!("CMC PKIData parse failed: {e}"))
-    })?;
+    let pki_data = synta_cmc::parser::parse_pki_data(&pki_data_der)
+        .map_err(|e| KipukaError::BadRequest(format!("CMC PKIData parse failed: {e}")))?;
 
     let transaction_id = synta_cmc::controls::extract_transaction_id(&pki_data.controls);
     let sender_nonce = synta_cmc::controls::extract_sender_nonce(&pki_data.controls);
@@ -520,14 +520,17 @@ pub async fn post_cms_fullcmc(
     let mut resp_builder = synta_cmc::builder::PKIResponseBuilder::new();
 
     if !body_part_ids.is_empty() {
-        resp_builder = resp_builder.add_status(&body_part_ids).map_err(|e| {
-            KipukaError::Ca(format!("CMC response builder failed (status): {e}"))
-        })?;
+        resp_builder = resp_builder
+            .add_status(&body_part_ids)
+            .map_err(|e| KipukaError::Ca(format!("CMC response builder failed (status): {e}")))?;
     }
 
     if !failed_body_part_ids.is_empty() {
         resp_builder = resp_builder
-            .add_failed(&failed_body_part_ids, synta_cmc::status::CMCFailInfo::InternalCaError)
+            .add_failed(
+                &failed_body_part_ids,
+                synta_cmc::status::CMCFailInfo::InternalCaError,
+            )
             .map_err(|e| {
                 KipukaError::Ca(format!("CMC response builder failed (failed status): {e}"))
             })?;
@@ -536,13 +539,15 @@ pub async fn post_cms_fullcmc(
     // Echo sender nonce as recipient nonce per RFC 5272 §6.6.
     if let Some(nonce) = &sender_nonce {
         resp_builder = resp_builder.recipient_nonce(nonce).map_err(|e| {
-            KipukaError::Ca(format!("CMC response builder failed (recipient nonce): {e}"))
+            KipukaError::Ca(format!(
+                "CMC response builder failed (recipient nonce): {e}"
+            ))
         })?;
     }
 
-    let cmc_response_der = resp_builder.build().map_err(|e| {
-        KipukaError::Ca(format!("CMC PKIResponse build failed: {e}"))
-    })?;
+    let cmc_response_der = resp_builder
+        .build()
+        .map_err(|e| KipukaError::Ca(format!("CMC PKIResponse build failed: {e}")))?;
 
     let response_body = if cms_config.encrypt_responses {
         let enc_alg = cms_config
@@ -606,8 +611,7 @@ async fn issue_certificate_from_csr(
         .ok_or_else(|| KipukaError::Ca(format!("CA config not found for id={ca_id}")))?;
 
     // Resolve key material.
-    let resolved_key =
-        crate::ca::issue::resolve_signing_key(ca_cfg, state.hsm.as_ref()).await?;
+    let resolved_key = crate::ca::issue::resolve_signing_key(ca_cfg, state.hsm.as_ref()).await?;
 
     let profile = crate::ca::issue::EnrollmentProfile {
         max_validity_days: ca.validity_days.min(398),

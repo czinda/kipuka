@@ -128,7 +128,7 @@ ok "Test user created: testdevice@${IPA_REALM}"
 # ── Step 6: Install Rust toolchain ───────────────────────────────────────────
 
 step "Installing Rust toolchain"
-if command -v rustc &>/dev/null && [[ "$(rustc --version | awk '{print $2}')" > "1.84" ]]; then
+if command -v rustc &>/dev/null && [[ "$(printf '%s\n1.85.0\n' "$(rustc --version | awk '{print $2}')" | sort -V | head -1)" == "1.85.0" ]]; then
     info "System Rust $(rustc --version) is sufficient"
 else
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \

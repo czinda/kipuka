@@ -188,7 +188,8 @@ impl CaBackendPool {
             );
 
             // 3. POST to the remote CA's EST endpoint (reusing pooled client).
-            let response = self.http_client
+            let response = self
+                .http_client
                 .post(&url)
                 .header("Content-Type", "application/pkcs10")
                 .header("Content-Transfer-Encoding", "base64")
@@ -210,12 +211,13 @@ impl CaBackendPool {
             }
 
             // 4. Read the response body (base64-encoded PKCS#7 / CMS).
-            let body_bytes = response.bytes().await.map_err(|e| {
-                CaBackendError::BackendError {
+            let body_bytes = response
+                .bytes()
+                .await
+                .map_err(|e| CaBackendError::BackendError {
                     ca_id: ca_id.to_string(),
                     message: format!("failed to read EST response body: {e}"),
-                }
-            })?;
+                })?;
 
             // 5. Decode the base64 PKCS#7 response to DER.
             let cert_der = base64::engine::general_purpose::STANDARD

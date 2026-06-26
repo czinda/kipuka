@@ -116,7 +116,7 @@ pub async fn get_cacerts(
 /// }
 /// ```
 pub(crate) fn build_certs_only_pkcs7(cert_der: &[u8]) -> Result<Vec<u8>, KipukaError> {
-    use synta::{Encoding, Encoder, ObjectIdentifier, Tag, tag};
+    use synta::{Encoder, Encoding, ObjectIdentifier, Tag, tag};
 
     if cert_der.is_empty() {
         return Err(KipukaError::Ca("CA certificate DER is empty".into()));

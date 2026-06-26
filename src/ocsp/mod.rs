@@ -319,9 +319,8 @@ impl OcspClient {
         }
 
         // Parse the certificate to extract the serial number.
-        let cert = synta_certificate::Certificate::from_der(cert_der).map_err(|e| {
-            OcspError::RequestBuild(format!("certificate parse failed: {e}"))
-        })?;
+        let cert = synta_certificate::Certificate::from_der(cert_der)
+            .map_err(|e| OcspError::RequestBuild(format!("certificate parse failed: {e}")))?;
 
         // Parse the issuer certificate to extract the subject Name and
         // SubjectPublicKeyInfo for hashing per RFC 6960 §4.1.1.
@@ -368,9 +367,8 @@ impl OcspClient {
 
         // Extract from Authority Information Access (AIA) extension
         // (OID 1.3.6.1.5.5.7.1.1) in the certificate.
-        let cert = synta_certificate::Certificate::from_der(cert_der).map_err(|e| {
-            OcspError::RequestBuild(format!("certificate parse for AIA: {e}"))
-        })?;
+        let cert = synta_certificate::Certificate::from_der(cert_der)
+            .map_err(|e| OcspError::RequestBuild(format!("certificate parse for AIA: {e}")))?;
 
         // Use synta-certificate's find_extension_value to locate the AIA
         // extension value efficiently (single-pass scan, stops at first match).
@@ -420,10 +418,7 @@ impl OcspClient {
             .build_tbs()
             .map_err(|e| OcspError::RequestBuild(format!("OCSPRequest build: {e}")))?;
 
-        debug!(
-            request_len = request_der.len(),
-            "built OCSP request DER"
-        );
+        debug!(request_len = request_der.len(), "built OCSP request DER");
 
         Ok(request_der)
     }
@@ -497,11 +492,7 @@ impl OcspClient {
     ///     responseBytes [0] EXPLICIT ResponseBytes OPTIONAL
     /// }
     /// ```
-    fn parse_ocsp_response(
-        &self,
-        response_der: &[u8],
-        cert_id: &CertId,
-    ) -> OcspResult<OcspStatus> {
+    fn parse_ocsp_response(&self, response_der: &[u8], cert_id: &CertId) -> OcspResult<OcspStatus> {
         // Parse the outer OCSPResponse envelope.
         let ocsp_response: synta_certificate::ocsp::OCSPResponse<'_> =
             Decoder::new(response_der, Encoding::Der)
@@ -525,8 +516,7 @@ impl OcspClient {
             ))?;
 
         // Verify the responseType is id-pkix-ocsp-basic (1.3.6.1.5.5.7.48.1.1).
-        if response_bytes.response_type.components()
-            != synta_certificate::ocsp::ID_PKIX_OCSP_BASIC
+        if response_bytes.response_type.components() != synta_certificate::ocsp::ID_PKIX_OCSP_BASIC
         {
             return Err(OcspError::Parse(format!(
                 "unexpected responseType: {:?}",
@@ -559,19 +549,20 @@ impl OcspClient {
 
                 // Extract the TBS ResponseData bytes from the original
                 // BasicOCSPResponse DER (first field of the outer SEQUENCE).
-                let tbs_der = extract_basic_ocsp_tbs_bytes(basic_response_der)
-                    .ok_or_else(|| OcspError::SignatureVerification(
-                        "failed to extract TBS ResponseData byte range from BasicOCSPResponse"
-                            .into(),
-                    ))?;
+                let tbs_der =
+                    extract_basic_ocsp_tbs_bytes(basic_response_der).ok_or_else(|| {
+                        OcspError::SignatureVerification(
+                            "failed to extract TBS ResponseData byte range from BasicOCSPResponse"
+                                .into(),
+                        )
+                    })?;
 
                 // Encode the signature algorithm to DER.
-                let sig_alg_der = basic_response
-                    .signature_algorithm
-                    .to_der()
-                    .map_err(|e| OcspError::SignatureVerification(format!(
+                let sig_alg_der = basic_response.signature_algorithm.to_der().map_err(|e| {
+                    OcspError::SignatureVerification(format!(
                         "failed to encode signature algorithm: {e}"
-                    )))?;
+                    ))
+                })?;
 
                 // Extract the raw signature bytes.
                 let signature_bits = basic_response.signature.as_bytes();
@@ -579,23 +570,22 @@ impl OcspClient {
                 // Extract the responder certificate's SubjectPublicKeyInfo DER
                 // using cert_byte_ranges (avoids re-parsing the full cert).
                 let cert_ranges = synta_certificate::cert_byte_ranges(responder_cert_der)
-                    .ok_or_else(|| OcspError::SignatureVerification(
-                        "malformed responder certificate: cannot extract byte ranges".into(),
-                    ))?;
+                    .ok_or_else(|| {
+                        OcspError::SignatureVerification(
+                            "malformed responder certificate: cannot extract byte ranges".into(),
+                        )
+                    })?;
                 let spki_der = &responder_cert_der[cert_ranges.subject_public_key_info.clone()];
 
                 // Verify the signature using the default crypto backend.
                 let verifier = synta_certificate::default_signature_verifier();
                 verifier
-                    .verify_certificate_signature(
-                        tbs_der,
-                        &sig_alg_der,
-                        signature_bits,
-                        spki_der,
-                    )
-                    .map_err(|e| OcspError::SignatureVerification(format!(
-                        "signature verification failed: {e}"
-                    )))?;
+                    .verify_certificate_signature(tbs_der, &sig_alg_der, signature_bits, spki_der)
+                    .map_err(|e| {
+                        OcspError::SignatureVerification(format!(
+                            "signature verification failed: {e}"
+                        ))
+                    })?;
 
                 debug!("OCSP response signature verified successfully");
             } else {
@@ -742,8 +732,7 @@ fn read_der_length_ocsp(bytes: &[u8], offset: usize) -> Option<(usize, usize)> {
 ///     05 00               -- NULL
 fn sha256_algorithm_identifier_der() -> Vec<u8> {
     vec![
-        0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05,
-        0x00,
+        0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00,
     ]
 }
 
@@ -792,9 +781,7 @@ fn extract_ocsp_url_from_aia(aia_value: &[u8]) -> Option<String> {
 
     let mut outer = decoder.enter_constructed(seq_tag).ok()?;
     while !outer.is_empty() {
-        let mut access_desc = outer
-            .enter_constructed(seq_tag)
-            .ok()?;
+        let mut access_desc = outer.enter_constructed(seq_tag).ok()?;
 
         let method: synta::ObjectIdentifier = access_desc.decode().ok()?;
         if method.components() == synta_certificate::oids::AD_OCSP {

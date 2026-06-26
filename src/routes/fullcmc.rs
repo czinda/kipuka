@@ -104,12 +104,10 @@ pub async fn post_fullcmc(
             identity = %identity,
             "fullcmc rejected: signer lacks id-kp-cmcRA EKU"
         );
-        return Err(KipukaError::Auth(
-            format!(
-                "CMC signer certificate must have id-kp-cmcRA EKU ({})",
-                crate::auth::CMC_RA_EKU_OID,
-            ),
-        ));
+        return Err(KipukaError::Auth(format!(
+            "CMC signer certificate must have id-kp-cmcRA EKU ({})",
+            crate::auth::CMC_RA_EKU_OID,
+        )));
     }
 
     tracing::info!(
@@ -120,11 +118,10 @@ pub async fn post_fullcmc(
     );
 
     // Decode the base64-encoded CMC request.
-    let cmc_request_der = decode_est_base64(&body)
-        .map_err(|_e| {
-            tracing::debug!(error = %_e, "CMC request base64 decoding failed");
-            KipukaError::BadRequest("malformed CMC request".into())
-        })?;
+    let cmc_request_der = decode_est_base64(&body).map_err(|_e| {
+        tracing::debug!(error = %_e, "CMC request base64 decoding failed");
+        KipukaError::BadRequest("malformed CMC request".into())
+    })?;
 
     if cmc_request_der.is_empty() {
         return Err(KipukaError::BadRequest("empty CMC request".into()));
@@ -137,9 +134,9 @@ pub async fn post_fullcmc(
     // This is a pure passthrough: kipuka does not interpret the CMC
     // message content when Dogtag handles it.
     if let Some(ref dogtag_pool) = state.dogtag {
-        let client = dogtag_pool.get_client().map_err(|e| {
-            KipukaError::ServiceUnavailable(format!("Dogtag CA unavailable: {e}"))
-        })?;
+        let client = dogtag_pool
+            .get_client()
+            .map_err(|e| KipukaError::ServiceUnavailable(format!("Dogtag CA unavailable: {e}")))?;
 
         tracing::info!(
             ca_id = %ca_id,
@@ -189,16 +186,17 @@ pub async fn post_fullcmc(
         let pem_data = tokio::fs::read(ts_file).await.map_err(|e| {
             KipukaError::Ca(format!("failed to read CMC truststore {ts_file}: {e}"))
         })?;
-        let certs: Vec<Vec<u8>> = rustls_pemfile::certs(&mut std::io::BufReader::new(&pem_data[..]))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| {
-                KipukaError::Ca(format!(
-                    "malformed PEM certificate in CMC truststore {ts_file}: {e}"
-                ))
-            })?
-            .into_iter()
-            .map(|c| c.to_vec())
-            .collect();
+        let certs: Vec<Vec<u8>> =
+            rustls_pemfile::certs(&mut std::io::BufReader::new(&pem_data[..]))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| {
+                    KipukaError::Ca(format!(
+                        "malformed PEM certificate in CMC truststore {ts_file}: {e}"
+                    ))
+                })?
+                .into_iter()
+                .map(|c| c.to_vec())
+                .collect();
         if certs.is_empty() {
             return Err(KipukaError::Ca(format!(
                 "CMC truststore {ts_file} contains no certificates"
@@ -208,10 +206,7 @@ pub async fn post_fullcmc(
     } else {
         vec![ca.cert_der.clone()]
     };
-    let cms_result = crate::auth::cms_auth::verify_cms_signed_data(
-        &cmc_request_der,
-        &truststore,
-    )?;
+    let cms_result = crate::auth::cms_auth::verify_cms_signed_data(&cmc_request_der, &truststore)?;
     let pki_data_der = cms_result.payload;
 
     tracing::info!(
@@ -271,8 +266,7 @@ pub async fn post_fullcmc(
         .ok_or_else(|| KipukaError::Ca(format!("CA config not found for id={ca_id}")))?;
 
     // Resolve key material.
-    let resolved_key =
-        crate::ca::issue::resolve_signing_key(ca_cfg, state.hsm.as_ref()).await?;
+    let resolved_key = crate::ca::issue::resolve_signing_key(ca_cfg, state.hsm.as_ref()).await?;
 
     let profile = crate::ca::issue::EnrollmentProfile {
         max_validity_days: ca.validity_days.min(398),
@@ -304,7 +298,8 @@ pub async fn post_fullcmc(
                         // Store the issued certificate in the database.
                         let serial = &result.serial_number;
                         let subject_dn = &result.subject_dn;
-                        let issuer_dn = match synta_certificate::Certificate::from_der(&ca.cert_der) {
+                        let issuer_dn = match synta_certificate::Certificate::from_der(&ca.cert_der)
+                        {
                             Ok(c) => synta_certificate::format_dn(c.tbs_certificate.subject.0),
                             Err(e) => {
                                 tracing::warn!(error = %e, "failed to parse CA certificate for issuer DN");
@@ -366,7 +361,10 @@ pub async fn post_fullcmc(
                 }
             }
             RequestType::Crmf => {
-                tracing::warn!(body_part_id = req_entry.body_part_id, "CMC: CRMF requests not yet supported");
+                tracing::warn!(
+                    body_part_id = req_entry.body_part_id,
+                    "CMC: CRMF requests not yet supported"
+                );
                 failed_body_part_ids.push(req_entry.body_part_id);
                 state.record_audit_event(
                     "fullcmc_request_failed",
@@ -388,9 +386,9 @@ pub async fn post_fullcmc(
     let mut resp_builder = PKIResponseBuilder::new();
 
     if !body_part_ids.is_empty() {
-        resp_builder = resp_builder.add_status(&body_part_ids).map_err(|e| {
-            KipukaError::Ca(format!("CMC response builder failed (status): {e}"))
-        })?;
+        resp_builder = resp_builder
+            .add_status(&body_part_ids)
+            .map_err(|e| KipukaError::Ca(format!("CMC response builder failed (status): {e}")))?;
     }
 
     if !failed_body_part_ids.is_empty() {
@@ -418,13 +416,13 @@ pub async fn post_fullcmc(
         rng.fill(&mut n[..]);
         n
     };
-    resp_builder = resp_builder.sender_nonce(&response_nonce).map_err(|e| {
-        KipukaError::Ca(format!("CMC response builder failed (sender nonce): {e}"))
-    })?;
+    resp_builder = resp_builder
+        .sender_nonce(&response_nonce)
+        .map_err(|e| KipukaError::Ca(format!("CMC response builder failed (sender nonce): {e}")))?;
 
-    let pki_response_der = resp_builder.build().map_err(|e| {
-        KipukaError::Ca(format!("CMC PKIResponse build failed: {e}"))
-    })?;
+    let pki_response_der = resp_builder
+        .build()
+        .map_err(|e| KipukaError::Ca(format!("CMC PKIResponse build failed: {e}")))?;
 
     // Step 6: Encode the response as base64.
     let body = encode_est_base64(&pki_response_der);

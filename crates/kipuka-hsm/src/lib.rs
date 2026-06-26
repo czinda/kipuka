@@ -205,9 +205,10 @@ impl HsmContext {
     /// acquirable.  Used by health probes to verify HSM availability
     /// without performing a signing operation.
     pub fn health_check(&self) -> HsmResult<()> {
-        let guard = self.session.lock().map_err(|_| {
-            HsmError::LibraryLoad("HSM session mutex poisoned".into())
-        })?;
+        let guard = self
+            .session
+            .lock()
+            .map_err(|_| HsmError::LibraryLoad("HSM session mutex poisoned".into()))?;
         if guard.is_some() {
             Ok(())
         } else {

@@ -123,7 +123,12 @@ pub async fn try_extract_gssapi(
     let token_owned = token_bytes;
     let require_crypto = app.gssapi_require_crypto;
     let result = tokio::task::spawn_blocking(move || {
-        negotiate_accept(&gss_cred, &token_owned, binding_owned.as_deref(), require_crypto)
+        negotiate_accept(
+            &gss_cred,
+            &token_owned,
+            binding_owned.as_deref(),
+            require_crypto,
+        )
     })
     .await;
 
@@ -268,13 +273,11 @@ fn verify_gssapi_token(
     use libgssapi::credential::Cred;
 
     // Downcast to the actual Cred type stored at startup.
-    let gss_cred = cred
-        .downcast_ref::<Cred>()
-        .ok_or_else(|| {
-            NegotiateError::Failed(
-                "internal error: GSS credential has wrong type (expected libgssapi::Cred)".into(),
-            )
-        })?;
+    let gss_cred = cred.downcast_ref::<Cred>().ok_or_else(|| {
+        NegotiateError::Failed(
+            "internal error: GSS credential has wrong type (expected libgssapi::Cred)".into(),
+        )
+    })?;
 
     // Clone the credential (reference-counted GSS handle) for this context.
     let cred_clone = gss_cred.clone();
@@ -309,9 +312,7 @@ fn verify_gssapi_token(
         })
     } else {
         // Multi-leg negotiation: return the continuation token.
-        let out_token = out_buf
-            .map(|b| b.to_vec())
-            .unwrap_or_default();
+        let out_token = out_buf.map(|b| b.to_vec()).unwrap_or_default();
 
         if out_token.is_empty() {
             return Err(NegotiateError::Failed(
@@ -449,9 +450,7 @@ fn try_extract_principal_from_ap_req(ap_req_der: &[u8]) -> Option<String> {
     use synta_krb5::kerberos_v5::ApReq;
     use synta_krb5::principal::PrincipalNameExt;
 
-    let ap_req: ApReq = Decoder::new(ap_req_der, Encoding::Der)
-        .decode()
-        .ok()?;
+    let ap_req: ApReq = Decoder::new(ap_req_der, Encoding::Der).decode().ok()?;
 
     // Extract the service principal from the ticket (cleartext sname field).
     let ticket = &ap_req.ticket;

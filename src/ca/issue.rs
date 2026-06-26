@@ -108,10 +108,9 @@ impl ResolvedSigningKey {
     pub fn as_signing_key(&self) -> CaSigningKey<'_> {
         match self {
             ResolvedSigningKey::Pem(pem) => CaSigningKey::Pem(pem),
-            ResolvedSigningKey::Hsm { context, key_label } => CaSigningKey::Hsm {
-                context,
-                key_label,
-            },
+            ResolvedSigningKey::Hsm { context, key_label } => {
+                CaSigningKey::Hsm { context, key_label }
+            }
         }
     }
 }
@@ -142,10 +141,7 @@ pub async fn resolve_signing_key(
         })
     } else {
         let pem = tokio::fs::read(&ca_cfg.key_file).await.map_err(|e| {
-            crate::error::KipukaError::Ca(format!(
-                "failed to read CA key {}: {e}",
-                ca_cfg.key_file
-            ))
+            crate::error::KipukaError::Ca(format!("failed to read CA key {}: {e}", ca_cfg.key_file))
         })?;
         Ok(ResolvedSigningKey::Pem(pem))
     }
@@ -176,10 +172,7 @@ pub fn resolve_signing_key_sync(
         })
     } else {
         let pem = std::fs::read(&ca_cfg.key_file).map_err(|e| {
-            crate::error::KipukaError::Ca(format!(
-                "failed to read CA key {}: {e}",
-                ca_cfg.key_file
-            ))
+            crate::error::KipukaError::Ca(format!("failed to read CA key {}: {e}", ca_cfg.key_file))
         })?;
         Ok(ResolvedSigningKey::Pem(pem))
     }
@@ -548,7 +541,11 @@ pub fn issue_certificate(
         CaSigningKey::Pem(_) => {
             use synta_certificate::PrivateKey as _;
             let ca_pkey = pem_key.as_ref().expect("PEM key loaded in step 7");
-            let effective_hash = if hash_algorithm == "none" { "" } else { hash_algorithm };
+            let effective_hash = if hash_algorithm == "none" {
+                ""
+            } else {
+                hash_algorithm
+            };
             let signer = ca_pkey.as_signer(effective_hash);
             builder.sign(&signer).map_err(|e| {
                 IssuanceError::SigningError(format!("certificate signing failed: {e}"))
@@ -768,9 +765,9 @@ fn check_key_size(csr_der: &[u8], profile: &EnrollmentProfile) -> Result<(), Iss
                 ("2.16.840.1.101.3.4.3.17", "ML-DSA-44", "ml-dsa-44"),
                 ("2.16.840.1.101.3.4.3.18", "ML-DSA-65", "ml-dsa-65"),
                 ("2.16.840.1.101.3.4.3.19", "ML-DSA-87", "ml-dsa-87"),
-                ("2.16.840.1.101.3.4.4.1",  "ML-KEM-512", "ml-kem-512"),
-                ("2.16.840.1.101.3.4.4.2",  "ML-KEM-768", "ml-kem-768"),
-                ("2.16.840.1.101.3.4.4.3",  "ML-KEM-1024", "ml-kem-1024"),
+                ("2.16.840.1.101.3.4.4.1", "ML-KEM-512", "ml-kem-512"),
+                ("2.16.840.1.101.3.4.4.2", "ML-KEM-768", "ml-kem-768"),
+                ("2.16.840.1.101.3.4.4.3", "ML-KEM-1024", "ml-kem-1024"),
             ];
 
             let oid_str = alg_oid
@@ -779,8 +776,14 @@ fn check_key_size(csr_der: &[u8], profile: &EnrollmentProfile) -> Result<(), Iss
                 .collect::<Vec<_>>()
                 .join(".");
 
-            if let Some(&(_, display_name, level)) = PQC_ALGORITHMS.iter().find(|(oid, _, _)| *oid == oid_str) {
-                debug!(algorithm = display_name, key_bits = bit_count, "CSR public key");
+            if let Some(&(_, display_name, level)) =
+                PQC_ALGORITHMS.iter().find(|(oid, _, _)| *oid == oid_str)
+            {
+                debug!(
+                    algorithm = display_name,
+                    key_bits = bit_count,
+                    "CSR public key"
+                );
                 let allowed = if level.starts_with("ml-dsa") {
                     &profile.allowed_ml_dsa_levels
                 } else {

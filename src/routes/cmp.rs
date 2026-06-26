@@ -32,12 +32,12 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
 use synta::{Integer, Null, OctetStringRef, RawDer};
+use synta_certificate::GeneralNameSpec;
 use synta_certificate::cmp_types::{
     CertOrEncCert, CertRepMessage, CertResponse, CertifiedKeyPair, PBMParameter, PKIBody,
     PKIHeader, PKIMessage, PKIStatusInfo, RevRepContent,
 };
 use synta_certificate::crmf_types::CertReqMsg;
-use synta_certificate::GeneralNameSpec;
 
 use crate::error::KipukaError;
 use crate::state::AppState;
@@ -303,9 +303,8 @@ pub fn parse_cmp_message(der: &[u8]) -> Result<CmpRequest, KipukaError> {
 
     // Parse the DER-encoded PKIMessage using synta-certificate's
     // auto-generated CMP types (RFC 9810 / RFC 4210).
-    let pki_msg = PKIMessage::from_der(der).map_err(|e| {
-        KipukaError::BadRequest(format!("failed to parse CMP PKIMessage: {e}"))
-    })?;
+    let pki_msg = PKIMessage::from_der(der)
+        .map_err(|e| KipukaError::BadRequest(format!("failed to parse CMP PKIMessage: {e}")))?;
 
     // Extract header fields.
     let transaction_id = pki_msg
@@ -384,9 +383,7 @@ pub fn parse_cmp_message(der: &[u8]) -> Result<CmpRequest, KipukaError> {
         }
     } else {
         // Unprotected messages are not acceptable — reject them outright.
-        return Err(KipukaError::Auth(
-            "CMP message has no protection".into(),
-        ));
+        return Err(KipukaError::Auth("CMP message has no protection".into()));
     };
 
     Ok(CmpRequest {
@@ -479,12 +476,12 @@ pub fn build_cmp_response(
         GeneralNameSpec::rfc822(&req.sender)
     };
 
-    let sender_gn = sender_spec.to_general_name().map_err(|e| {
-        KipukaError::Internal(format!("failed to encode CA sender name: {e}"))
-    })?;
-    let recipient_gn = recipient_spec.to_general_name().map_err(|e| {
-        KipukaError::Internal(format!("failed to encode recipient name: {e}"))
-    })?;
+    let sender_gn = sender_spec
+        .to_general_name()
+        .map_err(|e| KipukaError::Internal(format!("failed to encode CA sender name: {e}")))?;
+    let recipient_gn = recipient_spec
+        .to_general_name()
+        .map_err(|e| KipukaError::Internal(format!("failed to encode recipient name: {e}")))?;
 
     let header = PKIHeader {
         pvno: Integer::from_i64(2),
@@ -510,9 +507,9 @@ pub fn build_cmp_response(
         extra_certs: None,
     };
 
-    pki_msg.to_der().map_err(|e| {
-        KipukaError::Internal(format!("failed to DER-encode CMP response: {e}"))
-    })
+    pki_msg
+        .to_der()
+        .map_err(|e| KipukaError::Internal(format!("failed to DER-encode CMP response: {e}")))
 }
 
 /// `POST /.well-known/cmp` — process a CMP PKIMessage.
@@ -581,17 +578,17 @@ pub async fn post_cmp(
     // We re-parse the original PKIMessage to extract the protection bits,
     // algorithm DER, and header||body bytes needed for verification.
     let pki_msg_for_verify = PKIMessage::from_der(&body).map_err(|e| {
-        KipukaError::BadRequest(format!("failed to re-parse PKIMessage for verification: {e}"))
+        KipukaError::BadRequest(format!(
+            "failed to re-parse PKIMessage for verification: {e}"
+        ))
     })?;
 
     // Compute DER(header) || DER(body) — the data that was signed/MACed.
     let protected_bytes = {
-        let header_der = synta::ToDer::to_der(&pki_msg_for_verify.header).map_err(|e| {
-            KipukaError::Internal(format!("failed to re-encode PKIHeader: {e}"))
-        })?;
-        let body_der_raw = synta::ToDer::to_der(&pki_msg_for_verify.body).map_err(|e| {
-            KipukaError::Internal(format!("failed to re-encode PKIBody: {e}"))
-        })?;
+        let header_der = synta::ToDer::to_der(&pki_msg_for_verify.header)
+            .map_err(|e| KipukaError::Internal(format!("failed to re-encode PKIHeader: {e}")))?;
+        let body_der_raw = synta::ToDer::to_der(&pki_msg_for_verify.body)
+            .map_err(|e| KipukaError::Internal(format!("failed to re-encode PKIBody: {e}")))?;
         let mut buf = Vec::with_capacity(header_der.len() + body_der_raw.len());
         buf.extend_from_slice(&header_der);
         buf.extend_from_slice(&body_der_raw);
@@ -631,12 +628,11 @@ pub async fn post_cmp(
             }
 
             // 1. Extract the signer certificate's SPKI for signature verification.
-            let signer_ranges = synta_certificate::cert_byte_ranges(cert_der)
-                .ok_or_else(|| {
-                    KipukaError::Auth(
-                        "failed to parse signer certificate structure from extraCerts".into(),
-                    )
-                })?;
+            let signer_ranges = synta_certificate::cert_byte_ranges(cert_der).ok_or_else(|| {
+                KipukaError::Auth(
+                    "failed to parse signer certificate structure from extraCerts".into(),
+                )
+            })?;
             let signer_spki_der = &cert_der[signer_ranges.subject_public_key_info.clone()];
 
             // 2. Verify the signature over (header || body) using the signer's
@@ -645,15 +641,9 @@ pub async fn post_cmp(
             let pub_key =
                 synta_certificate::BackendPublicKey::from_spki_der(signer_spki_der.to_vec());
             pub_key
-                .verify_signature(
-                    &protected_bytes,
-                    &protection_alg_der,
-                    &protection_bits,
-                )
+                .verify_signature(&protected_bytes, &protection_alg_der, &protection_bits)
                 .map_err(|e| {
-                    KipukaError::Auth(format!(
-                        "CMP signature verification failed: {e}"
-                    ))
+                    KipukaError::Auth(format!("CMP signature verification failed: {e}"))
                 })?;
 
             tracing::info!("CMP signature protection verified successfully");
@@ -663,9 +653,7 @@ pub async fn post_cmp(
             //    verification (cms_auth.rs).
             let signer_cert_parsed =
                 synta_certificate::Certificate::from_der(cert_der).map_err(|e| {
-                    KipukaError::Auth(format!(
-                        "failed to parse CMP signer certificate: {e:?}"
-                    ))
+                    KipukaError::Auth(format!("failed to parse CMP signer certificate: {e:?}"))
                 })?;
             let cert_sig_bits = signer_cert_parsed.signature_value.as_bytes();
             let verifier = synta_certificate::default_signature_verifier();
@@ -706,8 +694,7 @@ pub async fn post_cmp(
 
             if !signer_trusted {
                 return Err(KipukaError::Auth(
-                    "CMP signer certificate does not chain to a configured CA trust anchor"
-                        .into(),
+                    "CMP signer certificate does not chain to a configured CA trust anchor".into(),
                 ));
             }
 
@@ -743,12 +730,11 @@ pub async fn post_cmp(
 
             // The parameters field is an Element — DER-encode it to get the
             // raw bytes, then parse as PBMParameter.
-            let pbm_param_bytes =
-                synta::ToDer::to_der(pbm_param_element).map_err(|e| {
-                    KipukaError::Auth(format!(
-                        "CMP MAC protection: failed to encode PBMParameter element: {e}"
-                    ))
-                })?;
+            let pbm_param_bytes = synta::ToDer::to_der(pbm_param_element).map_err(|e| {
+                KipukaError::Auth(format!(
+                    "CMP MAC protection: failed to encode PBMParameter element: {e}"
+                ))
+            })?;
 
             let pbm = PBMParameter::from_der(&pbm_param_bytes).map_err(|e| {
                 KipukaError::Auth(format!(
@@ -867,9 +853,8 @@ pub async fn post_cmp(
             // The Null is encoded directly in the PKIBody::Pkiconf variant
             // by build_cmp_response, so we return an empty placeholder here.
             // RFC 9810 §5.3.18: PKIConfirmContent ::= NULL
-            synta::ToDer::to_der(&Null).map_err(|e| {
-                KipukaError::Internal(format!("failed to encode PKIConfirm: {e}"))
-            })?
+            synta::ToDer::to_der(&Null)
+                .map_err(|e| KipukaError::Internal(format!("failed to encode PKIConfirm: {e}")))?
         }
         _ => {
             return Err(KipukaError::BadRequest(format!(
@@ -979,25 +964,17 @@ async fn process_enrollment_request(
     let subject_der = cert_template
         .subject
         .as_ref()
-        .ok_or_else(|| {
-            KipukaError::BadRequest("CRMF CertTemplate missing subject name".into())
-        })?
+        .ok_or_else(|| KipukaError::BadRequest("CRMF CertTemplate missing subject name".into()))?
         .to_der()
-        .map_err(|e| {
-            KipukaError::BadRequest(format!("failed to encode CRMF subject: {e}"))
-        })?;
+        .map_err(|e| KipukaError::BadRequest(format!("failed to encode CRMF subject: {e}")))?;
 
     // Extract the SubjectPublicKeyInfo DER from the CertTemplate.
     let spki_der = cert_template
         .public_key
         .as_ref()
-        .ok_or_else(|| {
-            KipukaError::BadRequest("CRMF CertTemplate missing public key".into())
-        })?
+        .ok_or_else(|| KipukaError::BadRequest("CRMF CertTemplate missing public key".into()))?
         .to_der()
-        .map_err(|e| {
-            KipukaError::BadRequest(format!("failed to encode CRMF SPKI: {e}"))
-        })?;
+        .map_err(|e| KipukaError::BadRequest(format!("failed to encode CRMF SPKI: {e}")))?;
 
     tracing::debug!(
         subject = %synta_certificate::format_dn(&subject_der),
@@ -1030,8 +1007,8 @@ async fn process_enrollment_request(
             // Fallback: hand-encode sha256WithRSAEncryption AlgorithmIdentifier
             // SEQUENCE { OID 1.2.840.113549.1.1.11, NULL }
             vec![
-                0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b,
-                0x05, 0x00,
+                0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b, 0x05,
+                0x00,
             ]
         });
 
@@ -1039,18 +1016,13 @@ async fn process_enrollment_request(
         .subject_name(&subject_der)
         .public_key_der(&spki_der);
 
-    let cri_der = csr_builder.build_cri(&sig_alg_der).map_err(|e| {
-        KipukaError::Ca(format!("failed to build CRI from CRMF template: {e}"))
-    })?;
+    let cri_der = csr_builder
+        .build_cri(&sig_alg_der)
+        .map_err(|e| KipukaError::Ca(format!("failed to build CRI from CRMF template: {e}")))?;
 
     // Assemble with a zero-length dummy signature.
-    let csr_der =
-        synta_certificate::CsrBuilder::assemble(&cri_der, &sig_alg_der, &[0u8])
-            .map_err(|e| {
-                KipukaError::Ca(format!(
-                    "failed to assemble CSR from CRMF template: {e}"
-                ))
-            })?;
+    let csr_der = synta_certificate::CsrBuilder::assemble(&cri_der, &sig_alg_der, &[0u8])
+        .map_err(|e| KipukaError::Ca(format!("failed to assemble CSR from CRMF template: {e}")))?;
 
     let ca_cfg = state
         .config
@@ -1060,8 +1032,7 @@ async fn process_enrollment_request(
         .ok_or_else(|| KipukaError::Ca(format!("CA config not found for id={ca_id}")))?;
 
     // Resolve signing key (PEM or HSM).
-    let resolved_key =
-        crate::ca::issue::resolve_signing_key(ca_cfg, state.hsm.as_ref()).await?;
+    let resolved_key = crate::ca::issue::resolve_signing_key(ca_cfg, state.hsm.as_ref()).await?;
 
     let profile = crate::ca::issue::EnrollmentProfile {
         max_validity_days: ca.validity_days.min(398),
@@ -1109,9 +1080,9 @@ async fn process_enrollment_request(
         response: vec![cert_response],
     };
 
-    cert_rep.to_der().map_err(|e| {
-        KipukaError::Internal(format!("failed to encode CMP CertRepMessage: {e}"))
-    })
+    cert_rep
+        .to_der()
+        .map_err(|e| KipukaError::Internal(format!("failed to encode CMP CertRepMessage: {e}")))
 }
 
 /// Process a CMP revocation request (rr).
@@ -1131,9 +1102,7 @@ async fn process_revocation_request(
         synta::Decoder::new(&cmp_req.body_der, synta::Encoding::Der)
             .decode()
             .map_err(|e| {
-                KipukaError::BadRequest(format!(
-                    "failed to parse CMP RevReqContent: {e}"
-                ))
+                KipukaError::BadRequest(format!("failed to parse CMP RevReqContent: {e}"))
             })?;
 
     if rev_details.is_empty() {
@@ -1256,9 +1225,7 @@ async fn process_revocation_request(
         })?;
 
         let serial = cert_tmpl.serial_number.ok_or_else(|| {
-            KipukaError::BadRequest(
-                "RevDetails CertTemplate missing serial number".into(),
-            )
+            KipukaError::BadRequest("RevDetails CertTemplate missing serial number".into())
         })?;
 
         let serial_hex = hex::encode(serial.as_bytes());
@@ -1275,9 +1242,7 @@ async fn process_revocation_request(
         .bind(&serial_hex)
         .execute(&state.db)
         .await
-        .map_err(|e| {
-            KipukaError::Ca(format!("database error revoking serial {serial_hex}: {e}"))
-        })?
+        .map_err(|e| KipukaError::Ca(format!("database error revoking serial {serial_hex}: {e}")))?
         .rows_affected();
 
         if rows == 0 {
@@ -1308,9 +1273,9 @@ async fn process_revocation_request(
         crls: None,
     };
 
-    rev_rep.to_der().map_err(|e| {
-        KipukaError::Internal(format!("failed to encode CMP RevRepContent: {e}"))
-    })
+    rev_rep
+        .to_der()
+        .map_err(|e| KipukaError::Internal(format!("failed to encode CMP RevRepContent: {e}")))
 }
 
 /// Derive a MAC key using the Password-Based MAC scheme (RFC 4210 §5.1.3.1).
@@ -1422,31 +1387,21 @@ fn compute_pbm_hmac(
     //
     // The OWF hash OIDs (id-sha256 etc.) are also accepted as MAC algorithm
     // identifiers since some CMP implementations use them interchangeably.
-    if mac_oid.contains("1.2.840.113549.2.9")
-        || mac_oid.contains("2.16.840.1.101.3.4.2.1")
-    {
-        let mut mac =
-            Hmac::<Sha256>::new_from_slice(key).map_err(|e| {
-                KipukaError::Internal(format!("HMAC-SHA256 key init failed: {e}"))
-            })?;
+    if mac_oid.contains("1.2.840.113549.2.9") || mac_oid.contains("2.16.840.1.101.3.4.2.1") {
+        let mut mac = Hmac::<Sha256>::new_from_slice(key)
+            .map_err(|e| KipukaError::Internal(format!("HMAC-SHA256 key init failed: {e}")))?;
         mac.update(data);
         Ok(mac.finalize().into_bytes().to_vec())
-    } else if mac_oid.contains("1.2.840.113549.2.10")
-        || mac_oid.contains("2.16.840.1.101.3.4.2.2")
+    } else if mac_oid.contains("1.2.840.113549.2.10") || mac_oid.contains("2.16.840.1.101.3.4.2.2")
     {
-        let mut mac =
-            Hmac::<Sha384>::new_from_slice(key).map_err(|e| {
-                KipukaError::Internal(format!("HMAC-SHA384 key init failed: {e}"))
-            })?;
+        let mut mac = Hmac::<Sha384>::new_from_slice(key)
+            .map_err(|e| KipukaError::Internal(format!("HMAC-SHA384 key init failed: {e}")))?;
         mac.update(data);
         Ok(mac.finalize().into_bytes().to_vec())
-    } else if mac_oid.contains("1.2.840.113549.2.11")
-        || mac_oid.contains("2.16.840.1.101.3.4.2.3")
+    } else if mac_oid.contains("1.2.840.113549.2.11") || mac_oid.contains("2.16.840.1.101.3.4.2.3")
     {
-        let mut mac =
-            Hmac::<Sha512>::new_from_slice(key).map_err(|e| {
-                KipukaError::Internal(format!("HMAC-SHA512 key init failed: {e}"))
-            })?;
+        let mut mac = Hmac::<Sha512>::new_from_slice(key)
+            .map_err(|e| KipukaError::Internal(format!("HMAC-SHA512 key init failed: {e}")))?;
         mac.update(data);
         Ok(mac.finalize().into_bytes().to_vec())
     } else {
@@ -1473,9 +1428,7 @@ fn process_general_message(
         synta::Decoder::new(&cmp_req.body_der, synta::Encoding::Der)
             .decode()
             .map_err(|e| {
-                KipukaError::BadRequest(format!(
-                    "failed to parse CMP GenMsgContent: {e}"
-                ))
+                KipukaError::BadRequest(format!("failed to parse CMP GenMsgContent: {e}"))
             })?
     };
 
@@ -1498,9 +1451,8 @@ fn process_general_message(
     // Return an empty SEQUENCE as the GenRepContent.
     let gen_rep: Vec<InfoTypeAndValue<'_>> = Vec::new();
     let mut encoder = synta::Encoder::new(synta::Encoding::Der);
-    synta::Encode::encode(&gen_rep, &mut encoder).map_err(|e| {
-        KipukaError::Internal(format!("failed to encode CMP GenRepContent: {e}"))
-    })?;
+    synta::Encode::encode(&gen_rep, &mut encoder)
+        .map_err(|e| KipukaError::Internal(format!("failed to encode CMP GenRepContent: {e}")))?;
     encoder.finish().map_err(|e| {
         KipukaError::Internal(format!("failed to finalize CMP GenRepContent DER: {e}"))
     })
@@ -1674,7 +1626,10 @@ mod tests {
             .expect("CMPMessageBuilder::build failed");
 
         let result = parse_cmp_message(&msg_der);
-        assert!(matches!(result, Err(KipukaError::Auth(_))), "unprotected CMP message should be rejected");
+        assert!(
+            matches!(result, Err(KipukaError::Auth(_))),
+            "unprotected CMP message should be rejected"
+        );
     }
 
     /// Build an unprotected IR message and verify parse rejects it.
@@ -1695,7 +1650,10 @@ mod tests {
             .expect("CMPMessageBuilder::build failed for ir");
 
         let result = parse_cmp_message(&msg_der);
-        assert!(matches!(result, Err(KipukaError::Auth(_))), "unprotected CMP message should be rejected");
+        assert!(
+            matches!(result, Err(KipukaError::Auth(_))),
+            "unprotected CMP message should be rejected"
+        );
     }
 
     /// Build an unprotected GENM message and verify parse rejects it.
@@ -1716,7 +1674,10 @@ mod tests {
             .expect("CMPMessageBuilder::build failed for genm");
 
         let result = parse_cmp_message(&msg_der);
-        assert!(matches!(result, Err(KipukaError::Auth(_))), "unprotected CMP message should be rejected");
+        assert!(
+            matches!(result, Err(KipukaError::Auth(_))),
+            "unprotected CMP message should be rejected"
+        );
     }
 
     /// Test build_cmp_response produces valid DER that round-trips
@@ -1736,13 +1697,12 @@ mod tests {
 
         // Build a GenP response with an empty SEQUENCE body.
         let body_der = vec![0x30, 0x00]; // empty GenRepContent
-        let response_der =
-            build_cmp_response(&req, CmpMessageType::GenP, &body_der, None)
-                .expect("build_cmp_response should succeed");
+        let response_der = build_cmp_response(&req, CmpMessageType::GenP, &body_der, None)
+            .expect("build_cmp_response should succeed");
 
         // Verify it parses as a valid PKIMessage.
-        let parsed = PKIMessage::from_der(&response_der)
-            .expect("response should parse as valid PKIMessage");
+        let parsed =
+            PKIMessage::from_der(&response_der).expect("response should parse as valid PKIMessage");
 
         // Verify the header fields were set correctly.
         assert_eq!(
@@ -1755,10 +1715,7 @@ mod tests {
         );
         assert!(parsed.header.sender_nonce.is_some());
         // senderNonce should be 16 bytes (generated by generate_nonce).
-        assert_eq!(
-            parsed.header.sender_nonce.unwrap().as_bytes().len(),
-            16
-        );
+        assert_eq!(parsed.header.sender_nonce.unwrap().as_bytes().len(), 16);
     }
 
     /// Test build_cmp_response for PkiConf (NULL body).
@@ -1779,12 +1736,10 @@ mod tests {
         // bytes to satisfy the pre-check, but the actual encoding uses
         // PKIBody::Pkiconf(Null).
         let null_der = synta::ToDer::to_der(&Null).unwrap();
-        let response_der =
-            build_cmp_response(&req, CmpMessageType::PkiConf, &null_der, None)
-                .expect("build_cmp_response should succeed for PkiConf");
+        let response_der = build_cmp_response(&req, CmpMessageType::PkiConf, &null_der, None)
+            .expect("build_cmp_response should succeed for PkiConf");
 
-        let parsed = PKIMessage::from_der(&response_der)
-            .expect("PkiConf response should parse");
+        let parsed = PKIMessage::from_der(&response_der).expect("PkiConf response should parse");
         assert!(matches!(parsed.body, PKIBody::Pkiconf(Null)));
     }
 
@@ -1862,18 +1817,15 @@ mod tests {
         assert_eq!(key, key2);
 
         // Different secret → different key.
-        let key_diff_secret =
-            derive_pbm_key(b"other-secret", salt, &owf_alg, 1000).unwrap();
+        let key_diff_secret = derive_pbm_key(b"other-secret", salt, &owf_alg, 1000).unwrap();
         assert_ne!(key, key_diff_secret);
 
         // Different salt → different key.
-        let key_diff_salt =
-            derive_pbm_key(secret, b"other-salt", &owf_alg, 1000).unwrap();
+        let key_diff_salt = derive_pbm_key(secret, b"other-salt", &owf_alg, 1000).unwrap();
         assert_ne!(key, key_diff_salt);
 
         // Different iteration count → different key.
-        let key_diff_iter =
-            derive_pbm_key(secret, salt, &owf_alg, 500).unwrap();
+        let key_diff_iter = derive_pbm_key(secret, salt, &owf_alg, 500).unwrap();
         assert_ne!(key, key_diff_iter);
     }
 
@@ -1954,8 +1906,7 @@ mod tests {
         let mac_correct = compute_pbm_hmac(&key_correct, data, &mac_alg).unwrap();
 
         // Wrong secret.
-        let key_wrong =
-            derive_pbm_key(b"wrong-secret", salt, &owf_alg, iteration_count).unwrap();
+        let key_wrong = derive_pbm_key(b"wrong-secret", salt, &owf_alg, iteration_count).unwrap();
         let mac_wrong = compute_pbm_hmac(&key_wrong, data, &mac_alg).unwrap();
 
         // MACs must differ.

@@ -337,27 +337,26 @@ impl DtlsContext {
     /// during the DTLS handshake. EST operations that need mTLS authentication
     /// should check `DtlsConnection::client_cert()` after the handshake completes.
     pub fn new(cert_pem: &[u8], key_pem: &[u8], ca_pem: &[u8]) -> Result<Self, CoapError> {
-        let mut ctx_builder = SslContext::builder(SslMethod::dtls()).map_err(|e| {
-            CoapError::DtlsError(format!("Failed to create DTLS context: {e}"))
-        })?;
+        let mut ctx_builder = SslContext::builder(SslMethod::dtls())
+            .map_err(|e| CoapError::DtlsError(format!("Failed to create DTLS context: {e}")))?;
 
         let cert = X509::from_pem(cert_pem).map_err(|e| {
             CoapError::DtlsError(format!("Failed to parse server certificate PEM: {e}"))
         })?;
-        ctx_builder.set_certificate(&cert).map_err(|e| {
-            CoapError::DtlsError(format!("Failed to set server certificate: {e}"))
-        })?;
+        ctx_builder
+            .set_certificate(&cert)
+            .map_err(|e| CoapError::DtlsError(format!("Failed to set server certificate: {e}")))?;
 
         let key = PKey::private_key_from_pem(key_pem).map_err(|e| {
             CoapError::DtlsError(format!("Failed to parse server private key PEM: {e}"))
         })?;
-        ctx_builder.set_private_key(&key).map_err(|e| {
-            CoapError::DtlsError(format!("Failed to set server private key: {e}"))
-        })?;
+        ctx_builder
+            .set_private_key(&key)
+            .map_err(|e| CoapError::DtlsError(format!("Failed to set server private key: {e}")))?;
 
-        ctx_builder.check_private_key().map_err(|e| {
-            CoapError::DtlsError(format!("Server certificate/key mismatch: {e}"))
-        })?;
+        ctx_builder
+            .check_private_key()
+            .map_err(|e| CoapError::DtlsError(format!("Server certificate/key mismatch: {e}")))?;
 
         // Request client certificate but do not require it — EST operations
         // that need mTLS will check the certificate after handshake.
@@ -367,9 +366,10 @@ impl DtlsContext {
         let ca = X509::from_pem(ca_pem).map_err(|e| {
             CoapError::DtlsError(format!("Failed to parse CA certificate PEM: {e}"))
         })?;
-        ctx_builder.cert_store_mut().add_cert(ca).map_err(|e| {
-            CoapError::DtlsError(format!("Failed to add CA to trust store: {e}"))
-        })?;
+        ctx_builder
+            .cert_store_mut()
+            .add_cert(ca)
+            .map_err(|e| CoapError::DtlsError(format!("Failed to add CA to trust store: {e}")))?;
 
         Ok(Self {
             ctx: ctx_builder.build(),
@@ -426,9 +426,8 @@ impl DtlsConnection {
     /// The connection is in the pre-handshake state. Call [`accept_handshake`]
     /// to begin the DTLS server-side handshake.
     pub fn new(ctx: &DtlsContext, peer_addr: SocketAddr) -> Result<Self, CoapError> {
-        let ssl = openssl::ssl::Ssl::new(ctx.ssl_context()).map_err(|e| {
-            CoapError::DtlsError(format!("Failed to create SSL instance: {e}"))
-        })?;
+        let ssl = openssl::ssl::Ssl::new(ctx.ssl_context())
+            .map_err(|e| CoapError::DtlsError(format!("Failed to create SSL instance: {e}")))?;
 
         Ok(Self {
             ssl,
@@ -569,12 +568,8 @@ mod tests {
         let cert_der = cert.to_der().unwrap();
 
         let addr = test_addr(5683);
-        let session = DtlsSession::with_client_cert(
-            vec![1, 2, 3],
-            addr,
-            DtlsVersion::V1_2,
-            cert_der.clone(),
-        );
+        let session =
+            DtlsSession::with_client_cert(vec![1, 2, 3], addr, DtlsVersion::V1_2, cert_der.clone());
 
         assert_eq!(session.client_cert(), Some(cert_der.as_slice()));
         let info = session.client_cert_info().unwrap();

@@ -192,7 +192,7 @@ pub async fn get_csrattrs(
 /// well-known constants where possible, falling back to dotted-decimal
 /// parsing for custom OIDs.
 pub(crate) fn encode_csr_attrs(oid_strings: &[String]) -> Result<Vec<u8>, KipukaError> {
-    use synta::{Encoding, Encoder, ObjectIdentifier, Tag, tag};
+    use synta::{Encoder, Encoding, ObjectIdentifier, Tag, tag};
 
     if oid_strings.is_empty() {
         return Ok(Vec::new());
@@ -209,9 +209,8 @@ pub(crate) fn encode_csr_attrs(oid_strings: &[String]) -> Result<Vec<u8>, Kipuka
         // Resolve the OID string to components. Try well-known OIDs first,
         // then fall back to dotted-decimal parsing.
         let components = resolve_oid_components(oid_str)?;
-        let oid = ObjectIdentifier::new(&components).map_err(|e| {
-            KipukaError::Internal(format!("invalid OID '{oid_str}': {e}"))
-        })?;
+        let oid = ObjectIdentifier::new(&components)
+            .map_err(|e| KipukaError::Internal(format!("invalid OID '{oid_str}': {e}")))?;
 
         enc.encode(&oid)
             .map_err(|e| KipukaError::Internal(format!("OID encode '{oid_str}': {e}")))?;
@@ -252,12 +251,9 @@ fn resolve_oid_components(oid_str: &str) -> Result<Vec<u32>, KipukaError> {
         oids::SECP384R1 => synta_certificate::oids::EC_CURVE_P384,
         _ => {
             // Fall back to parsing dotted-decimal OID string.
-            let parts: Result<Vec<u32>, _> =
-                oid_str.split('.').map(|s| s.parse::<u32>()).collect();
+            let parts: Result<Vec<u32>, _> = oid_str.split('.').map(|s| s.parse::<u32>()).collect();
             return parts.map_err(|e| {
-                KipukaError::Internal(format!(
-                    "invalid OID string '{oid_str}': {e}"
-                ))
+                KipukaError::Internal(format!("invalid OID string '{oid_str}': {e}"))
             });
         }
     };

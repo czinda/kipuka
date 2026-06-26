@@ -143,9 +143,9 @@ pub async fn post_simpleenroll(
     // Dogtag CA instead of using direct signing.  The direct-signing path
     // below remains the fallback when `[dogtag]` is absent.
     if let Some(ref dogtag_pool) = state.dogtag {
-        let client = dogtag_pool.get_client().map_err(|e| {
-            KipukaError::ServiceUnavailable(format!("Dogtag CA unavailable: {e}"))
-        })?;
+        let client = dogtag_pool
+            .get_client()
+            .map_err(|e| KipukaError::ServiceUnavailable(format!("Dogtag CA unavailable: {e}")))?;
 
         // Convert DER CSR to PEM for the Dogtag REST API.
         use base64::Engine;
@@ -177,9 +177,7 @@ pub async fn post_simpleenroll(
         match enroll_result.status {
             kipuka_dogtag::EnrollStatus::Complete => {
                 let cert_der = enroll_result.certificate_der.ok_or_else(|| {
-                    KipukaError::Ca(
-                        "Dogtag returned complete status but no certificate".into(),
-                    )
+                    KipukaError::Ca("Dogtag returned complete status but no certificate".into())
                 })?;
 
                 // Store the Dogtag-issued certificate in our DB for audit trail.
@@ -283,8 +281,7 @@ pub async fn post_simpleenroll(
         .ok_or_else(|| KipukaError::Ca(format!("CA config not found for id={ca_id}")))?;
 
     // Resolve key material.
-    let resolved_key =
-        crate::ca::issue::resolve_signing_key(ca_cfg, state.hsm.as_ref()).await?;
+    let resolved_key = crate::ca::issue::resolve_signing_key(ca_cfg, state.hsm.as_ref()).await?;
 
     // Build the enrollment profile (use defaults for now; a full implementation
     // would load a named profile from the label config).

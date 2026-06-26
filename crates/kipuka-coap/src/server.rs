@@ -32,7 +32,7 @@
 //! | `/cacerts`| cacerts       | GET         |
 //! | `/crts`   | cacerts       | GET (alias) |
 
-use crate::block::{szx_from_block_size, BlockAssembler, BlockDisassembler};
+use crate::block::{BlockAssembler, BlockDisassembler, szx_from_block_size};
 use crate::dtls::{DtlsConnection, DtlsContext, DtlsSessionCache, DtlsVersion};
 use crate::{CoapError, CoapResult};
 use std::collections::HashMap;
@@ -1309,9 +1309,8 @@ impl CoapDtlsServer {
 
         let dtls_ctx = DtlsContext::new(cert_pem, key_pem, ca_pem)?;
 
-        let block_szx = szx_from_block_size(block_size as usize).unwrap_or(
-            crate::block::DEFAULT_SZX,
-        );
+        let block_szx =
+            szx_from_block_size(block_size as usize).unwrap_or(crate::block::DEFAULT_SZX);
 
         info!(
             listen_addr = %listen_addr,
@@ -1340,9 +1339,9 @@ impl CoapDtlsServer {
 
     /// Returns the local address the server is bound to.
     pub fn local_addr(&self) -> Result<SocketAddr, CoapError> {
-        self.socket.local_addr().map_err(|e| {
-            CoapError::Internal(format!("Failed to get local address: {e}"))
-        })
+        self.socket
+            .local_addr()
+            .map_err(|e| CoapError::Internal(format!("Failed to get local address: {e}")))
     }
 
     /// Runs the CoAP/DTLS server main loop.
@@ -1389,7 +1388,10 @@ impl CoapDtlsServer {
             //
             // The connection tracking ensures DTLS session state is maintained
             // across multiple datagrams from the same peer.
-            if let Err(e) = self.process_datagram(datagram, peer_addr, handler.as_ref()).await {
+            if let Err(e) = self
+                .process_datagram(datagram, peer_addr, handler.as_ref())
+                .await
+            {
                 warn!(
                     peer = %peer_addr,
                     error = %e,
@@ -1507,11 +1509,7 @@ impl CoapDtlsServer {
         let est_request = match CoapEstRouter::route_message(message) {
             Ok(req) => req,
             Err(e) => {
-                let response = self.build_error_response(
-                    &msg_token,
-                    msg_id,
-                    &e,
-                );
+                let response = self.build_error_response(&msg_token, msg_id, &e);
                 self.send_response(peer_addr, &response).await?;
                 return Ok(());
             }
@@ -1553,15 +1551,13 @@ impl CoapDtlsServer {
                 let ack = CoapMessage {
                     version: COAP_VERSION,
                     msg_type: CoapMessageType::Acknowledgement,
-                    code: CoapCode { class: 2, detail: 31 }, // 2.31 Continue
+                    code: CoapCode {
+                        class: 2,
+                        detail: 31,
+                    }, // 2.31 Continue
                     message_id: msg_id,
                     token: msg_token.clone(),
-                    options: vec![
-                        CoapOption::from_uint(
-                            OPTION_BLOCK1,
-                            block.encode(),
-                        ),
-                    ],
+                    options: vec![CoapOption::from_uint(OPTION_BLOCK1, block.encode())],
                     payload: Vec::new(),
                 };
                 self.send_response(peer_addr, &ack).await?;
@@ -1636,7 +1632,10 @@ impl CoapDtlsServer {
             let mut cache = self.response_cache.lock().await;
             // Enforce the same size cap as block assemblers.
             if cache.len() < self.max_block_assemblers {
-                cache.insert(cache_key, (disasm, response_cf, response_code, Instant::now()));
+                cache.insert(
+                    cache_key,
+                    (disasm, response_cf, response_code, Instant::now()),
+                );
             } else {
                 warn!(
                     peer = %peer_addr,
@@ -1653,9 +1652,10 @@ impl CoapDtlsServer {
                 code: response_code,
                 message_id: msg_id,
                 token: msg_token,
-                options: vec![
-                    CoapOption::from_uint(OPTION_CONTENT_FORMAT, u32::from(response_cf)),
-                ],
+                options: vec![CoapOption::from_uint(
+                    OPTION_CONTENT_FORMAT,
+                    u32::from(response_cf),
+                )],
                 payload: response_payload,
             };
             self.send_response(peer_addr, &response).await?;
@@ -1738,10 +1738,7 @@ impl CoapDtlsServer {
     /// If the peer already has an active connection, returns it. Otherwise
     /// creates a new `DtlsConnection` from the server's `DtlsContext`.
     #[allow(dead_code)]
-    async fn get_or_create_connection(
-        &self,
-        peer_addr: SocketAddr,
-    ) -> Result<(), CoapError> {
+    async fn get_or_create_connection(&self, peer_addr: SocketAddr) -> Result<(), CoapError> {
         let mut conns = self.connections.lock().await;
         if conns.contains_key(&peer_addr) {
             return Ok(());
@@ -1837,7 +1834,10 @@ mod server_tests {
             .handle(EstOperation::CaCerts, &[], None, None)
             .unwrap();
         assert_eq!(resp.payload, b"cacerts");
-        assert_eq!(resp.content_format, crate::content_format::APPLICATION_PKCS7_MIME_CERTS_ONLY);
+        assert_eq!(
+            resp.content_format,
+            crate::content_format::APPLICATION_PKCS7_MIME_CERTS_ONLY
+        );
         let audit = resp.audit_event.unwrap();
         assert_eq!(audit.event_type, "coap_cacerts");
     }
@@ -1898,9 +1898,7 @@ mod server_tests {
             code: CoapMethod::Get.to_code(),
             message_id: 1,
             token: vec![0xAA],
-            options: vec![
-                CoapOption::new(OPTION_URI_PATH, b"cacerts".to_vec()),
-            ],
+            options: vec![CoapOption::new(OPTION_URI_PATH, b"cacerts".to_vec())],
             payload: Vec::new(),
         };
 
@@ -1941,9 +1939,7 @@ mod server_tests {
             code: CoapMethod::Get.to_code(),
             message_id: 2,
             token: vec![0xBB],
-            options: vec![
-                CoapOption::new(OPTION_URI_PATH, b"unknown".to_vec()),
-            ],
+            options: vec![CoapOption::new(OPTION_URI_PATH, b"unknown".to_vec())],
             payload: Vec::new(),
         };
 
@@ -1992,6 +1988,9 @@ mod server_tests {
         builder.sign(&key, MessageDigest::sha256()).unwrap();
         let cert = builder.build();
 
-        (cert.to_pem().unwrap(), key.private_key_to_pem_pkcs8().unwrap())
+        (
+            cert.to_pem().unwrap(),
+            key.private_key_to_pem_pkcs8().unwrap(),
+        )
     }
 }

@@ -303,8 +303,7 @@ fn generate_software_key(key_type: &KeyType) -> Result<KeyGenResult, KeyGenError
     // which has public to_der() for PKCS#8 extraction.
     match key_type {
         KeyType::Rsa(bits) => generate_classical_key(key_type, c"RSA", |pb| {
-            pb.push_uint(c"bits", *bits)?
-                .push_uint(c"e", 65537u32)
+            pb.push_uint(c"bits", *bits)?.push_uint(c"e", 65537u32)
         }),
         KeyType::Ecdsa(curve) => {
             let curve_cstr: &std::ffi::CStr = match curve {
@@ -362,14 +361,14 @@ where
         native_ossl::params::ParamBuilder,
     ) -> Result<native_ossl::params::ParamBuilder, native_ossl::error::ErrorStack>,
 {
-    use native_ossl::pkey::KeygenCtx;
     use native_ossl::params::ParamBuilder;
+    use native_ossl::pkey::KeygenCtx;
 
     let pb = ParamBuilder::new()
         .map_err(|e| KeyGenError::SoftwareError(format!("param builder init: {e}")))?;
 
-    let pb = configure(pb)
-        .map_err(|e| KeyGenError::SoftwareError(format!("param configure: {e}")))?;
+    let pb =
+        configure(pb).map_err(|e| KeyGenError::SoftwareError(format!("param configure: {e}")))?;
 
     let params = pb
         .build()
@@ -412,17 +411,14 @@ where
 /// Generate a PQC key (ML-DSA, ML-KEM, or composite) via synta-certificate's
 /// `BackendPrivateKey`, which provides `to_der()` for PKCS#8 extraction and
 /// implements the `PrivateKey` trait for SPKI extraction.
-fn generate_pqc_key<F>(
-    key_type: &KeyType,
-    generator: F,
-) -> Result<KeyGenResult, KeyGenError>
+fn generate_pqc_key<F>(key_type: &KeyType, generator: F) -> Result<KeyGenResult, KeyGenError>
 where
     F: FnOnce() -> Result<synta_certificate::BackendPrivateKey, synta_certificate::PrivateKeyError>,
 {
     use synta_certificate::PrivateKey as _;
 
-    let backend_key = generator()
-        .map_err(|e| KeyGenError::SoftwareError(format!("PQC key generation: {e}")))?;
+    let backend_key =
+        generator().map_err(|e| KeyGenError::SoftwareError(format!("PQC key generation: {e}")))?;
 
     // SPKI DER via the PrivateKey trait.
     let public_key_der = backend_key

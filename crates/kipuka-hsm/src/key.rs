@@ -271,10 +271,7 @@ impl HsmKeyPair {
             Attribute::ParameterSet(param_set.into()),
         ];
 
-        tracing::info!(
-            "Generating ML-DSA key pair with parameter set {:?}",
-            level
-        );
+        tracing::info!("Generating ML-DSA key pair with parameter set {:?}", level);
 
         session
             .generate_key_pair(&mechanism, &public_key_template, &private_key_template)
@@ -332,10 +329,7 @@ impl HsmKeyPair {
             Attribute::ParameterSet(param_set.into()),
         ];
 
-        tracing::info!(
-            "Generating ML-KEM key pair with parameter set {:?}",
-            level
-        );
+        tracing::info!("Generating ML-KEM key pair with parameter set {:?}", level);
 
         session
             .generate_key_pair(&mechanism, &public_key_template, &private_key_template)

@@ -118,10 +118,7 @@ pub async fn get_health(_admin: AdminAuth, State(state): State<Arc<AppState>>) -
     };
 
     state
-        .record_audit_event(
-            "admin_health_check",
-            &format!("status={overall_status}"),
-        )
+        .record_audit_event("admin_health_check", &format!("status={overall_status}"))
         .await;
 
     (status_code, Json(health)).into_response()

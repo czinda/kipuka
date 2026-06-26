@@ -374,7 +374,11 @@ impl CaPool {
         queue.retain(|req| req.queued_at.elapsed() < ttl);
         let expired = before - queue.len();
         if expired > 0 {
-            debug!(expired, remaining = queue.len(), "drained expired queued requests");
+            debug!(
+                expired,
+                remaining = queue.len(),
+                "drained expired queued requests"
+            );
         }
 
         // Check capacity.

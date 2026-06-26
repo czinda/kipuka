@@ -258,18 +258,21 @@ impl OtpStore for DbOtpStore {
              FROM otp_tokens WHERE token_hash = ? AND revoked = 0",
         );
 
-        let row = sqlx::query_as::<_, (
-            i64,    // id
-            String, // token_hash (hex)
-            String, // entity_id
-            String, // label
-            String, // profile
-            String, // created_at
-            String, // expires_at
-            i32,    // max_uses
-            i32,    // current_uses
-            i32,    // revoked (integer 0/1 for SQLite compat)
-        )>(&sql)
+        let row = sqlx::query_as::<
+            _,
+            (
+                i64,    // id
+                String, // token_hash (hex)
+                String, // entity_id
+                String, // label
+                String, // profile
+                String, // created_at
+                String, // expires_at
+                i32,    // max_uses
+                i32,    // current_uses
+                i32,    // revoked (integer 0/1 for SQLite compat)
+            ),
+        >(&sql)
         .bind(&hash_hex)
         .fetch_optional(&self.pool)
         .await
@@ -277,9 +280,21 @@ impl OtpStore for DbOtpStore {
 
         match row {
             None => Ok(None),
-            Some((db_id, token_hash_hex, entity_id, label, profile, created_str, expires_str, max_uses, current_uses, revoked)) => {
-                let token_hash = hex::decode(&token_hash_hex)
-                    .map_err(|e| OtpError::StorageError(format!("invalid hex in token_hash: {e}")))?;
+            Some((
+                db_id,
+                token_hash_hex,
+                entity_id,
+                label,
+                profile,
+                created_str,
+                expires_str,
+                max_uses,
+                current_uses,
+                revoked,
+            )) => {
+                let token_hash = hex::decode(&token_hash_hex).map_err(|e| {
+                    OtpError::StorageError(format!("invalid hex in token_hash: {e}"))
+                })?;
 
                 let created_at = chrono::DateTime::parse_from_rfc3339(&created_str)
                     .map(|dt| dt.with_timezone(&Utc))

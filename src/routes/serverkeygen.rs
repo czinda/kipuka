@@ -134,9 +134,8 @@ pub async fn post_serverkeygen(
             ));
         }
 
-        let kra_client = kipuka_dogtag::KraClient::new(dogtag_cfg).map_err(|e| {
-            KipukaError::Ca(format!("KRA client initialization failed: {e}"))
-        })?;
+        let kra_client = kipuka_dogtag::KraClient::new(dogtag_cfg)
+            .map_err(|e| KipukaError::Ca(format!("KRA client initialization failed: {e}")))?;
 
         // Determine key type from the CSR template or use defaults.
         // For now, default to RSA 2048 — a full implementation would
@@ -160,9 +159,9 @@ pub async fn post_serverkeygen(
         // Now enroll the certificate via the CA using the generated public key.
         // Build a CSR from the template + generated public key.
         // For now, we forward the original CSR template and let Dogtag handle it.
-        let client = dogtag_pool.get_client().map_err(|e| {
-            KipukaError::ServiceUnavailable(format!("Dogtag CA unavailable: {e}"))
-        })?;
+        let client = dogtag_pool
+            .get_client()
+            .map_err(|e| KipukaError::ServiceUnavailable(format!("Dogtag CA unavailable: {e}")))?;
 
         use base64::Engine;
         let csr_b64 = base64::engine::general_purpose::STANDARD.encode(&csr_der);
@@ -188,9 +187,9 @@ pub async fn post_serverkeygen(
         })?;
 
         // The private key from KRA — must be the wrapped key, never the public key.
-        let private_key_der = keygen_result.wrapped_private_key.ok_or_else(|| {
-            KipukaError::Ca("KRA did not return a wrapped private key".into())
-        })?;
+        let private_key_der = keygen_result
+            .wrapped_private_key
+            .ok_or_else(|| KipukaError::Ca("KRA did not return a wrapped private key".into()))?;
 
         // Build the multipart/mixed response.
         let response_body = build_multipart_response(&cert_der, &private_key_der);
@@ -262,8 +261,7 @@ pub async fn post_serverkeygen(
         .find(|c| c.id == ca_id)
         .ok_or_else(|| KipukaError::Ca(format!("CA config not found for id={ca_id}")))?;
 
-    let resolved_key =
-        crate::ca::issue::resolve_signing_key(ca_cfg, state.hsm.as_ref()).await?;
+    let resolved_key = crate::ca::issue::resolve_signing_key(ca_cfg, state.hsm.as_ref()).await?;
 
     // Step 5: Issue the certificate (CA signs using its own key).
     let profile = crate::ca::issue::EnrollmentProfile {
@@ -324,9 +322,8 @@ fn build_keygen_csr(
     public_key_der: &[u8],
     private_key_pkcs8_der: &[u8],
 ) -> Result<Vec<u8>, KipukaError> {
-    let template_csr =
-        synta_certificate::csr::CertificationRequest::from_der(template_csr_der)
-            .map_err(|e| KipukaError::BadRequest(format!("CSR template parse failed: {e}")))?;
+    let template_csr = synta_certificate::csr::CertificationRequest::from_der(template_csr_der)
+        .map_err(|e| KipukaError::BadRequest(format!("CSR template parse failed: {e}")))?;
 
     let subject_der = template_csr
         .certification_request_info
@@ -335,9 +332,8 @@ fn build_keygen_csr(
         .map_err(|e| KipukaError::Ca(format!("CSR subject encode failed: {e}")))?;
 
     // Load the generated private key for CSR signing.
-    let generated_key =
-        synta_certificate::BackendPrivateKey::from_der(private_key_pkcs8_der)
-            .map_err(|e| KipukaError::Ca(format!("failed to load generated key: {e}")))?;
+    let generated_key = synta_certificate::BackendPrivateKey::from_der(private_key_pkcs8_der)
+        .map_err(|e| KipukaError::Ca(format!("failed to load generated key: {e}")))?;
 
     let signer = {
         use synta_certificate::PrivateKey as _;

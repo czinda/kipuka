@@ -183,14 +183,12 @@ pub async fn get_cert(
     tracing::debug!(serial = %serial, "retrieving certificate details");
 
     // Query the certificate by serial number from the read-only pool.
-    let row = match sqlx::query_as::<_, CertDetailRow>(
-        crate::db::pg_sql(
-            "SELECT serial, subject_dn, issuer_dn, ca_id, \
+    let row = match sqlx::query_as::<_, CertDetailRow>(crate::db::pg_sql(
+        "SELECT serial, subject_dn, issuer_dn, ca_id, \
                     not_before, not_after, status, \
                     revocation_reason, revocation_time \
              FROM certificates WHERE serial = ?",
-        ),
-    )
+    ))
     .bind(&serial)
     .fetch_optional(&state.db_ro)
     .await
@@ -297,13 +295,11 @@ pub async fn revoke_cert(
 
     // Update the certificate status to 'revoked' in the database.
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-    let result = match sqlx::query(
-        crate::db::pg_sql(
-            "UPDATE certificates SET status = 'revoked', \
+    let result = match sqlx::query(crate::db::pg_sql(
+        "UPDATE certificates SET status = 'revoked', \
                     revocation_reason = ?, revocation_time = ? \
              WHERE serial = ? AND status != 'revoked'",
-        ),
-    )
+    ))
     .bind(req.reason.to_string())
     .bind(&now)
     .bind(&serial)
@@ -327,9 +323,9 @@ pub async fn revoke_cert(
     if result.rows_affected() == 0 {
         // Either the certificate doesn't exist or is already revoked.
         // Check which case it is.
-        let exists = match sqlx::query_scalar::<_, i64>(
-            crate::db::pg_sql("SELECT COUNT(*) FROM certificates WHERE serial = ?"),
-        )
+        let exists = match sqlx::query_scalar::<_, i64>(crate::db::pg_sql(
+            "SELECT COUNT(*) FROM certificates WHERE serial = ?",
+        ))
         .bind(&serial)
         .fetch_one(&state.db_ro)
         .await
@@ -466,4 +462,3 @@ struct CertDetailRow {
     revocation_reason: Option<String>,
     revocation_time: Option<String>,
 }
-

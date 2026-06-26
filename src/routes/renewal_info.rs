@@ -105,12 +105,10 @@ pub async fn get_renewal_info(
     );
 
     // Step 2: Query the certificate from the database by serial number.
-    let row = sqlx::query_as::<_, CertRenewalRow>(
-        crate::db::pg_sql(
-            "SELECT serial, not_after, der_encoded \
+    let row = sqlx::query_as::<_, CertRenewalRow>(crate::db::pg_sql(
+        "SELECT serial, not_after, der_encoded \
              FROM certificates WHERE serial = ? AND status = 'active'",
-        ),
-    )
+    ))
     .bind(&serial_hex)
     .fetch_optional(&state.db_ro)
     .await
@@ -168,7 +166,10 @@ pub async fn get_renewal_info(
     let window_end = not_after - Duration::days(1);
 
     // Defensive: ensure start < end even if Duration arithmetic overflows.
-    debug_assert!(window_start < window_end, "renewal window start must precede end");
+    debug_assert!(
+        window_start < window_end,
+        "renewal window start must precede end"
+    );
 
     let body = serde_json::json!({
         "suggestedWindow": {
@@ -186,10 +187,7 @@ pub async fn get_renewal_info(
 
     // Audit successful renewal-info query (NIAP FAU_GEN.1).
     state
-        .record_audit_event(
-            "renewal_info_query",
-            &format!("serial={serial_hex}"),
-        )
+        .record_audit_event("renewal_info_query", &format!("serial={serial_hex}"))
         .await;
 
     // Step 6: Build the HTTP response.
