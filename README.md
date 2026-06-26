@@ -15,7 +15,7 @@ inspired by the [Akamu](https://codeberg.org/abbra/akamu) ACME server.
 | **Container image** | `registry.kipuka.dev/heebus/kipuka` |
 | **API docs** | [kipuka.dev/api/](https://kipuka.dev/api/) |
 | **Project site** | [kipuka.dev](https://kipuka.dev) |
-| **CI/CD** | GitLab CI on [gitlab.heebh.st](https://gitlab.heebh.st/heebus/kipuka) |
+| **CI/CD** | GitLab CI |
 
 ## Features
 
@@ -269,7 +269,11 @@ See [`docs/PROJECT.md`](docs/PROJECT.md) for EST protocol testing with `curl` an
 
 ## CI/CD
 
+<<<<<<< HEAD
 GitLab CI pipelines run on [gitlab.heebh.st](https://gitlab.heebh.st/heebus/kipuka).
+=======
+GitLab CI pipelines are configured in this repository.
+>>>>>>> abbf672 (docs: remove CI/CD instance URLs from documentation)
 Pipeline configuration lives in [`.gitlab-ci.yml`](.gitlab-ci.yml) with stage
 definitions in [`.gitlab/ci/`](.gitlab/ci/).
 
