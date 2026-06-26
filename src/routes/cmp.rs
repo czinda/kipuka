@@ -1193,9 +1193,8 @@ async fn process_revocation_request(
                                  and does not have RA privilege"
                             );
                             return Err(KipukaError::Forbidden(format!(
-                                "CMP revocation denied: signer '{}' is not authorized \
-                                 to revoke certificate serial {} (owner: '{}')",
-                                signer_subject_dn, serial_hex_check, revokee_subject,
+                                "CMP revocation denied: signer '{signer_subject_dn}' is not authorized \
+                                 to revoke certificate serial {serial_hex_check} (owner: '{revokee_subject}')"
                             )));
                         }
 

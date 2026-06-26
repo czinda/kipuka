@@ -166,8 +166,7 @@ pub async fn post_serverkeygen(
         use base64::Engine;
         let csr_b64 = base64::engine::general_purpose::STANDARD.encode(&csr_der);
         let csr_pem = format!(
-            "-----BEGIN CERTIFICATE REQUEST-----\n{}\n-----END CERTIFICATE REQUEST-----",
-            csr_b64
+            "-----BEGIN CERTIFICATE REQUEST-----\n{csr_b64}\n-----END CERTIFICATE REQUEST-----"
         );
 
         let enroll_result = client
