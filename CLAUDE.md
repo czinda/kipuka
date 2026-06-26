@@ -47,6 +47,8 @@ Built on the Synta ASN.1/X.509 library. Architecture inspired by Akamu ACME serv
 - RFC 2986 (PKCS#10 — Certification Request Syntax)
 - RFC 5280 (X.509 PKI Certificate and CRL Profile)
 - draft-ietf-lamps-rfc5272bis (CMC next-gen, tracking)
+- draft-ietf-lamps-est-renewal-info (EST Renewal Information)
+- RFC 9908 (CSR Attributes Clarification — draft-ietf-lamps-rfc7030-csrattrs)
 
 ### CoAP/DTLS Transport RFCs
 - RFC 7252 (CoAP — Constrained Application Protocol)

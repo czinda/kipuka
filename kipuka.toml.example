@@ -164,6 +164,28 @@ csrattrs = true
 #     "1.2.840.113549.1.1.11",  # sha256WithRSAEncryption
 # ]
 
+# ── EST Renewal Info (draft-ietf-lamps-est-renewal-info) ─────────────────────
+# renewal_window_days = 30          # Days before expiry to start renewal window
+# renewal_retry_after_secs = 86400  # Retry-After header for client polling
+
+# ── CMC Truststore ──────────────────────────────────────────────────────────
+# PEM file with trust anchors for CMC RA signer verification.
+# When set, /fullcmc accepts RA certs issued by CAs other than the target.
+# cmc_truststore_file = "/etc/kipuka/cmc-trust-anchors.pem"
+
+# ── CSR Template (RFC 9908) ─────────────────────────────────────────────────
+# Server-specified CSR template returned alongside the OID list in /csrattrs.
+# [est.csr_template]
+# key_algorithm = "ec:P-256"
+# required_extensions = ["2.5.29.17"]  # subjectAltName
+#
+# [[est.csr_template.subject]]
+# oid = "2.5.4.10"                     # organizationName
+# value = "Example Corp"               # pre-filled
+#
+# [[est.csr_template.subject]]
+# oid = "2.5.4.3"                      # commonName (client fills)
+
 # Retry-After header value (seconds) when CA is temporarily unavailable.
 # retry_after = 120
 

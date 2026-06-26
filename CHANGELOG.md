@@ -19,6 +19,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   block-wise transfer, error handling, and concurrent connection scenarios
 - RFC 7252 (CoAP), RFC 9483 (DTLS transport for EST), RFC 9148 (EST-coaps) compliance
 
+#### EST Renewal Information (draft-ietf-lamps-est-renewal-info)
+- `GET /.well-known/est/renewal-info/:cert_id` endpoint returning JSON `suggestedWindow`
+- Certificate identification via base64url(AKI.keyIdentifier) + "." + base64url(Serial)
+- Configurable renewal window (default 30 days before expiry) and Retry-After header
+- Audit events for successful queries and AKI mismatch detection
+- 6 new tests covering cert_id parsing, window calculation, and error cases
+
+#### CSR Attributes Template (RFC 9908)
+- Server-specified `CertificationRequestInfoTemplate` in `/csrattrs` response
+- Subject DN field constraints with optional pre-filled values
+- Key algorithm constraints (EC curves, RSA modulus size)
+- Required X.509 extension OIDs (client fills values)
+- Backward compatible with existing OID-list mode
+- 3 new tests for template encoding
+
 #### EST Protocol Implementation (RFC 7030)
 - Complete EST enrollment server with all six operations:
   - `GET /cacerts` — CA certificate distribution (no authentication required)

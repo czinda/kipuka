@@ -29,6 +29,10 @@ inspired by the [Akamu](https://codeberg.org/abbra/akamu) ACME server.
   `/cms/serverkeygen`, `/cms/fullcmc` for CMS-wrapped EST operations
 - **STAR certificates** (RFC 8739): short-lived auto-renewal with configurable
   lifetime and renewal window
+- **EST Renewal Info** (draft-ietf-lamps-est-renewal-info): `GET /renewal-info/:cert_id`
+  returning JSON `suggestedWindow` for renewal scheduling
+- **CSR Attributes Template** (RFC 9908): server-specified subject DN, key algorithm,
+  and required extensions via `CertificationRequestInfoTemplate`
 - **EST labels**: multiple certificate profiles via path-based label routing
 
 ### CMP Protocol (RFC 4210)
@@ -169,6 +173,8 @@ key = "/etc/kipuka/ca.key"
 | RFC 9483 | DTLS (Datagram TLS) as Transport for EST | EST-coaps via kipuka-coap |
 | RFC 9148 | EST-coaps (EST over CoAP) | Constrained device enrollment |
 | RFC 7959 | CoAP Block-Wise Transfers | Large payload support |
+| RFC 9908 | CSR Attributes Clarification | CSR template mode for /csrattrs |
+| draft-est-renewal-info | EST Renewal Information | GET /renewal-info/:cert_id |
 
 ### Algorithm and Security Standards
 
