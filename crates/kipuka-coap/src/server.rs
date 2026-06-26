@@ -210,6 +210,11 @@ impl CoapCode {
         class: 2,
         detail: 5,
     };
+    /// 4.01 Unauthorized — client authentication required.
+    pub const UNAUTHORIZED: Self = Self {
+        class: 4,
+        detail: 1,
+    };
     /// 4.04 Not Found — unknown URI path.
     pub const NOT_FOUND: Self = Self {
         class: 4,
@@ -1222,11 +1227,16 @@ pub struct CoapDtlsServer {
     ///
     /// Keyed by `(peer_addr, message_token_hash)` to distinguish concurrent
     /// block transfers from the same or different peers.
+    ///
+    /// Bounded to `max_block_assemblers` entries to prevent resource
+    /// exhaustion from peers that start but never complete block transfers.
     block_assemblers: Mutex<HashMap<(SocketAddr, u16), BlockAssembler>>,
     /// Configured block size exponent for response fragmentation.
     block_szx: u8,
     /// Maximum reassembled payload size.
     max_payload: usize,
+    /// Maximum number of concurrent block-wise assemblers (DoS guard).
+    max_block_assemblers: usize,
 }
 
 impl CoapDtlsServer {
@@ -1278,6 +1288,10 @@ impl CoapDtlsServer {
             block_assemblers: Mutex::new(HashMap::new()),
             block_szx,
             max_payload,
+            // Cap assemblers at 2x session limit — each peer should have at
+            // most one active block transfer, but allow headroom for token
+            // hash collisions and rapid reconnects.
+            max_block_assemblers: max_sessions.saturating_mul(2),
         })
     }
 
@@ -1389,6 +1403,23 @@ impl CoapDtlsServer {
         let request_payload = if let Some(block) = block1 {
             let assembler_key = (peer_addr, token_hash(&msg_token));
             let mut assemblers = self.block_assemblers.lock().await;
+
+            // Reject new block transfers when the assembler table is full.
+            // This prevents resource exhaustion from peers that start but
+            // never complete block transfers.
+            if !assemblers.contains_key(&assembler_key)
+                && assemblers.len() >= self.max_block_assemblers
+            {
+                warn!(
+                    peer = %peer_addr,
+                    active = assemblers.len(),
+                    limit = self.max_block_assemblers,
+                    "Block assembler limit reached, rejecting new transfer"
+                );
+                return Err(CoapError::Internal(
+                    "too many concurrent block transfers".into(),
+                ));
+            }
 
             let assembler = assemblers
                 .entry(assembler_key)
@@ -1506,6 +1537,7 @@ impl CoapDtlsServer {
             CoapError::ResourceNotFound(_) => CoapCode::NOT_FOUND,
             CoapError::UnsupportedMethod(_) => CoapCode::METHOD_NOT_ALLOWED,
             CoapError::UnsupportedContentFormat(_) => CoapCode::UNSUPPORTED_CONTENT_FORMAT,
+            CoapError::Unauthorized(_) => CoapCode::UNAUTHORIZED,
             CoapError::PayloadTooLarge { .. } => CoapCode {
                 class: 4,
                 detail: 13, // 4.13 Request Entity Too Large
@@ -1692,6 +1724,7 @@ mod server_tests {
             block_assemblers: Mutex::new(HashMap::new()),
             block_szx: crate::block::DEFAULT_SZX,
             max_payload: 65536,
+            max_block_assemblers: 20,
         };
 
         let handler = EchoHandler;
@@ -1732,6 +1765,7 @@ mod server_tests {
             block_assemblers: Mutex::new(HashMap::new()),
             block_szx: crate::block::DEFAULT_SZX,
             max_payload: 65536,
+            max_block_assemblers: 20,
         };
 
         let handler = EchoHandler;

@@ -129,6 +129,15 @@ fn handle_simpleenroll(
         "CoAP simpleenroll: certificate issued"
     );
 
+    // TODO(audit): Emit CertIssue / CertReenroll audit events for NIAP
+    // FAU_GEN.1 compliance.  The EstHandler trait is currently synchronous,
+    // so we cannot call the async `audit::record()` here.  Options:
+    //   1. Make EstHandler async (requires tokio runtime in handler).
+    //   2. Return audit metadata and let the server loop emit the event.
+    //   3. Use `tokio::task::block_in_place` with a handle to the runtime.
+    // Tracked as a follow-up to avoid coupling transport and audit layers
+    // in a single change.
+
     // Wrap the issued certificate in PKCS#7 certs-only (reuses cacerts builder).
     let pkcs7_der = crate::routes::cacerts::build_certs_only_pkcs7(&result.certificate_der)
         .map_err(|e| CoapError::Internal(format!("PKCS#7 wrap failed: {e}")))?;
@@ -150,7 +159,7 @@ fn handle_simplereenroll(
 ) -> Result<(Vec<u8>, u16), CoapError> {
     // Re-enrollment requires a client certificate from the DTLS handshake.
     let _cert = client_cert.ok_or_else(|| {
-        CoapError::Internal(
+        CoapError::Unauthorized(
             "simplereenroll requires DTLS client certificate authentication".into(),
         )
     })?;

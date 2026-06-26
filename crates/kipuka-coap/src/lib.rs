@@ -71,6 +71,14 @@ pub enum CoapError {
     #[error("Resource not found: {0}")]
     ResourceNotFound(String),
 
+    /// Client authentication required but not provided (4.01).
+    ///
+    /// Returned when an EST operation requires mTLS client certificate
+    /// authentication but no certificate was presented during the DTLS
+    /// handshake.
+    #[error("Unauthorized: {0}")]
+    Unauthorized(String),
+
     /// Internal server error (catch-all).
     #[error("Internal error: {0}")]
     Internal(String),

@@ -291,44 +291,60 @@ async fn run() -> Result<(), String> {
     if let Some(ref coap_cfg) = config.coap
         && coap_cfg.enabled
     {
-            let coap_state = app_state_arc.clone();
-            let tls_cfg = &config.tls;
+        let coap_state = app_state_arc.clone();
+        let tls_cfg = &config.tls;
 
-            // Read TLS cert/key for DTLS (same material as HTTP TLS).
-            let cert_pem = std::fs::read(&tls_cfg.cert_file).unwrap_or_default();
-            let key_pem = std::fs::read(&tls_cfg.key_file).unwrap_or_default();
-            let ca_pem = std::fs::read(&tls_cfg.ca_file).unwrap_or_default();
+        // Read TLS cert/key for DTLS (same material as HTTP TLS).
+        // Fail early with a clear message if files are missing.
+        let cert_pem = std::fs::read(&tls_cfg.cert_file).map_err(|e| {
+            format!(
+                "CoAP/DTLS: failed to read server certificate '{}': {e}",
+                tls_cfg.cert_file
+            )
+        })?;
+        let key_pem = std::fs::read(&tls_cfg.key_file).map_err(|e| {
+            format!(
+                "CoAP/DTLS: failed to read server private key '{}': {e}",
+                tls_cfg.key_file
+            )
+        })?;
+        let ca_pem = std::fs::read(&tls_cfg.ca_file).map_err(|e| {
+            format!(
+                "CoAP/DTLS: failed to read CA certificate '{}': {e}",
+                tls_cfg.ca_file
+            )
+        })?;
 
-            let listen_addr = coap_cfg.listen_addr.clone();
-            let block_size = coap_cfg.block_size;
-            let max_payload = coap_cfg.max_payload;
-            let max_sessions = coap_cfg.max_sessions;
-            let session_timeout = std::time::Duration::from_secs(coap_cfg.session_timeout_secs);
+        let listen_addr = coap_cfg.listen_addr.clone();
+        let block_size = coap_cfg.block_size;
+        let max_payload = coap_cfg.max_payload;
+        let max_sessions = coap_cfg.max_sessions;
+        let session_timeout = std::time::Duration::from_secs(coap_cfg.session_timeout_secs);
 
-            tokio::spawn(async move {
-                tracing::info!(listen = %listen_addr, "starting CoAP/DTLS server (RFC 9483)");
-                match kipuka_coap::CoapDtlsServer::bind(
-                    &listen_addr,
-                    &cert_pem,
-                    &key_pem,
-                    &ca_pem,
-                    block_size,
-                    max_payload,
-                    max_sessions,
-                    session_timeout,
-                )
-                .await
-                {
-                    Ok(server) => {
-                        // Bridge CoAP EST requests to the shared EST logic.
-                        let handler = kipuka::routes::coap::CoapEstHandler::new(coap_state);
-                        if let Err(e) = server.run(Arc::new(handler)).await {
-                            tracing::error!(error = %e, "CoAP server error");
-                        }
+        tokio::spawn(async move {
+            tracing::info!(listen = %listen_addr, "starting CoAP/DTLS server (RFC 9483)");
+            match kipuka_coap::CoapDtlsServer::bind(
+                &listen_addr,
+                &cert_pem,
+                &key_pem,
+                &ca_pem,
+                block_size,
+                max_payload,
+                max_sessions,
+                session_timeout,
+            )
+            .await
+            {
+                Ok(server) => {
+                    // Bridge CoAP EST requests to the shared EST logic.
+                    let handler = kipuka::routes::coap::CoapEstHandler::new(coap_state);
+                    if let Err(e) = server.run(Arc::new(handler)).await {
+                        tracing::error!(error = %e, "CoAP server error");
                     }
-                    Err(e) => tracing::error!(error = %e, "failed to start CoAP server"),
                 }
-            });
+                Err(e) => tracing::error!(error = %e, "failed to start CoAP server"),
+            }
+        });
     }
 
     // ── Server startup ───────────────────────────────────────────────────────
