@@ -80,8 +80,19 @@ inspired by the [Akamu](https://codeberg.org/abbra/akamu) ACME server.
 - **Block-wise transfer** (RFC 7959): chunked payloads for constrained devices
 - **187 tests** including 69 CoAP/DTLS-specific tests
 
-### Testing and Deployment
+### Testing and Conformance
+- **RFC conformance suite**: 12 test suites, 129 wire-format assertions validating
+  compliance against RFC 7030, RFC 9908, RFC 8739, RFC 8295, RFC 4210, RFC 9483,
+  and NIAP FAU_GEN.1
 - **idm-ci integration**: Beaker-based testing with Dogtag PKI on RHEL 10
+
+```bash
+# Run conformance suite against a running server
+./contrib/conformance/run-all.sh
+
+# Full lifecycle: deploy, test, teardown
+./contrib/conformance/run-all.sh --deploy
+```
 
 ## Quick Start
 
@@ -269,11 +280,7 @@ See [`docs/PROJECT.md`](docs/PROJECT.md) for EST protocol testing with `curl` an
 
 ## CI/CD
 
-<<<<<<< HEAD
-GitLab CI pipelines run on [gitlab.heebh.st](https://gitlab.heebh.st/heebus/kipuka).
-=======
 GitLab CI pipelines are configured in this repository.
->>>>>>> abbf672 (docs: remove CI/CD instance URLs from documentation)
 Pipeline configuration lives in [`.gitlab-ci.yml`](.gitlab-ci.yml) with stage
 definitions in [`.gitlab/ci/`](.gitlab/ci/).
 
