@@ -99,7 +99,7 @@ summary() {
     local total=$((passed + failed + skipped))
     echo -e " $label: ${GREEN}${passed} passed${NC}, ${RED}${failed} failed${NC}, ${YELLOW}${skipped} skipped${NC}  (total: $total)"
     echo "═══════════════════════════════════════════════════════════════"
-    exit $failed
+    exit $(( failed > 125 ? 125 : failed ))
 }
 
 # ── Server check ────────────────────────────────────────────────────────
@@ -141,21 +141,20 @@ get_header() {
 
 json_field() {
     local json="$1" field="$2"
-    echo "$json" | python3 -c "import json,sys; print(json.load(sys.stdin).get('$field',''))" 2>/dev/null || true
+    echo "$json" | python3 -c "import json,sys; print(json.load(sys.stdin).get(sys.argv[1],''))" "$field" 2>/dev/null || true
 }
 
 json_has_field() {
     local file="$1" field="$2"
     python3 -c "
 import json, sys
-d = json.load(open('$file'))
-parts = '$field'.split('.')
-for p in parts:
+d = json.load(open(sys.argv[1]))
+for p in sys.argv[2].split('.'):
     if isinstance(d, dict) and p in d:
         d = d[p]
     else:
         sys.exit(1)
-" 2>/dev/null
+" "$file" "$field" 2>/dev/null
 }
 
 # ── OTP + CSR helpers ──────────────────────────────────────────────────

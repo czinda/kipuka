@@ -48,11 +48,17 @@ if [[ "$DEPLOY" == "true" ]]; then
     echo -e "${BOLD}Regenerating test PKI...${NC}"
     "$REPO_DIR/contrib/local-dev/setup-ca.sh" --clean
 
-    echo -e "${BOLD}Pulling fresh image...${NC}"
-    podman pull registry.kipuka.dev/heebus/kipuka:latest-arm64 2>&1 | tail -1
+    # Detect platform for container image tag
+    case "$(uname -m)" in
+        aarch64|arm64) IMAGE_TAG="latest-arm64" ;;
+        *)             IMAGE_TAG="latest" ;;
+    esac
+    KIPUKA_IMAGE="registry.kipuka.dev/heebus/kipuka:${IMAGE_TAG}"
+
+    echo -e "${BOLD}Pulling fresh image ($IMAGE_TAG)...${NC}"
+    podman pull "$KIPUKA_IMAGE" 2>&1 | tail -1
 
     echo -e "${BOLD}Starting kipuka with conformance config...${NC}"
-    # Use the conformance config via volume mount
     podman run -d --name kipuka-conformance \
         -p 9443:9443 \
         -v "$REPO_DIR/contrib/conformance/kipuka-conformance.toml:/etc/kipuka/kipuka.toml:ro" \
@@ -60,7 +66,7 @@ if [[ "$DEPLOY" == "true" ]]; then
         -v "$REPO_DIR/contrib/local-dev/ca:/etc/kipuka/ca:ro" \
         -v "$REPO_DIR/web:/var/www/kipuka/web:ro" \
         -e RUST_LOG=info \
-        registry.kipuka.dev/heebus/kipuka:latest-arm64
+        "$KIPUKA_IMAGE"
 
     echo "Waiting for server health..."
     MAX_WAIT=30; WAITED=0
@@ -140,7 +146,7 @@ for suite in "${SUITES[@]}"; do
     set +e
     bash "$script"
     rc=$?
-    set -e
+    set +e
 
     scripts_run=$((scripts_run + 1))
     if [[ $rc -eq 0 ]]; then

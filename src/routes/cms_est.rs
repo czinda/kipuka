@@ -147,7 +147,8 @@ pub async fn post_cms_simpleenroll(
     // Delegate to the standard direct-signing enrollment pipeline.
     let cert_der = issue_certificate_from_csr(&state, ca_id, csr_der).await?;
 
-    // Optionally wrap the response in CMS EnvelopedData.
+    // Wrap in PKCS#7 certs-only, then optionally encrypt with CMS EnvelopedData.
+    let pkcs7_der = crate::routes::cacerts::build_certs_only_pkcs7(&cert_der)?;
     let response_body = if cms_config.encrypt_responses {
         let enc_alg = cms_config
             .allowed_content_encryption
@@ -155,9 +156,9 @@ pub async fn post_cms_simpleenroll(
             .map(|s| s.as_str())
             .unwrap_or("AES-256-GCM");
 
-        cms_auth::build_cms_enveloped_data(&cert_der, &cms_result.signer_cert_der, enc_alg)?
+        cms_auth::build_cms_enveloped_data(&pkcs7_der, &cms_result.signer_cert_der, enc_alg)?
     } else {
-        cert_der
+        pkcs7_der
     };
 
     state
@@ -258,6 +259,7 @@ pub async fn post_cms_simplereenroll(
     // certificate being renewed (verified above via CMS SignedData).
     let cert_der = issue_certificate_from_csr(&state, ca_id, csr_der).await?;
 
+    let pkcs7_der = crate::routes::cacerts::build_certs_only_pkcs7(&cert_der)?;
     let response_body = if cms_config.encrypt_responses {
         let enc_alg = cms_config
             .allowed_content_encryption
@@ -265,9 +267,9 @@ pub async fn post_cms_simplereenroll(
             .map(|s| s.as_str())
             .unwrap_or("AES-256-GCM");
 
-        cms_auth::build_cms_enveloped_data(&cert_der, &cms_result.signer_cert_der, enc_alg)?
+        cms_auth::build_cms_enveloped_data(&pkcs7_der, &cms_result.signer_cert_der, enc_alg)?
     } else {
-        cert_der
+        pkcs7_der
     };
 
     state
