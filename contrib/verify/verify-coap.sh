@@ -15,7 +15,7 @@
 #
 # =============================================================================
 
-set -euo pipefail
+set -uo pipefail
 source "$(dirname "$0")/common.sh"
 
 # Override DB_BACKEND — not applicable for CoAP tests

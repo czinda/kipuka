@@ -1,0 +1,96 @@
+# ── Kipuka EST Server — RFC Conformance Test Configuration ─────────────
+#
+# Enables ALL features so every endpoint can be exercised.
+# Used by: contrib/conformance/run-all.sh
+# ───────────────────────────────────────────────────────────────────────
+
+[server]
+listen_addr = "0.0.0.0:9443"
+
+[tls]
+enabled    = true
+cert_file  = "/etc/kipuka/tls/server.pem"
+key_file   = "/etc/kipuka/tls/server-key.pem"
+ca_file    = "/etc/kipuka/ca/ca.pem"
+client_auth = "optional"
+
+[database]
+url = "sqlite:///var/lib/kipuka/kipuka.db?mode=rwc"
+
+[ca]
+key_file       = "/etc/kipuka/ca/ca-key.pem"
+cert_file      = "/etc/kipuka/ca/ca.pem"
+validity_days  = 365
+hash_algorithm = "sha256"
+common_name    = "Kipuka Conformance CA"
+organization   = "Kipuka Conformance"
+
+# ── EST Protocol — all operations enabled ───────────────────────────────
+[est]
+simpleenroll   = true
+simplereenroll = true
+csrattrs       = true
+fullcmc        = true
+serverkeygen   = true
+
+# Global CSR attributes (OID list — backward-compatible with RFC 7030)
+csr_attributes = [
+    "1.2.840.113549.1.9.7",    # challengePassword
+    "1.2.840.10045.2.1",        # ecPublicKey
+]
+
+# RFC 9908 CSR Attributes Template
+[est.csr_template]
+key_algorithm = "ec:P-256"
+required_extensions = ["2.5.29.17"]   # subjectAltName
+
+[[est.csr_template.subject]]
+oid   = "2.5.4.10"
+value = "Conformance Test Org"
+
+[[est.csr_template.subject]]
+oid = "2.5.4.3"
+# No value — client must supply commonName
+
+# ── EST Label — per-label profile for label routing tests ───────────────
+[[est.label]]
+name   = "device"
+ca_id  = "default"
+csr_attributes = ["1.2.840.113549.1.1.1"]   # rsaEncryption
+
+# ── OTP Authentication ──────────────────────────────────────────────────
+[otp]
+enabled         = true
+storage_backend = "db"
+entropy_bits    = 128
+ttl_seconds     = 3600
+max_usage       = 1
+
+# ── Admin API ───────────────────────────────────────────────────────────
+[admin]
+enabled        = true
+auth_method    = "bearer"
+bearer_token   = "conformance-test-token"
+
+# ── STAR Certificates (RFC 8739) ────────────────────────────────────────
+[star]
+enabled           = true
+min_lifetime_secs = 3600
+max_lifetime_secs = 86400
+max_renewals      = 100
+
+# ── CMS-EST (RFC 8295) ─────────────────────────────────────────────────
+[cms_est]
+enabled = true
+
+# ── Audit (NIAP FAU_GEN.1) ─────────────────────────────────────────────
+[audit]
+enabled   = true
+log_path  = "/dev/stdout"
+log_to_db = true
+
+# ── Renewal Info (draft-ietf-lamps-est-renewal-info) ────────────────────
+[est.renewal_info]
+enabled             = true
+renewal_window_pct  = 50
+retry_after_seconds = 3600

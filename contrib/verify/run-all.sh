@@ -113,11 +113,21 @@ echo "════════════════════════�
 echo ""
 
 SCRIPTS=(
+    "$SCRIPT_DIR/verify-container.sh"
     "$SCRIPT_DIR/verify-admin.sh"
     "$SCRIPT_DIR/verify-est-core.sh"
     "$SCRIPT_DIR/verify-otp.sh"
     "$SCRIPT_DIR/verify-error-handling.sh"
+    "$SCRIPT_DIR/verify-star.sh"
+    "$SCRIPT_DIR/verify-stubs.sh"
+    "$SCRIPT_DIR/verify-audit.sh"
+    "$SCRIPT_DIR/verify-renewal-info.sh"
+    "$SCRIPT_DIR/verify-csrattrs-template.sh"
 )
+# These require special infrastructure (HSM, extra DB, CoAP tooling):
+#   verify-hsm-kryoptic.sh  — run with: --profile hsm
+#   verify-databases.sh     — run with: --profile postgres / mariadb
+#   verify-coap.sh          — requires CoAP/DTLS client
 
 total_passed=0
 total_failed=0

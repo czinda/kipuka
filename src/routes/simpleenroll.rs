@@ -202,7 +202,9 @@ pub async fn post_simpleenroll(
                     );
                 }
 
-                let body = encode_est_base64(&cert_der);
+                let pkcs7_der =
+                    crate::routes::cacerts::build_certs_only_pkcs7(&cert_der)?;
+                let body = encode_est_base64(&pkcs7_der);
                 let mut resp = (StatusCode::OK, body).into_response();
                 resp.headers_mut().insert(
                     header::CONTENT_TYPE,
@@ -331,10 +333,9 @@ pub async fn post_simpleenroll(
 
     let cert_der = result.certificate_der;
 
-    // Return the DER-encoded certificate directly (base64-wrapped).
-    // A full implementation would wrap in PKCS#7 certs-only:
-    // let pkcs7_der = kipuka_est::pkcs7::build_certs_only(&[cert_der, ca.cert_der]);
-    let pkcs7_der = cert_der;
+    // Wrap in PKCS#7 degenerate certs-only per RFC 7030 §4.2.3.
+    let pkcs7_der =
+        crate::routes::cacerts::build_certs_only_pkcs7(&cert_der)?;
 
     let body = encode_est_base64(&pkcs7_der);
 
