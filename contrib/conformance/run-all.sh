@@ -127,7 +127,7 @@ for suite in "${SUITES[@]}"; do
 
     if [[ ! -f "$script" ]]; then
         echo -e "\n${YELLOW}SKIP${NC} ${suite} (not yet implemented)"
-        ((scripts_skipped++))
+        scripts_skipped=$((scripts_skipped + 1))
         continue
     fi
     if [[ ! -x "$script" ]]; then
@@ -142,11 +142,11 @@ for suite in "${SUITES[@]}"; do
     rc=$?
     set -e
 
-    ((scripts_run++))
+    scripts_run=$((scripts_run + 1))
     if [[ $rc -eq 0 ]]; then
-        ((scripts_passed++))
+        scripts_passed=$((scripts_passed + 1))
     else
-        ((scripts_failed++))
+        scripts_failed=$((scripts_failed + 1))
     fi
 done
 
