@@ -86,7 +86,6 @@ if [[ "$RESP" == "200" ]] && [[ -s "$TMPDIR/csrattrs.b64" ]]; then
     else
         # The OID might not show up in asn1parse output with a friendly name.
         # Check raw hex of the DER for the OID encoding.
-        OID_HEX="2a864886f70d0109100"
         if xxd -p "$TMPDIR/csrattrs.der" | tr -d '\n' | grep -qi "2a864886f70d010910023d"; then
             echo -e "  ${GREEN}PASS${NC} RFC 9908 template OID found in DER bytes"
             ((passed++))

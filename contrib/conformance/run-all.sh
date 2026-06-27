@@ -14,11 +14,15 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
+# shellcheck disable=SC2034
 GREEN='\033[0;32m'
+# shellcheck disable=SC2034
 RED='\033[0;31m'
+# shellcheck disable=SC2034
 YELLOW='\033[0;33m'
-CYAN='\033[0;36m'
+# shellcheck disable=SC2034
 BOLD='\033[1m'
+# shellcheck disable=SC2034
 NC='\033[0m'
 
 DEPLOY=false
@@ -40,7 +44,7 @@ done
 # ── Deploy lifecycle ───────────────────────────────────────────────────
 if [[ "$DEPLOY" == "true" ]]; then
     echo -e "${BOLD}Destroying existing deployment...${NC}"
-    cd "$REPO_DIR"
+    cd "$REPO_DIR" || exit 1
     podman compose --profile sqlite down -v 2>/dev/null || true
     podman compose --profile conformance down -v 2>/dev/null || true
     podman ps -a --filter name=kipuka --format '{{.ID}}' | xargs -r podman rm -f 2>/dev/null || true

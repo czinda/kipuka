@@ -189,7 +189,6 @@ assert_der_contains_oid_hex "challengePassword OID (backward compat)" "$CSRATTR_
 
 echo "17. Both OID list and template Attribute in same SEQUENCE"
 # Count top-level elements: OIDs + at least one Attribute SEQUENCE
-ELEM_COUNT=$(grep -c "^    0:" "$CSRATTR_ASN1" 2>/dev/null || echo 0)
 # Fallback: just verify the ASN.1 has multiple elements
 ASN1_LINES=$(wc -l < "$CSRATTR_ASN1" 2>/dev/null || echo 0)
 check_true "multiple elements in CsrAttrs ($ASN1_LINES ASN.1 lines)" test "$ASN1_LINES" -gt 5

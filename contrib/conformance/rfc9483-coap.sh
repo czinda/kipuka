@@ -9,7 +9,7 @@ set -uo pipefail
 source "$(dirname "$0")/common.sh"
 
 # CoAP tests don't need a running server — they're unit tests
-DB_BACKEND="n/a"
+DB_BACKEND="n/a" # shellcheck: used by common.sh summary
 PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 COAP_SRC="$PROJECT_ROOT/crates/kipuka-coap/src"
 
