@@ -15,7 +15,6 @@ inspired by the [Akamu](https://codeberg.org/abbra/akamu) ACME server.
 | **Container image** | `registry.kipuka.dev/heebus/kipuka` |
 | **API docs** | [kipuka.dev/api/](https://kipuka.dev/api/) |
 | **Project site** | [kipuka.dev](https://kipuka.dev) |
-| **CI/CD** | GitLab CI |
 
 ## Features
 
@@ -277,22 +276,6 @@ cargo run -- --config kipuka.toml
 
 See [`docs/PROJECT.md`](docs/PROJECT.md) for EST protocol testing with `curl` and
 `openssl`, HSM development setup with Kryoptic, and database migration procedures.
-
-## CI/CD
-
-GitLab CI pipelines are configured in this repository.
-Pipeline configuration lives in [`.gitlab-ci.yml`](.gitlab-ci.yml) with stage
-definitions in [`.gitlab/ci/`](.gitlab/ci/).
-
-| Stage | Jobs |
-|-------|------|
-| **lint** | `rustfmt`, `clippy`, license audit, shell lint |
-| **build** | Debug build, release build, `cargo doc` |
-| **test** | Unit tests, protocol-specific tests |
-| **security** | `cargo audit`, license compliance, FIPS validation |
-| **integration** | Dogtag PKI end-to-end, EST interop (idm-ci / Beaker) |
-| **package** | OCI container image (`registry.kipuka.dev/heebus/kipuka`), RPM (placeholder) |
-| **deploy** | Beaker hardware tests, GitLab Pages ([kipuka.dev](https://kipuka.dev)) |
 
 ## Requirements Tracking
 
