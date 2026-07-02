@@ -144,7 +144,7 @@ pub async fn post_simplereenroll(
 
     // Build the enrollment profile.
     let profile = crate::ca::issue::EnrollmentProfile {
-        max_validity_days: ca.validity_days.min(398),
+        max_validity_days: ca.validity_days.min(crate::ca::issue::cab_forum_max_validity_days()),
         ..crate::ca::issue::EnrollmentProfile::default()
     };
 
@@ -155,6 +155,8 @@ pub async fn post_simplereenroll(
         &ca.cert_der,
         resolved_key.as_signing_key(),
         &ca.hash_algorithm,
+        ca.ocsp_url.as_deref(),
+        ca.crl_url.as_deref(),
     )
     .map_err(|e| KipukaError::Ca(format!("certificate re-issuance failed: {e}")))?;
 

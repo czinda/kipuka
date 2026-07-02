@@ -191,6 +191,8 @@ pub async fn post_star_order(
         &ca.cert_der,
         resolved_key.as_signing_key(),
         &ca.hash_algorithm,
+        ca.ocsp_url.as_deref(),
+        ca.crl_url.as_deref(),
     )
     .map_err(|e| KipukaError::Ca(format!("STAR certificate issuance failed: {e}")))?;
 

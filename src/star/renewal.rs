@@ -156,6 +156,8 @@ async fn renewal_cycle(
             &ca.cert_der,
             resolved_key.as_signing_key(),
             &ca.hash_algorithm,
+            ca.ocsp_url.as_deref(),
+            ca.crl_url.as_deref(),
         ) {
             Ok(result) => {
                 let cert = StarCertificate {

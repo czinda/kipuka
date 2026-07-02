@@ -92,8 +92,9 @@ pub struct CaConfig {
 
     /// Default validity period for issued end-entity certificates (days).
     ///
-    /// CA/B Forum BR §6.3.2 limits publicly-trusted certificates to
-    /// 398 days (roughly 13 months).  Private CAs may use longer periods.
+    /// CA/B Forum BR §6.3.2 (Ballot SC-081v3) enforces a stepped schedule:
+    /// 200 days (from 2026-03-15), 100 days (from 2027-03-15), 47 days
+    /// (from 2029-03-15). Private CAs may use longer periods.
     ///
     /// Default: 365 days.
     #[serde(default = "default_validity_days")]
@@ -133,7 +134,7 @@ pub struct CaConfig {
     /// CA/B Forum compliance mode.
     ///
     /// When `true`, the server enforces:
-    /// - Maximum 398-day end-entity certificate validity
+    /// - Maximum validity per Ballot SC-081v3 schedule (200 days as of 2026-03-15)
     /// - Required key usage and extended key usage extensions
     /// - Minimum RSA 2048-bit key size in CSRs
     #[serde(default)]

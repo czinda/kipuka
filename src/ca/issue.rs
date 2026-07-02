@@ -52,6 +52,10 @@ pub enum IssuanceError {
     /// The CSR algorithm is not permitted by the enrollment profile.
     #[error("algorithm not allowed: {algorithm} not in profile '{profile}'")]
     AlgorithmNotAllowed { algorithm: String, profile: String },
+
+    /// The CSR subject contains a prohibited DN attribute.
+    #[error("prohibited DN attribute: {name} ({oid})")]
+    ProhibitedDnAttribute { oid: String, name: String },
 }
 
 /// Result of a successful certificate issuance.
@@ -258,6 +262,11 @@ pub struct EnrollmentProfile {
     /// Whether to inject Certificate Transparency SCTs.
     pub ct_enabled: bool,
 
+    /// Certificate Policies OIDs (BR §7.1.2.7.9).
+    /// DV: `["2.23.140.1.2.1"]`, OV: `["2.23.140.1.2.2"]`.
+    #[serde(default)]
+    pub certificate_policies: Vec<String>,
+
     // --- Post-Quantum Cryptography (FIPS 203/204) ---
     /// Allowed ML-DSA levels for signing key CSRs (FIPS 204).
     /// Empty means ML-DSA is not accepted for this profile.
@@ -311,14 +320,15 @@ impl Default for EnrollmentProfile {
     fn default() -> Self {
         Self {
             name: "default".into(),
-            max_validity_days: 398, // CA/B Forum current maximum
+            max_validity_days: cab_forum_max_validity_days(),
             key_usage: vec!["digitalSignature".into(), "keyEncipherment".into()],
-            extended_key_usage: vec!["serverAuth".into(), "clientAuth".into()],
+            extended_key_usage: vec!["serverAuth".into()],
             include_ski: true,
             include_aki: true,
             min_rsa_bits: 2048,
             min_ecdsa_curve: "P-256".into(),
             ct_enabled: false,
+            certificate_policies: vec!["2.23.140.1.2.1".into()],
             // PQC defaults: accept all ML-DSA and ML-KEM levels
             allowed_ml_dsa_levels: vec!["ml-dsa-44".into(), "ml-dsa-65".into(), "ml-dsa-87".into()],
             allowed_ml_kem_levels: vec![
@@ -379,9 +389,14 @@ pub fn issue_certificate(
     ca_cert_der: &[u8],
     signing_key: CaSigningKey<'_>,
     hash_algorithm: &str,
+    ocsp_url: Option<&str>,
+    crl_url: Option<&str>,
 ) -> Result<IssuanceResult, IssuanceError> {
     // Step 1: Parse and validate CSR.
     validate_csr(csr_der)?;
+
+    // Step 1a: Check subject DN for prohibited attributes (BR §7.1.2.10.2).
+    check_subject_dn_compliance(csr_der)?;
 
     // Step 2: Check key size against profile minimums.
     check_key_size(csr_der, profile)?;
@@ -487,6 +502,16 @@ pub fn issue_certificate(
             builder.add_extension_oid(synta_certificate::oids::EXTENDED_KEY_USAGE, false, &eku);
     }
 
+    // Certificate Policies (non-critical, per CA/B Forum BR §7.1.2.7.9).
+    if !profile.certificate_policies.is_empty() {
+        let cp_der = encode_certificate_policies(&profile.certificate_policies)?;
+        builder = builder.add_extension_oid(
+            synta_certificate::oids::CERTIFICATE_POLICIES,
+            false,
+            &cp_der,
+        );
+    }
+
     // Subject Key Identifier (non-critical, per CA/B Forum BR §7.1.2.7.2).
     if profile.include_ski {
         let hasher = synta_certificate::OpensslKeyIdHasher;
@@ -517,6 +542,26 @@ pub fn issue_certificate(
                 &aki_der,
             );
         }
+    }
+
+    // Authority Information Access (non-critical, per CA/B Forum BR §7.1.2.7.7).
+    if let Some(url) = ocsp_url {
+        let aia_der = encode_aia_extension(url)?;
+        builder = builder.add_extension_oid(
+            synta_certificate::oids::AUTHORITY_INFO_ACCESS,
+            false,
+            &aia_der,
+        );
+    }
+
+    // CRL Distribution Points (non-critical, per CA/B Forum BR §7.1.2.7.7).
+    if let Some(url) = crl_url {
+        let cdp_der = encode_cdp_extension(url)?;
+        builder = builder.add_extension_oid(
+            synta_certificate::oids::CRL_DISTRIBUTION_POINTS,
+            false,
+            &cdp_der,
+        );
     }
 
     // TLS Feature Extension (must-staple) per RFC 7633 §4.
@@ -696,6 +741,30 @@ fn validate_csr(csr_der: &[u8]) -> Result<(), IssuanceError> {
     Ok(())
 }
 
+/// Check CSR subject DN for prohibited attributes (BR §7.1.2.10.2).
+fn check_subject_dn_compliance(csr_der: &[u8]) -> Result<(), IssuanceError> {
+    let csr = synta_certificate::csr::CertificationRequest::from_der(csr_der)
+        .map_err(|e| IssuanceError::InvalidCsr(format!("CSR parse failed: {e}")))?;
+
+    let subject_der = csr
+        .certification_request_info
+        .subject
+        .to_der()
+        .map_err(|e| IssuanceError::InvalidCsr(format!("subject DN encode failed: {e}")))?;
+
+    let attrs = synta_certificate::parse_name_attrs(&subject_der);
+    for (oid, _value) in &attrs {
+        if oid == "2.5.4.11" {
+            return Err(IssuanceError::ProhibitedDnAttribute {
+                oid: oid.clone(),
+                name: "organizationalUnitName".into(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
 /// Check key size from CSR against profile minimums.
 fn check_key_size(csr_der: &[u8], profile: &EnrollmentProfile) -> Result<(), IssuanceError> {
     // Parse the CSR to extract the public key info.
@@ -819,22 +888,83 @@ fn check_key_size(csr_der: &[u8], profile: &EnrollmentProfile) -> Result<(), Iss
 
 /// Validate the requested validity period.
 fn check_validity_period(profile: &EnrollmentProfile) -> Result<(), IssuanceError> {
-    // CA/B Forum maximum: 398 days (current), 47 days (from March 2029).
-    const CAB_CURRENT_MAX_DAYS: u32 = 398;
+    let max_days = cab_forum_max_validity_days();
 
-    if profile.max_validity_days > CAB_CURRENT_MAX_DAYS {
+    if profile.max_validity_days > max_days {
         warn!(
             requested = profile.max_validity_days,
-            max = CAB_CURRENT_MAX_DAYS,
+            max = max_days,
             "validity period exceeds CA/B Forum maximum"
         );
         return Err(IssuanceError::ValidityTooLong {
             requested_days: profile.max_validity_days,
-            max_days: CAB_CURRENT_MAX_DAYS,
+            max_days,
         });
     }
 
     Ok(())
+}
+
+/// Encode Certificate Policies extension (RFC 5280 §4.2.1.4).
+fn encode_certificate_policies(policy_oids: &[String]) -> Result<Vec<u8>, IssuanceError> {
+    let mut builder = synta_certificate::CertificatePoliciesBuilder::new();
+    for oid_str in policy_oids {
+        let components: Vec<u32> = oid_str
+            .split('.')
+            .map(|s| s.parse())
+            .collect::<Result<_, _>>()
+            .map_err(|e| IssuanceError::InvalidCsr(format!("invalid policy OID '{oid_str}': {e}")))?;
+        builder = builder.add_policy(&components);
+    }
+    builder
+        .build()
+        .map_err(|e| IssuanceError::SigningError(format!("Certificate Policies encoding failed: {e}")))
+}
+
+/// Encode Authority Information Access extension (RFC 5280 §4.2.2.1).
+fn encode_aia_extension(ocsp_url: &str) -> Result<Vec<u8>, IssuanceError> {
+    synta_certificate::AuthorityInformationAccessBuilder::new()
+        .ocsp(ocsp_url)
+        .build()
+        .map_err(|e| IssuanceError::SigningError(format!("AIA encoding failed: {e}")))
+}
+
+/// Encode CRL Distribution Points extension (RFC 5280 §4.2.1.13).
+fn encode_cdp_extension(crl_url: &str) -> Result<Vec<u8>, IssuanceError> {
+    synta_certificate::CRLDistributionPointsBuilder::new()
+        .full_name_uri(crl_url)
+        .build()
+        .map_err(|e| IssuanceError::SigningError(format!("CDP encoding failed: {e}")))
+}
+
+/// CA/B Forum maximum validity period per Ballot SC-081v3.
+///
+/// Returns the maximum certificate validity in days based on the current
+/// date. The schedule reduces validity over time:
+///
+/// | Effective Date | Maximum |
+/// |----------------|---------|
+/// | Before 2026-03-15 | 398 days |
+/// | 2026-03-15 | 200 days |
+/// | 2027-03-15 | 100 days |
+/// | 2029-03-15 | 47 days |
+pub fn cab_forum_max_validity_days() -> u32 {
+    use chrono::NaiveDate;
+
+    let today = Utc::now().date_naive();
+    let p200 = NaiveDate::from_ymd_opt(2026, 3, 15).expect("valid date");
+    let p100 = NaiveDate::from_ymd_opt(2027, 3, 15).expect("valid date");
+    let p47 = NaiveDate::from_ymd_opt(2029, 3, 15).expect("valid date");
+
+    if today < p200 {
+        398
+    } else if today < p100 {
+        200
+    } else if today < p47 {
+        100
+    } else {
+        47
+    }
 }
 
 // ── HSM CertificateSigner ────────────────────────────────────────────────────
