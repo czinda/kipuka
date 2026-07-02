@@ -28,8 +28,9 @@ pub struct DbConfig {
     /// - `"postgres://user:pass@host/kipuka"` — PostgreSQL
     /// - `"mariadb://user:pass@host/kipuka"` — MariaDB
     ///
-    /// Supports `"env:VAR_NAME"` to read the URL from an environment variable.
-    pub url: String,
+    /// Supports secret prefixes: `env:VAR`, `file:/path`, `prompt:Label`,
+    /// `keyring:name`, `systemd-creds:name`.
+    pub url: super::SecretRef,
 
     /// Maximum number of connections in the pool.
     ///
@@ -84,7 +85,7 @@ fn bool_true() -> bool {
 impl Default for DbConfig {
     fn default() -> Self {
         Self {
-            url: "sqlite:///var/lib/kipuka/kipuka.db".to_string(),
+            url: super::SecretRef::from("sqlite:///var/lib/kipuka/kipuka.db"),
             max_connections: None,
             min_connections: None,
             connect_timeout_secs: default_connect_timeout_secs(),
@@ -95,15 +96,3 @@ impl Default for DbConfig {
     }
 }
 
-impl DbConfig {
-    /// Resolve the database URL, expanding `"env:VAR_NAME"` references.
-    pub fn resolve_url(&self) -> std::result::Result<String, String> {
-        if let Some(var_name) = self.url.strip_prefix("env:") {
-            std::env::var(var_name).map_err(|_| {
-                format!("[database].url references env var {var_name:?} which is not set")
-            })
-        } else {
-            Ok(self.url.clone())
-        }
-    }
-}

@@ -52,11 +52,11 @@ pub struct HsmConfig {
 
     /// PKCS#11 user PIN for session login.
     ///
-    /// Supports `"env:VAR_NAME"` syntax to read the PIN from an
-    /// environment variable at startup, avoiding plaintext storage
-    /// in the config file.
+    /// Supports secret prefixes: `env:VAR`, `file:/path`, `prompt:Label`,
+    /// `keyring:name`, `systemd-creds:name`. Plaintext values are accepted
+    /// for backward compatibility but log a warning.
     #[serde(default)]
-    pub pin: String,
+    pub pin: super::SecretRef,
 
     /// PKCS#11 slot ID to use.
     ///
@@ -89,14 +89,3 @@ fn default_max_sessions() -> usize {
     8
 }
 
-impl HsmConfig {
-    /// Resolve the HSM PIN, expanding `"env:VAR_NAME"` references.
-    pub fn resolve_pin(&self) -> std::result::Result<String, String> {
-        if let Some(var_name) = self.pin.strip_prefix("env:") {
-            std::env::var(var_name)
-                .map_err(|_| format!("[hsm].pin references env var {var_name:?} which is not set"))
-        } else {
-            Ok(self.pin.clone())
-        }
-    }
-}

@@ -75,6 +75,9 @@ time = "0.3"
 # HTTP client
 reqwest = { version = "0.12", features = ["rustls-tls"] }
 
+# Interactive secrets
+rpassword = "7"
+
 # Misc
 clap = { version = "4", features = ["derive"] }
 indexmap = { version = "2", features = ["serde"] }
@@ -150,6 +153,7 @@ bytes.workspace = true
 parking_lot.workspace = true
 dashmap.workspace = true
 reqwest.workspace = true
+rpassword.workspace = true
 libgssapi = { version = "0.11", optional = true }
 
 [features]

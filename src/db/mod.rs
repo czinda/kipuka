@@ -112,8 +112,10 @@ pub(crate) fn pg_sql_dynamic(s: String) -> String {
 }
 
 /// Initialize the primary (read-write) database connection pool.
-pub async fn init_pool(config: &DbConfig) -> Result<(Db, DbKind), KipukaError> {
-    let url = config.resolve_url().map_err(KipukaError::Config)?;
+///
+/// The `resolved_url` is the pre-resolved database URL from [`SecretResolver`].
+pub async fn init_pool(config: &DbConfig, resolved_url: &str) -> Result<(Db, DbKind), KipukaError> {
+    let url = resolved_url.to_string();
 
     let kind = DbKind::from_url(&url);
     let _ = IS_POSTGRES.set(kind == DbKind::Postgres);
@@ -159,8 +161,8 @@ pub async fn init_pool(config: &DbConfig) -> Result<(Db, DbKind), KipukaError> {
 /// never acquires the write lock, enabling concurrent reads during writes
 /// (WAL concurrency benefit).  For `:memory:` and non-SQLite backends,
 /// returns a clone of the primary pool.
-pub async fn init_ro_pool(config: &DbConfig, kind: DbKind) -> Result<Db, KipukaError> {
-    let url = config.resolve_url().map_err(KipukaError::Config)?;
+pub async fn init_ro_pool(_config: &DbConfig, kind: DbKind, resolved_url: &str) -> Result<Db, KipukaError> {
+    let url = resolved_url.to_string();
 
     // Only SQLite file-backed databases benefit from a separate RO pool
     if kind != DbKind::Sqlite || url.contains(":memory:") {

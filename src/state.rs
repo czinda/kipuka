@@ -18,6 +18,9 @@ pub struct AppState {
     /// Parsed and validated configuration.
     pub config: Arc<Config>,
 
+    /// Resolved secrets (never serialized to disk).
+    pub secrets: Arc<crate::config::ResolvedSecrets>,
+
     /// Primary database connection pool (read-write).
     pub db: sqlx::AnyPool,
 
@@ -199,6 +202,7 @@ pub struct CaState {
 /// to produce the final `AppState`.
 pub struct AppStateBuilder {
     config: Option<Arc<Config>>,
+    secrets: Option<Arc<crate::config::ResolvedSecrets>>,
     db: Option<sqlx::AnyPool>,
     db_ro: Option<sqlx::AnyPool>,
     db_kind: Option<crate::db::DbKind>,
@@ -219,6 +223,7 @@ impl AppStateBuilder {
     pub fn new() -> Self {
         Self {
             config: None,
+            secrets: None,
             db: None,
             db_ro: None,
             db_kind: None,
@@ -237,6 +242,11 @@ impl AppStateBuilder {
 
     pub fn config(mut self, config: Arc<Config>) -> Self {
         self.config = Some(config);
+        self
+    }
+
+    pub fn secrets(mut self, secrets: Arc<crate::config::ResolvedSecrets>) -> Self {
+        self.secrets = Some(secrets);
         self
     }
 
@@ -317,6 +327,7 @@ impl AppStateBuilder {
 
         AppState {
             config: self.config.expect("config is required"),
+            secrets: self.secrets.expect("secrets is required"),
             db,
             db_ro,
             db_kind: self.db_kind.expect("db_kind is required"),

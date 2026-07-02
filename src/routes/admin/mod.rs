@@ -102,10 +102,8 @@ where
             && let Some(token) = auth_header.strip_prefix("Bearer ")
             && !token.is_empty()
         {
-            // Validate against the configured admin bearer token.
-            if let Some(ref admin_cfg) = _app.config.admin
-                && let Some(ref configured_token) = admin_cfg.bearer_token
-            {
+            // Validate against the resolved admin bearer token.
+            if let Some(ref configured_token) = _app.secrets.admin_bearer_token {
                 // Constant-time comparison to prevent timing attacks.
                 // Do not pre-check lengths — ct_eq safely returns 0 for
                 // mismatched lengths, and a length guard would leak the

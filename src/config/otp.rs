@@ -98,9 +98,10 @@ pub struct OtpLdapConfig {
     /// Bind DN for LDAP authentication.
     pub bind_dn: String,
 
-    /// Bind password.  Supports `"env:VAR_NAME"` for env-var expansion.
+    /// Bind password. Supports secret prefixes: `env:VAR`, `file:/path`,
+    /// `prompt:Label`, `keyring:name`, `systemd-creds:name`.
     #[serde(default)]
-    pub bind_password: String,
+    pub bind_password: super::SecretRef,
 
     /// Base DN under which OTP entries are stored.
     pub base_dn: String,

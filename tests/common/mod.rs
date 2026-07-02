@@ -113,7 +113,12 @@ impl TestServer {
         let ca = TestCa::new();
 
         // Initialize in-memory database
-        let (db, db_kind) = kipuka::db::init_pool(&config.database)
+        let resolver = kipuka::config::SecretResolver::new();
+        let secrets = resolver.resolve_config(&config)
+            .expect("failed to resolve test secrets");
+        let secrets = std::sync::Arc::new(secrets);
+
+        let (db, db_kind) = kipuka::db::init_pool(&config.database, &secrets.db_url)
             .await
             .expect("failed to init test DB pool");
 
@@ -139,6 +144,7 @@ impl TestServer {
 
         let mut builder = AppStateBuilder::new()
             .config(Arc::new(config))
+            .secrets(secrets)
             .db(db)
             .db_ro(db_ro)
             .db_kind(db_kind)

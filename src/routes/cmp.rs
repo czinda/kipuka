@@ -758,7 +758,17 @@ pub async fn post_cmp(
                     ))
                 })?;
 
-            let shared_secret = hex::decode(&secret_entry.secret_hex).map_err(|e| {
+            let resolved_hex = state
+                .secrets
+                .cmp_mac_secrets
+                .get(&secret_entry.reference)
+                .ok_or_else(|| {
+                    KipukaError::Internal(format!(
+                        "CMP MAC secret for '{}' was not resolved at startup",
+                        secret_entry.reference,
+                    ))
+                })?;
+            let shared_secret = hex::decode(resolved_hex).map_err(|e| {
                 KipukaError::Internal(format!(
                     "CMP MAC secret for '{}' has invalid hex encoding: {e}",
                     secret_entry.reference,

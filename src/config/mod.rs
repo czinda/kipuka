@@ -43,12 +43,14 @@ mod db;
 mod est;
 mod hsm;
 mod otp;
+pub mod secret;
 mod server;
 mod star;
 mod tls;
 
 pub use self::admin::*;
 pub use self::audit::*;
+pub use self::secret::{ResolvedSecrets, SecretRef, SecretResolver};
 pub use self::ca::*;
 pub use self::cmp::*;
 pub use self::cms_est::*;

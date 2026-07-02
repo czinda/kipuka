@@ -82,7 +82,7 @@ pub struct AdminConfig {
     /// against this value using constant-time comparison.  Required when
     /// operators authenticate via Bearer tokens (e.g., CI pipelines,
     /// monitoring systems).
-    pub bearer_token: Option<String>,
+    pub bearer_token: Option<super::SecretRef>,
 
     /// GSSAPI configuration (required when `auth_method = "gssapi"`).
     pub gssapi: Option<AdminGssapiConfig>,

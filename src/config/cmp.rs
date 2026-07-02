@@ -71,8 +71,9 @@ pub struct CmpConfig {
 pub struct CmpMacSecret {
     /// Reference number identifying this secret (matched against CMP sender field).
     pub reference: String,
-    /// Hex-encoded shared secret bytes.
-    pub secret_hex: String,
+    /// Hex-encoded shared secret bytes. Supports secret prefixes:
+    /// `env:VAR`, `file:/path`, `prompt:Label`, `keyring:name`, `systemd-creds:name`.
+    pub secret_hex: super::SecretRef,
 }
 
 fn default_true() -> bool {

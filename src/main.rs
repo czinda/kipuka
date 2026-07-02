@@ -77,11 +77,23 @@ async fn run() -> Result<(), String> {
         return Ok(());
     }
 
+    // ── Resolve secrets ────────────────────────────────────────────────────
+    tracing::info!("resolving secrets");
+    let resolver = kipuka::config::SecretResolver::new();
+    let secrets = resolver
+        .resolve_config(&config)
+        .map_err(|e| format!("secret resolution failed: {e}"))?;
+
+    if resolver.is_interactive() {
+        resolver.persist_to_keyring(&secrets);
+    }
+
+    let secrets = std::sync::Arc::new(secrets);
     let config = Arc::new(config);
 
     // ── Database ─────────────────────────────────────────────────────────────
     tracing::info!("connecting to database");
-    let (db, db_kind) = kipuka::db::init_pool(&config.database)
+    let (db, db_kind) = kipuka::db::init_pool(&config.database, &secrets.db_url)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -92,7 +104,7 @@ async fn run() -> Result<(), String> {
             .map_err(|e| e.to_string())?;
     }
 
-    let db_ro = kipuka::db::init_ro_pool(&config.database, db_kind)
+    let db_ro = kipuka::db::init_ro_pool(&config.database, db_kind, &secrets.db_url)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -184,9 +196,11 @@ async fn run() -> Result<(), String> {
             .open_rw_session()
             .map_err(|e| format!("PKCS#11 session open failed: {e}"))?;
 
-        let pin = hsm_cfg
-            .resolve_pin()
-            .map_err(|e| format!("HSM PIN resolution failed: {e}"))?;
+        let pin = secrets
+            .hsm_pin
+            .as_deref()
+            .ok_or_else(|| "HSM is configured but no PIN was resolved".to_string())?
+            .to_string();
 
         slot.login(&session, &pin)
             .map_err(|e| format!("PKCS#11 login failed: {e}"))?;
@@ -246,6 +260,7 @@ async fn run() -> Result<(), String> {
     // ── Build AppState ───────────────────────────────────────────────────────
     let state = AppStateBuilder::new()
         .config(config.clone())
+        .secrets(secrets.clone())
         .db(db.clone())
         .db_ro(db_ro)
         .db_kind(db_kind)
