@@ -1,0 +1,39 @@
+# Mantis configuration for kipuka (Rust CA server)
+tier: standard
+fail_on: [critical, high]
+
+domains:
+  adversarial: true
+  secrets: true
+  supply_chain: true
+  quality: true
+  privilege: true
+  exfiltration: true
+
+suppress:
+  - path: "target/**"
+    reason: "Build artifacts, not source code"
+
+  - rule: QUAL-001
+    path: "src/routes/cmp.rs"
+    reason: "CMP protocol handling requires large match blocks over ASN.1 structures"
+
+  - rule: QUAL-001
+    path: "src/routes/fullcmc.rs"
+    reason: "CMC protocol handling requires large match blocks over ASN.1 structures"
+
+  - rule: QUAL-001
+    path: "src/routes/cms_est.rs"
+    reason: "EST truststore assembly is a single sequential build with many X.509 fields"
+
+  - rule: QUAL-001
+    path: "crates/kipuka-coap/src/server.rs"
+    reason: "CoAP server dispatch and Debug impl over protocol-level enums"
+
+  - rule: RUST-005
+    path: "src/auth/cms_auth.rs"
+    reason: "SHA-1/MD5 references are rejection guards (returns Err), not algorithm usage"
+
+  - rule: RUST-003
+    path: "tests/**"
+    reason: "Integration tests use unwrap/expect idiomatically; panics are correct test behavior"
