@@ -160,6 +160,12 @@ impl SecretResolver {
 
         let value = match secret_ref.backend() {
             SecretBackend::Env(var) => {
+                if var.is_empty() {
+                    return Err(SecretError::EnvNotSet {
+                        field: field.to_string(),
+                        var: "(empty — env: prefix requires a variable name)".to_string(),
+                    });
+                }
                 debug!(field = field, var = %var, "resolving secret from environment");
                 std::env::var(&var).map_err(|_| SecretError::EnvNotSet {
                     field: field.to_string(),
@@ -167,6 +173,12 @@ impl SecretResolver {
                 })?
             }
             SecretBackend::File(path) => {
+                if path.is_empty() {
+                    return Err(SecretError::FileNotFound {
+                        field: field.to_string(),
+                        path: "(empty — file: prefix requires a path)".to_string(),
+                    });
+                }
                 debug!(field = field, path = %path, "resolving secret from file");
                 std::fs::read_to_string(&path)
                     .map_err(|e| {
@@ -218,7 +230,7 @@ impl SecretResolver {
                     .to_string()
             }
             SecretBackend::Literal(val) => {
-                if !val.is_empty() {
+                if !val.is_empty() && !val.starts_with("sqlite:") {
                     warn!(
                         field = field,
                         "secret stored as plaintext in config; use env:, file:, or prompt: prefix in production"
@@ -379,28 +391,38 @@ impl SecretResolver {
         })
     }
 
-    /// Persist all prompted secrets to the kernel keyring.
-    pub fn persist_to_keyring(&self, _secrets: &ResolvedSecrets) {
+    /// Persist all resolved secrets to the kernel keyring.
+    pub fn persist_to_keyring(&self) {
         let cache = self.cache.read();
-        for (field, _value) in cache.iter() {
-            if let Some(val) = cache.get(field) {
-                let key = format!("kipuka/{}", field.replace('.', "/"));
-                if let Err(e) = Self::store_keyring(&key, val) {
-                    warn!(field = field, error = %e, "failed to persist secret to keyring");
-                }
+        for (field, val) in cache.iter() {
+            let key = format!("kipuka/{}", field.replace('.', "/"));
+            if let Err(e) = Self::store_keyring(&key, val) {
+                warn!(field = field, error = %e, "failed to persist secret to keyring");
             }
         }
     }
 }
 
 /// All resolved secrets for the running instance. Never serialized to disk.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ResolvedSecrets {
     pub db_url: String,
     pub hsm_pin: Option<String>,
     pub admin_bearer_token: Option<String>,
     pub ldap_bind_password: Option<String>,
     pub cmp_mac_secrets: HashMap<String, String>,
+}
+
+impl std::fmt::Debug for ResolvedSecrets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResolvedSecrets")
+            .field("db_url", &"<redacted>")
+            .field("hsm_pin", &self.hsm_pin.as_ref().map(|_| "<redacted>"))
+            .field("admin_bearer_token", &self.admin_bearer_token.as_ref().map(|_| "<redacted>"))
+            .field("ldap_bind_password", &self.ldap_bind_password.as_ref().map(|_| "<redacted>"))
+            .field("cmp_mac_secrets", &format!("{} entries", self.cmp_mac_secrets.len()))
+            .finish()
+    }
 }
 
 #[cfg(test)]
@@ -445,7 +467,7 @@ mod tests {
 
     #[test]
     fn resolve_env_backend() {
-        // SAFETY: test-only, single-threaded by #[test] default.
+        // SAFETY: env var name is unique to this test; no other test uses it.
         unsafe { std::env::set_var("KIPUKA_TEST_SECRET", "test-value-42") };
         let resolver = SecretResolver::new();
         let r = SecretRef("env:KIPUKA_TEST_SECRET".into());
@@ -476,7 +498,7 @@ mod tests {
 
     #[test]
     fn resolve_caches_value() {
-        // SAFETY: test-only, single-threaded by #[test] default.
+        // SAFETY: env var name is unique to this test; no other test uses it.
         unsafe { std::env::set_var("KIPUKA_CACHE_TEST", "cached") };
         let resolver = SecretResolver::new();
         let r = SecretRef("env:KIPUKA_CACHE_TEST".into());

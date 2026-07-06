@@ -85,7 +85,7 @@ async fn run() -> Result<(), String> {
         .map_err(|e| format!("secret resolution failed: {e}"))?;
 
     if resolver.is_interactive() {
-        resolver.persist_to_keyring(&secrets);
+        resolver.persist_to_keyring();
     }
 
     let secrets = std::sync::Arc::new(secrets);
