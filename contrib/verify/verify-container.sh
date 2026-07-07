@@ -16,7 +16,7 @@
 #
 # Environment:
 #   KIPUKA_IMAGE  Override the container image (default: auto-detect
-#                 from compose.yaml or registry.kipuka.dev/heebus/kipuka)
+#                 from compose.yaml or quay.io/czinda/kipuka)
 # ═══════════════════════════════════════════════════════════════════════
 set -uo pipefail
 
@@ -58,7 +58,7 @@ elif [[ -f "$COMPOSE_FILE" ]]; then
     IMAGE="${IMAGE%%#*}"
     IMAGE=$(echo "$IMAGE" | xargs)
 fi
-IMAGE="${IMAGE:-registry.kipuka.dev/heebus/kipuka:latest-arm64}"
+IMAGE="${IMAGE:-quay.io/czinda/kipuka:latest-arm64}"
 
 echo "═══════════════════════════════════════════════════════════════"
 echo " Kipuka EST Server — Container and Deployment Verification"

@@ -34,16 +34,15 @@ container:
     - |
       if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ] || [ -n "$CI_COMMIT_TAG" ]; then
         GITLAB_AUTH=$(printf '%s:%s' "${CI_REGISTRY_USER}" "${CI_REGISTRY_PASSWORD}" | base64)
-        echo "{\"auths\":{\"${CI_REGISTRY}\":{\"auth\":\"${GITLAB_AUTH}\"}}}" > /kaniko/.docker/config.json
-        # Push to the GitLab container registry.
-        # registry.kipuka.dev is an alias via Cloudflare Tunnel to the same
-        # backend — external pulls work, but Cloudflare's HTTP processing
-        # breaks the OCI blob upload API (returns 200 instead of 202).
+        QUAY_AUTH=$(printf '%s:%s' "${QUAY_USER}" "${QUAY_TOKEN}" | base64)
+        echo "{\"auths\":{\"${CI_REGISTRY}\":{\"auth\":\"${GITLAB_AUTH}\"},\"quay.io\":{\"auth\":\"${QUAY_AUTH}\"}}}" > /kaniko/.docker/config.json
         /kaniko/executor \
           --context "${CI_PROJECT_DIR}" \
           --dockerfile "${CI_PROJECT_DIR}/Containerfile" \
           --destination "${CONTAINER_IMAGE}:${CI_COMMIT_SHORT_SHA}" \
           --destination "${CONTAINER_IMAGE}:latest" \
+          --destination "quay.io/czinda/kipuka:${CI_COMMIT_SHORT_SHA}" \
+          --destination "quay.io/czinda/kipuka:latest" \
           --skip-tls-verify \
           --cache=true
       else

@@ -52,9 +52,9 @@ services:
   # ── SQLite (default) ─────────────────────────────────────────────────
   kipuka:
     # ARM64 (Apple Silicon, Graviton):
-    image: registry.kipuka.dev/heebus/kipuka:latest-arm64
+    image: quay.io/czinda/kipuka:latest-arm64
     # x86_64 — uncomment if running on Intel/AMD:
-    # image: registry.kipuka.dev/heebus/kipuka:latest-amd64
+    # image: quay.io/czinda/kipuka:latest-amd64
     container_name: kipuka-est
     profiles: [sqlite]
     user: "0:0"
@@ -89,8 +89,8 @@ services:
     restart: unless-stopped
 
   kipuka-pg:
-    image: registry.kipuka.dev/heebus/kipuka:latest-arm64
-    # image: registry.kipuka.dev/heebus/kipuka:latest-amd64
+    image: quay.io/czinda/kipuka:latest-arm64
+    # image: quay.io/czinda/kipuka:latest-amd64
     container_name: kipuka-est-pg
     profiles: [postgres]
     user: "0:0"
@@ -129,8 +129,8 @@ services:
     restart: unless-stopped
 
   kipuka-my:
-    image: registry.kipuka.dev/heebus/kipuka:latest-arm64
-    # image: registry.kipuka.dev/heebus/kipuka:latest-amd64
+    image: quay.io/czinda/kipuka:latest-arm64
+    # image: quay.io/czinda/kipuka:latest-amd64
     container_name: kipuka-est-my
     profiles: [mariadb]
     user: "0:0"
@@ -173,8 +173,8 @@ services:
     restart: unless-stopped
 
   kipuka-hsm:
-    image: registry.kipuka.dev/heebus/kipuka:latest-arm64
-    # image: registry.kipuka.dev/heebus/kipuka:latest-amd64
+    image: quay.io/czinda/kipuka:latest-arm64
+    # image: quay.io/czinda/kipuka:latest-amd64
     container_name: kipuka-est-hsm
     profiles: [hsm]
     user: "0:0"
@@ -198,8 +198,8 @@ services:
 
   # ── HSM + PostgreSQL backend ──────────────────────────────────────────
   kipuka-hsm-pg:
-    image: registry.kipuka.dev/heebus/kipuka:latest-arm64
-    # image: registry.kipuka.dev/heebus/kipuka:latest-amd64
+    image: quay.io/czinda/kipuka:latest-arm64
+    # image: quay.io/czinda/kipuka:latest-amd64
     container_name: kipuka-est-hsm-pg
     profiles: [hsm-postgres]
     user: "0:0"

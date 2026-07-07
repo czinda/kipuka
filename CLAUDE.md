@@ -27,7 +27,7 @@ Built on the Synta ASN.1/X.509 library. Architecture inspired by Akamu ACME serv
 - OCSP stapling, CRL fallback, CSR self-signature validation
 - CoAP/DTLS transport (RFC 7252/9483): EST-coaps enrollment for constrained devices via kipuka-coap
 - SQLite/PostgreSQL/MariaDB database backends (via sqlx Any driver)
-- Container image: registry.kipuka.dev/heebus/kipuka (x86_64 latest, arm64 latest-arm64)
+- Container image: quay.io/czinda/kipuka (x86_64 latest, arm64 latest-arm64)
 - API docs: kipuka.dev (GitLab Pages, cargo doc)
 - CI/CD: GitLab CI (see `.gitlab-ci.yml`)
 

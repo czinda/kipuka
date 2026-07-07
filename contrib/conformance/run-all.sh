@@ -57,7 +57,7 @@ if [[ "$DEPLOY" == "true" ]]; then
         aarch64|arm64) IMAGE_TAG="latest-arm64" ;;
         *)             IMAGE_TAG="latest" ;;
     esac
-    KIPUKA_IMAGE="registry.kipuka.dev/heebus/kipuka:${IMAGE_TAG}"
+    KIPUKA_IMAGE="quay.io/czinda/kipuka:${IMAGE_TAG}"
 
     echo -e "${BOLD}Pulling fresh image ($IMAGE_TAG)...${NC}"
     podman pull "$KIPUKA_IMAGE" 2>&1 | tail -1

@@ -12,7 +12,7 @@ inspired by the [Akamu](https://codeberg.org/abbra/akamu) ACME server.
 
 | | |
 |---|---|
-| **Container image** | `registry.kipuka.dev/heebus/kipuka` |
+| **Container image** | `quay.io/czinda/kipuka` |
 | **API docs** | [kipuka.dev/api/](https://kipuka.dev/api/) |
 | **Project site** | [kipuka.dev](https://kipuka.dev) |
 
@@ -99,18 +99,18 @@ inspired by the [Akamu](https://codeberg.org/abbra/akamu) ACME server.
 
 ```bash
 # Pull the container image (no login required)
-podman pull registry.kipuka.dev/heebus/kipuka:latest        # x86_64
-podman pull registry.kipuka.dev/heebus/kipuka:latest-arm64   # arm64
+podman pull quay.io/czinda/kipuka:latest        # x86_64
+podman pull quay.io/czinda/kipuka:latest-arm64   # arm64
 
 # Verify the image
-podman run --rm registry.kipuka.dev/heebus/kipuka:latest --version
+podman run --rm quay.io/czinda/kipuka:latest --version
 
 # Run with a configuration file
 podman run --rm \
   -v ./kipuka.toml:/etc/kipuka/kipuka.toml:ro \
   -v ./certs:/etc/kipuka/certs:ro \
   -p 9443:9443 \
-  registry.kipuka.dev/heebus/kipuka:latest
+  quay.io/czinda/kipuka:latest
 ```
 
 ### Build from source
