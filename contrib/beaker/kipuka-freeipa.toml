@@ -27,7 +27,7 @@ name = "FreeIPA CA"
 cert = "/etc/kipuka/ca/ipa-ca.pem"
 key = "/etc/kipuka/ca/ipa-ca-key.pem"
 key_type = "rsa:3072"
-validity_days = 398
+validity_days = 200
 
 [est]
 base_path = "/.well-known/est"

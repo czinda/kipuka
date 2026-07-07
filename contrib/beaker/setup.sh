@@ -82,19 +82,19 @@ dnf install -y \
 # ── Step 2: Install Rust toolchain ───────────────────────────────────────────
 
 log "Installing Rust toolchain"
-# RHEL 10 ships Rust 1.85+ (edition 2024) in AppStream — prefer system packages.
+# RHEL 10 ships Rust 1.88+ (edition 2024) in AppStream — prefer system packages.
 # Fall back to rustup only if the system Rust is too old or missing.
 if command -v rustc &>/dev/null; then
     SYSTEM_RUST_VER=$(rustc --version | awk '{print $2}')
     log "System Rust: ${SYSTEM_RUST_VER}"
-    # kipuka requires rust-version = "1.85"
-    if [[ "$(printf '%s\n1.85.0\n' "${SYSTEM_RUST_VER}" | sort -V | head -1)" == "1.85.0" ]]; then
-        log "System Rust ${SYSTEM_RUST_VER} meets minimum 1.85 — using system toolchain"
+    # kipuka requires rust-version = "1.88"
+    if [[ "$(printf '%s\n1.88.0\n' "${SYSTEM_RUST_VER}" | sort -V | head -1)" == "1.88.0" ]]; then
+        log "System Rust ${SYSTEM_RUST_VER} meets minimum 1.88 — using system toolchain"
     else
         log "System Rust ${SYSTEM_RUST_VER} too old; installing via rustup"
         dnf install -y rust cargo 2>/dev/null || true
         if ! rustc --version 2>/dev/null | grep -qE '1\.(8[5-9]|9[0-9])'; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.85.0
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.88.0
             source "$HOME/.cargo/env"
         fi
     fi
@@ -102,7 +102,7 @@ else
     log "No Rust found; installing from AppStream"
     dnf install -y rust cargo || {
         log "AppStream Rust not available; falling back to rustup"
-        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.85.0
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.88.0
         # shellcheck source=/dev/null
         source "$HOME/.cargo/env"
     }
@@ -386,7 +386,7 @@ if [[ ! -s "${CERT_DIR}/tls/server.pem" ]]; then
         -CAkey "${CERT_DIR}/ca/test-ca.key" \
         -CAcreateserial \
         -out "${CERT_DIR}/tls/server.pem" \
-        -days 398 \
+        -days 200 \
         -extfile <(printf "subjectAltName=DNS:%s,DNS:localhost,IP:127.0.0.1\n" "${HOSTNAME}")
 
     # Use test-ca as the CA cert for kipuka
@@ -422,7 +422,7 @@ openssl x509 -req -in /tmp/agent.csr \
     -CAkey "${CA_KEY}" \
     -CAcreateserial \
     -out "${CERT_DIR}/tls/agent.pem" \
-    -days 398 \
+    -days 200 \
     -extfile <(printf "extendedKeyUsage=clientAuth\n")
 
 log "Agent certificate generated: ${CERT_DIR}/tls/agent.pem"
@@ -466,7 +466,7 @@ id = "dogtag"
 is_default = true
 key_file = "${CERT_DIR}/ca/test-ca.key"
 cert_file = "${CERT_DIR}/ca/dogtag-ca.pem"
-validity_days = 398
+validity_days = 200
 
 [otp]
 enabled = true
