@@ -1,0 +1,55 @@
+# =============================================================================
+# Stage: package
+# =============================================================================
+# Builds SRPM with vendored dependencies and optionally submits to Fedora COPR.
+#
+# The COPR submission requires a COPR API token stored in CI variables:
+#   COPR_CONFIG — contents of ~/.config/copr (login + token)
+
+srpm-build:
+  stage: package
+  image: registry.fedoraproject.org/fedora:41
+  variables:
+    CRATE: kipuka
+  before_script:
+    - dnf install -y -q rust cargo rpm-build rpmdevtools git openssl-devel
+      pkg-config clang-devel cmake gcc
+  script:
+    - VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*= *"\(.*\)"/\1/')
+    - mkdir -p rpmbuild/{SOURCES,SPECS,BUILD,RPMS,SRPMS}
+    - git archive --format=tar.gz --prefix="${CRATE}-${VERSION}/" HEAD
+        -o "rpmbuild/SOURCES/${CRATE}-${VERSION}.tar.gz"
+    - cargo vendor --versioned-dirs vendor/
+    - tar czf "rpmbuild/SOURCES/${CRATE}-${VERSION}-vendor.tar.gz" vendor/
+    - rm -rf vendor/
+    - cp kipuka.spec rpmbuild/SPECS/
+    - rpmbuild -bs --define "_topdir $(pwd)/rpmbuild" rpmbuild/SPECS/kipuka.spec
+  artifacts:
+    paths:
+      - rpmbuild/SRPMS/*.src.rpm
+    expire_in: 30 days
+  cache:
+    key: srpm-${CI_COMMIT_REF_SLUG}
+    paths:
+      - .cargo/registry/
+      - .cargo/git/
+    policy: pull-push
+  rules:
+    - if: $CI_COMMIT_TAG
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+copr-submit:
+  stage: package
+  image: registry.fedoraproject.org/fedora:41
+  needs:
+    - srpm-build
+  before_script:
+    - dnf install -y -q copr-cli
+    - mkdir -p ~/.config
+    - echo "${COPR_CONFIG}" > ~/.config/copr
+  script:
+    - SRPM=$(ls rpmbuild/SRPMS/*.src.rpm)
+    - echo "Submitting ${SRPM} to COPR"
+    - copr-cli build kipuka "${SRPM}"
+  rules:
+    - if: $CI_COMMIT_TAG && $COPR_CONFIG

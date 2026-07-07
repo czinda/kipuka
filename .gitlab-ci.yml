@@ -64,4 +64,5 @@ include:
   - local: '.gitlab/ci/test.yml'
   - local: '.gitlab/ci/security.yml'
   - local: '.gitlab/ci/integration.yml'
+  - local: '.gitlab/ci/package.yml'
   - local: '.gitlab/ci/deploy.yml'
