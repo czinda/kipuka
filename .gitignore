@@ -62,6 +62,9 @@ docs/package-lock.json
 # Security scan reports
 *.sarif
 
+# RPM build artifacts
+rpmbuild/
+
 # Coverage
 lcov.info
 tarpaulin-report.html
