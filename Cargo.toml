@@ -73,7 +73,9 @@ chrono = { version = "0.4", features = ["serde"] }
 time = "0.3"
 
 # HTTP client
-reqwest = { version = "0.12", features = ["rustls-tls"] }
+# native-tls: OpenSSL 3.5+ handles ML-DSA-87 cert parsing + TLS.
+# DO NOT add rustls-tls here — it conflicts with kipuka-dogtag's native-tls.
+reqwest = { version = "0.12", features = ["native-tls"] }
 
 # Interactive secrets
 rpassword = "7"
@@ -164,5 +166,5 @@ backend-mariadb = []
 gssapi = ["dep:libgssapi"]
 
 [dev-dependencies]
-reqwest = { version = "0.12", features = ["rustls-tls", "json"] }  # json feature only for tests
+reqwest = { version = "0.12", features = ["native-tls", "json"] }  # json feature only for tests
 tempfile = "3"
