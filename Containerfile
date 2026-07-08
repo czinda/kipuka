@@ -5,8 +5,7 @@
 FROM quay.io/hummingbird/rust:latest-builder AS builder
 
 RUN dnf install -y \
-        git clang clang-devel cmake pkg-config \
-        openssl-devel sqlite-devel \
+        git clang openssl-devel sqlite-devel \
         krb5-devel cyrus-sasl-devel \
     && dnf clean all
 
