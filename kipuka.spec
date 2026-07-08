@@ -1,7 +1,7 @@
 %global crate kipuka
 
 Name:           %{crate}
-Version:        0.1.0
+Version:        0.2.0
 Release:        1%{?dist}
 Summary:        EST/CMP/CMC enrollment server with Multi-CA HA and HSM support
 
