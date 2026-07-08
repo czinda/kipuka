@@ -7,9 +7,12 @@ license.workspace = true
 description = "Dogtag PKI CA REST API client for kipuka EST server"
 
 [dependencies]
-# native-tls delegates to the system OpenSSL (3.5+ in hummingbird runtime),
-# which supports ML-DSA-87 client certs. rustls cannot parse ML-DSA signatures.
-reqwest = { version = "0.12", default-features = false, features = ["native-tls", "json"] }
+# rustls with native-ossl crypto provider: rustls handles the TLS protocol,
+# OpenSSL 3.5+ (hummingbird runtime) handles crypto including ML-DSA-87.
+# Matches the akamu architecture (rustls-native-ossl).
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-manual-roots", "json"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12"] }
+rustls-native-ossl = "0.1"
 serde.workspace = true
 serde_json.workspace = true
 base64.workspace = true

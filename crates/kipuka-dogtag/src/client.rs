@@ -42,6 +42,13 @@ impl DogtagClient {
     /// configure mTLS. Returns an error if any file cannot be read or
     /// if the TLS identity cannot be constructed.
     pub fn new(config: &DogtagConfig) -> DogtagResult<Self> {
+        // Install rustls-native-ossl crypto provider so rustls delegates
+        // cryptographic operations to OpenSSL 3.5+, enabling ML-DSA-87
+        // client certificate and server certificate validation.
+        let _ = rustls::crypto::CryptoProvider::install_default(
+            rustls_native_ossl::default_provider(),
+        );
+
         let cert_pem = std::fs::read(&config.agent_cert_file)?;
         let key_pem = std::fs::read(&config.agent_key_file)?;
         let ca_pem = std::fs::read(&config.ca_cert_file)?;
