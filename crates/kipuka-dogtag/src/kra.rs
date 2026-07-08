@@ -128,11 +128,7 @@ impl KraClient {
         let key_pem = std::fs::read(&config.agent_key_file)?;
         let ca_pem = std::fs::read(&config.ca_cert_file)?;
 
-        let mut identity_pem = cert_pem;
-        identity_pem.extend_from_slice(b"\n");
-        identity_pem.extend_from_slice(&key_pem);
-
-        let identity = Identity::from_pem(&identity_pem)
+        let identity = Identity::from_pkcs8_pem(&cert_pem, &key_pem)
             .map_err(|e| DogtagError::TlsError(format!("Failed to load agent identity: {e}")))?;
 
         let ca_cert = Certificate::from_pem(&ca_pem)
