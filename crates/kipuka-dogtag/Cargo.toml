@@ -7,13 +7,10 @@ license.workspace = true
 description = "Dogtag PKI CA REST API client for kipuka EST server"
 
 [dependencies]
-# HTTP client: hyper + hyper-openssl for full PKCS#11 control over
-# the TLS client certificate (agent mTLS). OpenSSL's engine/provider
-# loads the private key from PKCS#11 — key never leaves the HSM.
-hyper.workspace = true
-hyper-util = { workspace = true, features = ["client-legacy", "http1", "tokio"] }
-hyper-openssl = "0.10"
-http-body-util = "0.1"
+# native-tls (OpenSSL) for Dogtag mTLS agent authentication.
+# PEM-based key loading for now; PKCS#11 agent keys require
+# OpenSSL 3.x provider API (engine API removed in openssl 0.10.80+).
+reqwest = { version = "0.12", default-features = false, features = ["native-tls", "json"] }
 openssl = "0.10"
 serde.workspace = true
 serde_json.workspace = true
