@@ -187,7 +187,7 @@ impl DogtagClient {
             debug!(request_id = %request_id, "auto-approving pending enrollment");
             let approve_resp = self
                 .post_json(
-                    &format!("/ca/rest/certrequests/{request_id}/approve"),
+                    &format!("/ca/rest/agent/certrequests/{request_id}/approve"),
                     &serde_json::json!({}),
                 )
                 .await;
