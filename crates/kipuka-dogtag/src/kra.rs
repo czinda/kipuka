@@ -21,6 +21,7 @@ pub struct KeyGenResult {
     pub key_id: String,
     pub request_id: String,
     pub public_key: Option<String>,
+    pub wrapped_private_key: Option<Vec<u8>>,
 }
 
 #[derive(Serialize)]
@@ -123,6 +124,7 @@ impl KraClient {
             key_id,
             request_id: info.request_id.unwrap_or_default(),
             public_key: None,
+            wrapped_private_key: None,
         })
     }
 
