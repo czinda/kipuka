@@ -6,7 +6,7 @@ FROM quay.io/hummingbird/rust:latest-builder AS builder
 
 RUN dnf install -y \
         git clang openssl-devel sqlite-devel \
-        krb5-devel cyrus-sasl-devel p11-kit-devel \
+        krb5-devel cyrus-sasl-devel p11-kit-devel softhsm \
     && dnf clean all
 
 WORKDIR /build
@@ -30,7 +30,10 @@ RUN mkdir -p /runtime-libs && \
     cp -L /usr/lib64/libsqlite3.so*     /runtime-libs/ 2>/dev/null || true && \
     cp -L /usr/lib64/libp11-kit.so*     /runtime-libs/ 2>/dev/null || true && \
     cp -L /usr/lib64/p11-kit-client.so  /runtime-libs/ 2>/dev/null || true && \
-    cp -L /usr/lib64/libffi.so*         /runtime-libs/ 2>/dev/null || true
+    cp -L /usr/lib64/libffi.so*         /runtime-libs/ 2>/dev/null || true && \
+    cp -L /usr/lib64/pkcs11/libsofthsm2.so /runtime-libs/ 2>/dev/null || true && \
+    mkdir -p /runtime-libs/pkcs11 && \
+    cp -L /usr/lib64/pkcs11/libsofthsm2.so /runtime-libs/pkcs11/ 2>/dev/null || true
 
 # Build passwd/group for the runtime stage.
 RUN cp /etc/passwd /runtime-libs/passwd && \
@@ -48,11 +51,14 @@ COPY --from=builder /runtime-libs/*.so* /usr/lib64/
 COPY --from=builder /runtime-libs/passwd /etc/passwd
 COPY --from=builder /runtime-libs/group /etc/group
 
+COPY --from=builder /runtime-libs/pkcs11/libsofthsm2.so /usr/lib64/pkcs11/libsofthsm2.so
+
 RUN find / -xdev -perm /6000 -type f -exec chmod a-s {} + 2>/dev/null || true
 RUN mkdir -p /var/lib/kipuka /etc/kipuka /var/www/kipuka \
-             /etc/pkcs11/modules /var/run/kryoptic && \
-    chown -R 1001:1001 /var/lib/kipuka /etc/kipuka /var/www/kipuka /var/run/kryoptic && \
-    echo 'remote: unix:path=/var/run/kryoptic/pkcs11.sock' > /etc/pkcs11/modules/kryoptic.module
+             /etc/pkcs11/modules /var/run/kryoptic \
+             /var/lib/softhsm/tokens && \
+    chown -R 1001:1001 /var/lib/kipuka /etc/kipuka /var/www/kipuka \
+                       /var/run/kryoptic /var/lib/softhsm
 
 COPY --from=builder --chown=1001:1001 /build/target/release/kipuka /usr/local/bin/kipuka
 COPY --chown=1001:1001 web/ /var/www/kipuka/web/

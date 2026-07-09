@@ -342,7 +342,10 @@ fn is_valid_ca_id(id: &str) -> bool {
 
 /// Check that a file path exists (for config validation).
 fn check_file_exists(field: &str, path: &str) -> Result<(), String> {
-    if !path.is_empty() && !std::path::Path::new(path).exists() {
+    if path.is_empty() || path.starts_with("pkcs11:") {
+        return Ok(());
+    }
+    if !std::path::Path::new(path).exists() {
         return Err(format!("{field} path {path:?} does not exist"));
     }
     Ok(())
