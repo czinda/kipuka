@@ -1,0 +1,18 @@
+[package]
+name = "kipuka-keygen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "PKCS#11 key generation CLI for Kryoptic HSM (ML-DSA-87, RSA, ECDSA)"
+
+[[bin]]
+name = "kipuka-keygen"
+path = "src/main.rs"
+
+[dependencies]
+kipuka-hsm = { path = "../kipuka-hsm" }
+cryptoki.workspace = true
+clap = { version = "4", features = ["derive"] }
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

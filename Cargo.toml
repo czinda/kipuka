@@ -5,6 +5,7 @@ members = [
     "crates/kipuka-dogtag",
     "crates/kipuka-est",
     "crates/kipuka-hsm",
+    "crates/kipuka-keygen",
     "crates/kipuka-otp",
     "crates/kipuka-util",
 ]
