@@ -7,8 +7,8 @@
 //! # Architecture
 //!
 //! The client communicates with Dogtag CA over HTTPS using mutual TLS (mTLS)
-//! with an agent certificate. All operations are async and use `reqwest` for
-//! HTTP transport.
+//! with an agent certificate. All operations are async and use `hyper` +
+//! `hyper-openssl` for HTTP transport with full PKCS#11 support.
 //!
 //! # Supported Operations
 //!
@@ -44,7 +44,7 @@ use thiserror::Error;
 pub enum DogtagError {
     /// HTTP request failed.
     #[error("HTTP request failed: {0}")]
-    Http(#[from] reqwest::Error),
+    HttpError(String),
 
     /// Dogtag returned a non-success HTTP status.
     #[error("Dogtag returned HTTP {status}: {body}")]

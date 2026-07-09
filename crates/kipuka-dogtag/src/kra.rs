@@ -11,21 +11,17 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::debug;
 
-use reqwest::{Certificate, Client, Identity};
-
+use crate::client::{DogtagClient, HttpResponse};
 use crate::config::DogtagConfig;
 use crate::{DogtagError, DogtagResult};
 
 /// Client for Dogtag KRA REST API operations.
 ///
-/// Manages a separate HTTP client configured for the KRA subsystem.
-/// The KRA may run on the same host as the CA but uses a different
-/// subsystem path (`/kra/rest/...`).
+/// Wraps a `DogtagClient` configured for the KRA subsystem URL.
+/// Reuses the same hyper-openssl transport (with PKCS#11 support)
+/// as the CA client.
 pub struct KraClient {
-    http: Client,
-    base_url: String,
-    retry_max: u32,
-    retry_delay: Duration,
+    inner: DogtagClient,
 }
 
 /// Result of a server-side key generation request.
@@ -116,38 +112,18 @@ struct ArchiveResponse {
 impl KraClient {
     /// Create a new KRA client from the Dogtag configuration.
     ///
-    /// Uses the same agent credentials as the CA client but connects
-    /// to the KRA subsystem URL. Returns an error if `kra_url` is not
-    /// configured.
+    /// Reuses `DogtagClient` with the KRA URL. Same agent credentials
+    /// and PKCS#11 support as the CA client.
     pub fn new(config: &DogtagConfig) -> DogtagResult<Self> {
         let kra_url = config.kra_url.as_ref().ok_or_else(|| {
             DogtagError::ConfigError("kra_url is required for KRA operations".into())
         })?;
 
-        let cert_pem = std::fs::read(&config.agent_cert_file)?;
-        let key_pem = std::fs::read(&config.agent_key_file)?;
-        let ca_pem = std::fs::read(&config.ca_cert_file)?;
+        let mut kra_config = config.clone();
+        kra_config.ca_url = kra_url.clone();
 
-        let identity = Identity::from_pkcs8_pem(&cert_pem, &key_pem)
-            .map_err(|e| DogtagError::TlsError(format!("Failed to load agent identity: {e}")))?;
-
-        let ca_cert = Certificate::from_pem(&ca_pem)
-            .map_err(|e| DogtagError::TlsError(format!("Failed to load CA certificate: {e}")))?;
-
-        let http = Client::builder()
-            .identity(identity)
-            .add_root_certificate(ca_cert)
-            .timeout(Duration::from_secs(config.timeout_secs))
-            .build()?;
-
-        let base_url = kra_url.as_str().trim_end_matches('/').to_owned();
-
-        Ok(Self {
-            http,
-            base_url,
-            retry_max: config.retry_max,
-            retry_delay: Duration::from_millis(config.retry_delay_ms),
-        })
+        let inner = DogtagClient::new(&kra_config)?;
+        Ok(Self { inner })
     }
 
     /// Generate a key pair on the KRA.
@@ -266,56 +242,17 @@ impl KraClient {
             .map_err(|e| DogtagError::KraError(format!("Invalid base64 in recovered key: {e}")))
     }
 
-    /// Send a POST request with a JSON body and retry.
     async fn post_json<T: serde::Serialize + ?Sized>(
         &self,
         path: &str,
         body: &T,
-    ) -> DogtagResult<reqwest::Response> {
-        let url = format!("{}{}", self.base_url, path);
-        let mut last_error = None;
-
-        for attempt in 0..=self.retry_max {
-            if attempt > 0 {
-                debug!(attempt, max = self.retry_max, "Retrying KRA request");
-                tokio::time::sleep(self.retry_delay).await;
-            }
-
-            match self.http.post(&url).json(body).send().await {
-                Ok(resp) if resp.status().is_server_error() => {
-                    let status = resp.status();
-                    let body = resp.text().await.unwrap_or_default();
-                    tracing::warn!(attempt, status = status.as_u16(), "KRA server error");
-                    last_error = Some(DogtagError::ApiError {
-                        status: status.as_u16(),
-                        body,
-                    });
-                }
-                Ok(resp) => return Ok(resp),
-                Err(e) => {
-                    tracing::warn!(attempt, error = %e, "KRA request failed");
-                    last_error = Some(DogtagError::Http(e));
-                }
-            }
-        }
-
-        Err(last_error.unwrap_or(DogtagError::KraError("All retry attempts exhausted".into())))
+    ) -> DogtagResult<HttpResponse> {
+        self.inner.post_json(path, body).await
     }
 }
 
-/// Extract a successful JSON response or return an API error.
-async fn json_response<T: serde::de::DeserializeOwned>(resp: reqwest::Response) -> DogtagResult<T> {
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        return Err(DogtagError::ApiError {
-            status: status.as_u16(),
-            body,
-        });
-    }
-    resp.json::<T>()
-        .await
-        .map_err(|e| DogtagError::ParseError(e.to_string()))
+async fn json_response<T: serde::de::DeserializeOwned>(resp: HttpResponse) -> DogtagResult<T> {
+    DogtagClient::json_response(resp).await
 }
 
 /// Generate a simple UUID v4 for client key IDs.

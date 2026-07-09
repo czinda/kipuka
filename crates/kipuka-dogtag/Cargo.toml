@@ -7,10 +7,13 @@ license.workspace = true
 description = "Dogtag PKI CA REST API client for kipuka EST server"
 
 [dependencies]
-# native-tls only — OpenSSL 3.5+ handles ALL TLS operations including
-# ML-DSA-87 cert parsing and signature validation. rustls/webpki cannot
-# parse ML-DSA-87 OIDs in certificate signatures.
-reqwest = { version = "0.12", default-features = false, features = ["native-tls", "json"] }
+# HTTP client: hyper + hyper-openssl for full PKCS#11 control over
+# the TLS client certificate (agent mTLS). OpenSSL's engine/provider
+# loads the private key from PKCS#11 — key never leaves the HSM.
+hyper.workspace = true
+hyper-util = { workspace = true, features = ["client-legacy", "http1", "tokio"] }
+hyper-openssl = "0.10"
+http-body-util = "0.1"
 openssl = "0.10"
 serde.workspace = true
 serde_json.workspace = true

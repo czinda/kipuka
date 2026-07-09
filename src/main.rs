@@ -366,7 +366,7 @@ async fn run() -> Result<(), String> {
 
     if config.tls.enabled {
         tracing::info!("TLS enabled — building acceptor");
-        let acceptor = kipuka::tls::build_tls_acceptor(&config.tls).map_err(|e| e.to_string())?;
+        let acceptor = kipuka::tls::build_tls_acceptor(&config.tls, hsm.as_ref()).map_err(|e| e.to_string())?;
 
         let listener = tokio::net::TcpListener::bind(&listen_addr)
             .await

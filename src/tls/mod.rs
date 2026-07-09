@@ -30,6 +30,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use rustls::sign::CertifiedKey;
 use tokio::sync::RwLock;
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info, warn};
@@ -39,23 +40,24 @@ use crate::error::KipukaError;
 
 /// Build a `TlsAcceptor` from the Kipuka TLS configuration.
 ///
-/// The resulting acceptor can be used with `tokio_rustls` to wrap a
-/// TCP listener.
-///
-/// When OCSP stapling is enabled, the returned acceptor includes a
-/// `CertifiedKey` that carries the stapled OCSP response.  The caller
-/// should also spawn the [`OcspStapler`] background task to keep the
-/// stapled response fresh.
-pub fn build_tls_acceptor(config: &TlsConfig) -> Result<TlsAcceptor, KipukaError> {
-    let server_config = build_server_config(config)?;
+/// When `hsm` is `Some` and `tls.key_file` starts with `pkcs11:`, the
+/// TLS server key is backed by the HSM — all handshake signatures are
+/// performed via PKCS#11 `C_Sign` and the private key never leaves the
+/// HSM boundary.
+pub fn build_tls_acceptor(
+    config: &TlsConfig,
+    hsm: Option<&Arc<kipuka_hsm::HsmContext>>,
+) -> Result<TlsAcceptor, KipukaError> {
+    let server_config = build_server_config(config, hsm)?;
     Ok(TlsAcceptor::from(Arc::new(server_config)))
 }
 
 /// Build a `rustls::ServerConfig` from the Kipuka TLS configuration.
-fn build_server_config(config: &TlsConfig) -> Result<rustls::ServerConfig, KipukaError> {
-    // ── Load server certificate chain ────────────────────────────────────
+fn build_server_config(
+    config: &TlsConfig,
+    hsm: Option<&Arc<kipuka_hsm::HsmContext>>,
+) -> Result<rustls::ServerConfig, KipukaError> {
     let cert_chain = load_cert_chain(&config.cert_file)?;
-    let private_key = load_private_key(&config.key_file)?;
 
     // ── Configure TLS protocol versions (FTP_TRP.1: TLS 1.2+) ───────────
     let versions = protocol_versions(&config.min_protocol, &config.max_protocol)?;
@@ -63,28 +65,78 @@ fn build_server_config(config: &TlsConfig) -> Result<rustls::ServerConfig, Kipuk
     // ── Configure client authentication ──────────────────────────────────
     let builder = rustls::ServerConfig::builder_with_protocol_versions(&versions);
 
-    let server_config = match config.client_auth {
+    // ── Build the authenticated builder (with or without client auth) ────
+    let with_client_auth = match config.client_auth {
         ClientAuthMode::Required => {
             let client_verifier = build_client_verifier(&config.ca_file)?;
-            builder
-                .with_client_cert_verifier(client_verifier)
-                .with_single_cert(cert_chain, private_key)
-                .map_err(|e| KipukaError::Tls(format!("server cert config: {e}")))?
+            builder.with_client_cert_verifier(client_verifier)
         }
         ClientAuthMode::Optional => {
             let client_verifier = build_optional_client_verifier(&config.ca_file)?;
-            builder
-                .with_client_cert_verifier(client_verifier)
-                .with_single_cert(cert_chain, private_key)
-                .map_err(|e| KipukaError::Tls(format!("server cert config: {e}")))?
+            builder.with_client_cert_verifier(client_verifier)
         }
-        ClientAuthMode::None => builder
-            .with_no_client_auth()
+        ClientAuthMode::None => builder.with_no_client_auth(),
+    };
+
+    // ── Load key: PKCS#11 HSM or PEM file ────────────────────────────────
+    let server_config = if config.key_file.starts_with("pkcs11:") {
+        let hsm_ctx = hsm.ok_or_else(|| {
+            KipukaError::Tls("tls.key_file is a pkcs11: URI but [hsm] is not configured".into())
+        })?;
+
+        let key_label = parse_pkcs11_object_label(&config.key_file)?;
+        let algorithm = kipuka_hsm::key::KeyAlgorithm::Rsa(4096);
+
+        info!(
+            key_label = %key_label,
+            "TLS server key backed by PKCS#11 HSM (key never leaves HSM)"
+        );
+
+        let signing_key = kipuka_hsm::Pkcs11SigningKey::new(
+            Arc::clone(hsm_ctx),
+            key_label,
+            algorithm,
+        );
+
+        let certified_key = CertifiedKey::new(cert_chain, Arc::new(signing_key));
+        let resolver = Arc::new(rustls::server::ResolvesServerCertUsingSni::new());
+        // Single-cert resolver via AlwaysResolvesChain
+        with_client_auth
+            .with_cert_resolver(Arc::new(SingleCertResolver(certified_key)))
+    } else {
+        let private_key = load_private_key(&config.key_file)?;
+        with_client_auth
             .with_single_cert(cert_chain, private_key)
-            .map_err(|e| KipukaError::Tls(format!("server cert config: {e}")))?,
+            .map_err(|e| KipukaError::Tls(format!("server cert config: {e}")))?
     };
 
     Ok(server_config)
+}
+
+/// Parse the `object=` label from a PKCS#11 URI.
+fn parse_pkcs11_object_label(uri: &str) -> Result<String, KipukaError> {
+    for part in uri.split(';') {
+        let part = part.trim_start_matches("pkcs11:");
+        if let Some(value) = part.strip_prefix("object=") {
+            return Ok(value.to_string());
+        }
+    }
+    Err(KipukaError::Tls(format!(
+        "pkcs11: URI missing 'object=' attribute: {uri}"
+    )))
+}
+
+/// Resolver that always returns the same `CertifiedKey`.
+#[derive(Debug)]
+struct SingleCertResolver(CertifiedKey);
+
+impl rustls::server::ResolvesServerCert for SingleCertResolver {
+    fn resolve(
+        &self,
+        _client_hello: rustls::server::ClientHello<'_>,
+    ) -> Option<Arc<CertifiedKey>> {
+        Some(Arc::new(self.0.clone()))
+    }
 }
 
 /// Load a PEM certificate chain from a file.
