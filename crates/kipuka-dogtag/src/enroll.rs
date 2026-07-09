@@ -180,15 +180,54 @@ impl DogtagClient {
             }
         };
 
-        // If complete and a cert_id is present, fetch the issued certificate.
-        let certificate_der = if status == EnrollStatus::Complete {
-            if let Some(cert_id) = &entry.cert_id {
+        // Auto-approve pending requests using the agent cert.
+        // Dogtag's caServerCert profile requires agent approval — kipuka
+        // acts as the RA agent and approves immediately after submission.
+        let (status, certificate_der) = if status == EnrollStatus::Pending {
+            debug!(request_id = %request_id, "auto-approving pending enrollment");
+            let approve_resp = self
+                .post_json(
+                    &format!("/ca/rest/certrequests/{request_id}/approve"),
+                    &serde_json::json!({}),
+                )
+                .await;
+
+            match approve_resp {
+                Ok(resp) => {
+                    let approved: EnrollmentEntry = Self::json_response(resp).await?;
+                    let new_status = match approved.request_status.as_deref() {
+                        Some("complete") => EnrollStatus::Complete,
+                        Some("pending") => EnrollStatus::Pending,
+                        other => {
+                            tracing::warn!(status = ?other, "unexpected status after approval");
+                            EnrollStatus::Pending
+                        }
+                    };
+                    let cert = if new_status == EnrollStatus::Complete {
+                        if let Some(cert_id) = &approved.cert_id {
+                            Some(self.fetch_cert_der(cert_id).await?)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    (new_status, cert)
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "auto-approve failed, returning pending");
+                    (EnrollStatus::Pending, None)
+                }
+            }
+        } else if status == EnrollStatus::Complete {
+            let cert = if let Some(cert_id) = &entry.cert_id {
                 Some(self.fetch_cert_der(cert_id).await?)
             } else {
                 None
-            }
+            };
+            (status, cert)
         } else {
-            None
+            (status, None)
         };
 
         Ok(EnrollResult {
