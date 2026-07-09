@@ -24,7 +24,7 @@
 use std::process::ExitCode;
 
 use clap::Parser;
-use cryptoki::context::{CInitializeArgs, Pkcs11};
+use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
 use cryptoki::mechanism::Mechanism;
 use cryptoki::object::{Attribute, AttributeType, KeyType, MlDsaParameterSetType};
 use cryptoki::session::UserType;
@@ -84,7 +84,7 @@ fn main() -> ExitCode {
         }
     };
 
-    if let Err(e) = pkcs11.initialize(CInitializeArgs::OsThreads) {
+    if let Err(e) = pkcs11.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK)) {
         error!(error = %e, "failed to initialize PKCS#11");
         return ExitCode::FAILURE;
     }
@@ -107,7 +107,7 @@ fn main() -> ExitCode {
         }
     };
 
-    if let Err(e) = session.login(UserType::User, Some(&AuthPin::new(cli.pin.clone()))) {
+    if let Err(e) = session.login(UserType::User, Some(&AuthPin::new(cli.pin.clone().into()))) {
         error!(error = %e, "login failed");
         return ExitCode::FAILURE;
     }
@@ -155,7 +155,7 @@ fn find_token(pkcs11: &Pkcs11, label: &str) -> Option<cryptoki::slot::Slot> {
         .find(|slot| {
             pkcs11
                 .get_token_info(*slot)
-                .map(|info| String::from_utf8_lossy(info.label()).trim() == label)
+                .map(|info| info.label().trim() == label)
                 .unwrap_or(false)
         })
 }
@@ -165,7 +165,7 @@ fn list_tokens(pkcs11: &Pkcs11) {
     if let Ok(slots) = pkcs11.get_slots_with_initialized_token() {
         for s in slots {
             if let Ok(info) = pkcs11.get_token_info(s) {
-                eprintln!("  - {}", String::from_utf8_lossy(info.label()).trim());
+                eprintln!("  - {}", info.label().trim());
             }
         }
     }
@@ -203,9 +203,9 @@ fn generate_ml_dsa(
     match session.generate_key_pair(&Mechanism::MlDsaKeyPairGen, &pub_template, &priv_template) {
         Ok((pub_handle, priv_handle)) => {
             println!(
-                "OK: ML-DSA key pair generated — pub={}, priv={}, label='{label}'",
-                u64::from(pub_handle),
-                u64::from(priv_handle),
+                "OK: ML-DSA key pair generated — pub={:?}, priv={:?}, label='{label}'",
+                pub_handle,
+                priv_handle,
             );
             ExitCode::SUCCESS
         }
@@ -248,9 +248,9 @@ fn generate_rsa(
     match session.generate_key_pair(&Mechanism::RsaPkcsKeyPairGen, &pub_template, &priv_template) {
         Ok((pub_handle, priv_handle)) => {
             println!(
-                "OK: RSA-{bits} key pair generated — pub={}, priv={}, label='{label}'",
-                u64::from(pub_handle),
-                u64::from(priv_handle),
+                "OK: RSA-{bits} key pair generated — pub={:?}, priv={:?}, label='{label}'",
+                pub_handle,
+                priv_handle,
             );
             ExitCode::SUCCESS
         }
@@ -290,9 +290,9 @@ fn generate_ecdsa(
     match session.generate_key_pair(&Mechanism::EccKeyPairGen, &pub_template, &priv_template) {
         Ok((pub_handle, priv_handle)) => {
             println!(
-                "OK: ECDSA key pair generated — pub={}, priv={}, label='{label}'",
-                u64::from(pub_handle),
-                u64::from(priv_handle),
+                "OK: ECDSA key pair generated — pub={:?}, priv={:?}, label='{label}'",
+                pub_handle,
+                priv_handle,
             );
             ExitCode::SUCCESS
         }
@@ -335,7 +335,7 @@ fn list_objects(session: &cryptoki::session::Session) -> ExitCode {
                     }
                     Err(_) => ("?".into(), "?".into(), "?".into()),
                 };
-                println!("{:<8} {:<15} {:<12} {}", u64::from(obj), class, key_type, label);
+                println!("{:?}\t{:<15} {:<12} {}", obj, class, key_type, label);
             }
             ExitCode::SUCCESS
         }
