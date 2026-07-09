@@ -172,6 +172,15 @@ pub struct HsmContext {
     slot: Option<HsmSlot>,
 }
 
+impl std::fmt::Debug for HsmContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HsmContext")
+            .field("provider", &self.provider)
+            .field("session", &"<Mutex<Session>>")
+            .finish()
+    }
+}
+
 // Safety: The `Session` inside `Mutex` is only accessed while locked.
 // The cryptoki `Session` is `!Send` but we only use it from within a
 // synchronous `Mutex::lock()` guard, which is safe for `Send`+`Sync`.
