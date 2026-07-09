@@ -244,7 +244,7 @@ impl HsmContext {
         let guard = self
             .session
             .lock()
-            .expect("HsmContext session mutex poisoned");
+            .map_err(|_| HsmError::LibraryLoad("HSM session mutex poisoned".into()))?;
         let session = guard.as_ref().ok_or_else(|| {
             HsmError::LibraryLoad("HSM session not initialized (placeholder context)".into())
         })?;

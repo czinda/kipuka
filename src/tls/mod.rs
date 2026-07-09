@@ -85,10 +85,18 @@ fn build_server_config(
         })?;
 
         let key_label = parse_pkcs11_object_label(&config.key_file)?;
-        let algorithm = kipuka_hsm::key::KeyAlgorithm::Rsa(4096);
+
+        // Detect key algorithm from the URI or default to RSA-4096.
+        // TODO: query the HSM for CKA_KEY_TYPE to auto-detect.
+        let algorithm = if config.key_file.contains("ec") || config.key_file.contains("ecdsa") {
+            kipuka_hsm::key::KeyAlgorithm::Ecdsa(kipuka_hsm::key::EcdsaCurve::P384)
+        } else {
+            kipuka_hsm::key::KeyAlgorithm::Rsa(4096)
+        };
 
         info!(
             key_label = %key_label,
+            algorithm = ?algorithm,
             "TLS server key backed by PKCS#11 HSM (key never leaves HSM)"
         );
 
@@ -99,10 +107,8 @@ fn build_server_config(
         );
 
         let certified_key = CertifiedKey::new(cert_chain, Arc::new(signing_key));
-        let resolver = Arc::new(rustls::server::ResolvesServerCertUsingSni::new());
-        // Single-cert resolver via AlwaysResolvesChain
         with_client_auth
-            .with_cert_resolver(Arc::new(SingleCertResolver(certified_key)))
+            .with_cert_resolver(Arc::new(SingleCertResolver(Arc::new(certified_key))))
     } else {
         let private_key = load_private_key(&config.key_file)?;
         with_client_auth
@@ -127,15 +133,18 @@ fn parse_pkcs11_object_label(uri: &str) -> Result<String, KipukaError> {
 }
 
 /// Resolver that always returns the same `CertifiedKey`.
+///
+/// Uses `Arc<CertifiedKey>` so `resolve()` is a refcount bump, not a
+/// deep copy of the certificate chain on every TLS handshake.
 #[derive(Debug)]
-struct SingleCertResolver(CertifiedKey);
+struct SingleCertResolver(Arc<CertifiedKey>);
 
 impl rustls::server::ResolvesServerCert for SingleCertResolver {
     fn resolve(
         &self,
         _client_hello: rustls::server::ClientHello<'_>,
     ) -> Option<Arc<CertifiedKey>> {
-        Some(Arc::new(self.0.clone()))
+        Some(Arc::clone(&self.0))
     }
 }
 

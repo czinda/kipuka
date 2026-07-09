@@ -3,16 +3,6 @@
 //! Implements [`rustls::sign::SigningKey`] and [`rustls::sign::Signer`] by
 //! delegating all signing operations to [`HsmContext::sign_data`].  The
 //! private key never leaves the HSM — only the signature bytes are returned.
-//!
-//! # Usage
-//!
-//! ```ignore
-//! let hsm = Arc::new(HsmContext::new(...));
-//! let signing_key = Pkcs11SigningKey::new(hsm, "my-tls-key", KeyAlgorithm::Rsa(2048));
-//! let server_config = ServerConfig::builder()
-//!     .with_no_client_auth()
-//!     .with_single_cert(cert_chain, Arc::new(signing_key))?;
-//! ```
 
 use std::sync::Arc;
 
@@ -24,9 +14,6 @@ use crate::key::KeyAlgorithm;
 use crate::HsmContext;
 
 /// A rustls [`SigningKey`] backed by a PKCS#11 token in Kryoptic.
-///
-/// Wraps an [`HsmContext`] and a key label.  All TLS handshake signing
-/// operations are forwarded to the HSM via `C_Sign`.
 #[derive(Debug)]
 pub struct Pkcs11SigningKey {
     hsm: Arc<HsmContext>,
@@ -46,11 +33,11 @@ impl Pkcs11SigningKey {
 
 impl SigningKey for Pkcs11SigningKey {
     fn choose_scheme(&self, offered: &[SignatureScheme]) -> Option<Box<dyn Signer>> {
+        // Only advertise PKCS#1 v1.5 schemes — sign_data() uses CKM_SHA*_RSA_PKCS
+        // which produces PKCS#1 v1.5 signatures. Advertising PSS without PSS
+        // padding support would cause TLS 1.3 handshake failures.
         let supported = match &self.algorithm {
             KeyAlgorithm::Rsa(_) => &[
-                SignatureScheme::RSA_PSS_SHA512,
-                SignatureScheme::RSA_PSS_SHA384,
-                SignatureScheme::RSA_PSS_SHA256,
                 SignatureScheme::RSA_PKCS1_SHA512,
                 SignatureScheme::RSA_PKCS1_SHA384,
                 SignatureScheme::RSA_PKCS1_SHA256,
@@ -64,7 +51,10 @@ impl SigningKey for Pkcs11SigningKey {
                 }
                 _ => &[SignatureScheme::ECDSA_NISTP384_SHA384][..],
             },
-            _ => return None,
+            _ => {
+                error!(algorithm = ?self.algorithm, "unsupported key algorithm for PKCS#11 TLS");
+                return None;
+            }
         };
 
         for scheme in offered {
@@ -89,7 +79,10 @@ impl SigningKey for Pkcs11SigningKey {
         match &self.algorithm {
             KeyAlgorithm::Rsa(_) => SignatureAlgorithm::RSA,
             KeyAlgorithm::Ecdsa(_) => SignatureAlgorithm::ECDSA,
-            _ => SignatureAlgorithm::RSA,
+            other => {
+                error!(algorithm = ?other, "unsupported algorithm for PKCS#11 TLS SigningKey");
+                SignatureAlgorithm::RSA
+            }
         }
     }
 }
@@ -105,16 +98,13 @@ struct Pkcs11Signer {
 impl Signer for Pkcs11Signer {
     fn sign(&self, message: &[u8]) -> Result<Vec<u8>, Error> {
         let hash_alg = match self.scheme {
-            SignatureScheme::RSA_PSS_SHA256
-            | SignatureScheme::RSA_PKCS1_SHA256
+            SignatureScheme::RSA_PKCS1_SHA256
             | SignatureScheme::ECDSA_NISTP256_SHA256 => "sha256",
 
-            SignatureScheme::RSA_PSS_SHA384
-            | SignatureScheme::RSA_PKCS1_SHA384
+            SignatureScheme::RSA_PKCS1_SHA384
             | SignatureScheme::ECDSA_NISTP384_SHA384 => "sha384",
 
-            SignatureScheme::RSA_PSS_SHA512
-            | SignatureScheme::RSA_PKCS1_SHA512 => "sha512",
+            SignatureScheme::RSA_PKCS1_SHA512 => "sha512",
 
             _ => {
                 error!(scheme = ?self.scheme, "unsupported signature scheme for PKCS#11");
