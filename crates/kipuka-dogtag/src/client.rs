@@ -27,6 +27,7 @@ impl DogtagClient {
 
         let mut builder = Client::builder()
             .danger_accept_invalid_certs(true)
+            .cookie_store(true)
             .timeout(Duration::from_secs(config.timeout_secs));
 
         // HTTPS: mTLS with agent cert + basic auth for Dogtag REST authorization
