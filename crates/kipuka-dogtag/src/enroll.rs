@@ -113,6 +113,21 @@ impl DogtagClient {
     ) -> DogtagResult<EnrollResult> {
         debug!(profile = profile_id, "Submitting enrollment request");
 
+        // Login to establish a session — SessionAuthentication profiles
+        // (e.g. acmeServerCert) require a valid JSESSIONID cookie.
+        let login_resp = self.post_json("/ca/rest/account/login", &serde_json::json!({})).await;
+        match &login_resp {
+            Ok(r) if r.status().is_success() => {
+                tracing::info!("Dogtag session login succeeded");
+            }
+            Ok(r) => {
+                tracing::warn!(status = r.status().as_u16(), "Dogtag session login returned non-200 (continuing)");
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Dogtag session login failed (continuing without session)");
+            }
+        }
+
         let request = EnrollmentRequest {
             profile_id: profile_id.to_owned(),
             renewal: false,
