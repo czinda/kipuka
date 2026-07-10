@@ -186,25 +186,48 @@ impl DogtagClient {
         // Sending an empty body causes NullPointerException in Dogtag's
         // RequestProcessor because CertReviewResponse.getRequestId() is null.
         let (status, certificate_der) = if status == EnrollStatus::Pending {
-            debug!(request_id = %request_id, "auto-approving pending enrollment");
+            tracing::info!(request_id = %request_id, "auto-approving pending enrollment");
 
-            // Step 1: GET the review form
-            let review_resp = self
-                .get(&format!("/ca/rest/agent/certrequests/{request_id}"))
-                .await;
+            // Step 1: GET the review form (must include Accept: application/json
+            // or Dogtag returns XML which fails JSON parsing)
+            let review_url = format!("/ca/rest/agent/certrequests/{request_id}");
+            let review_resp = self.get(&review_url).await;
 
             let approve_resp = match review_resp {
                 Ok(resp) => {
-                    let review_body: serde_json::Value = Self::json_response(resp).await?;
-                    // Step 2: POST the review body back with approval
-                    self.post_json(
-                        &format!("/ca/rest/agent/certrequests/{request_id}/approve"),
-                        &review_body,
-                    )
-                    .await
+                    let resp_status = resp.status();
+                    if !resp_status.is_success() {
+                        let body = resp.text().await.unwrap_or_default();
+                        tracing::error!(
+                            status = resp_status.as_u16(),
+                            body_preview = %&body[..body.len().min(200)],
+                            "GET review form failed"
+                        );
+                        self.post_json(
+                            &format!("/ca/rest/agent/certrequests/{request_id}/approve"),
+                            &serde_json::json!({}),
+                        )
+                        .await
+                    } else {
+                        let review_body: serde_json::Value = match Self::json_response(resp).await {
+                            Ok(body) => {
+                                tracing::info!("review form retrieved, posting approval");
+                                body
+                            }
+                            Err(e) => {
+                                tracing::error!(error = %e, "review form not valid JSON (missing Accept header?)");
+                                serde_json::json!({})
+                            }
+                        };
+                        self.post_json(
+                            &format!("/ca/rest/agent/certrequests/{request_id}/approve"),
+                            &review_body,
+                        )
+                        .await
+                    }
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "failed to GET review form, trying empty approve");
+                    tracing::error!(error = %e, "failed to GET review form");
                     self.post_json(
                         &format!("/ca/rest/agent/certrequests/{request_id}/approve"),
                         &serde_json::json!({}),
@@ -215,28 +238,45 @@ impl DogtagClient {
 
             match approve_resp {
                 Ok(resp) => {
-                    let approved: EnrollmentEntry = Self::json_response(resp).await?;
-                    let new_status = match approved.request_status.as_deref() {
-                        Some("complete") => EnrollStatus::Complete,
-                        Some("pending") => EnrollStatus::Pending,
-                        other => {
-                            tracing::warn!(status = ?other, "unexpected status after approval");
-                            EnrollStatus::Pending
-                        }
-                    };
-                    let cert = if new_status == EnrollStatus::Complete {
-                        if let Some(cert_id) = &approved.cert_id {
-                            Some(self.fetch_cert_der(cert_id).await?)
+                    let resp_status = resp.status();
+                    if !resp_status.is_success() {
+                        let body = resp.text().await.unwrap_or_default();
+                        tracing::error!(
+                            status = resp_status.as_u16(),
+                            body_preview = %&body[..body.len().min(300)],
+                            "approve POST returned error"
+                        );
+                        (EnrollStatus::Pending, None)
+                    } else {
+                        let approved: EnrollmentEntry = Self::json_response(resp).await?;
+                        let new_status = match approved.request_status.as_deref() {
+                            Some("complete") => {
+                                tracing::info!(request_id = %request_id, "auto-approve succeeded");
+                                EnrollStatus::Complete
+                            }
+                            Some("pending") => {
+                                tracing::warn!(request_id = %request_id, "still pending after approve");
+                                EnrollStatus::Pending
+                            }
+                            other => {
+                                tracing::warn!(request_id = %request_id, status = ?other, "unexpected status after approval");
+                                EnrollStatus::Pending
+                            }
+                        };
+                        let cert = if new_status == EnrollStatus::Complete {
+                            if let Some(cert_id) = &approved.cert_id {
+                                Some(self.fetch_cert_der(cert_id).await?)
+                            } else {
+                                None
+                            }
                         } else {
                             None
-                        }
-                    } else {
-                        None
-                    };
-                    (new_status, cert)
+                        };
+                        (new_status, cert)
+                    }
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "auto-approve failed, returning pending");
+                    tracing::error!(error = %e, "auto-approve POST failed");
                     (EnrollStatus::Pending, None)
                 }
             }

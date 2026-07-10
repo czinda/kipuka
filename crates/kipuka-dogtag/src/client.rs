@@ -123,7 +123,8 @@ impl DogtagClient {
     }
 
     fn do_get(&self, url: &str) -> impl std::future::Future<Output = reqwest::Result<reqwest::Response>> + '_ {
-        let mut req = self.http.get(url);
+        let mut req = self.http.get(url)
+            .header("Accept", "application/json");
         if let Some((ref user, ref pass)) = self.basic_auth {
             req = req.basic_auth(user, Some(pass));
         }
@@ -131,7 +132,9 @@ impl DogtagClient {
     }
 
     fn do_post_json<'a, T: serde::Serialize + ?Sized>(&'a self, url: &'a str, body: &'a T) -> impl std::future::Future<Output = reqwest::Result<reqwest::Response>> + 'a {
-        let mut req = self.http.post(url).json(body);
+        let mut req = self.http.post(url)
+            .header("Accept", "application/json")
+            .json(body);
         if let Some((ref user, ref pass)) = self.basic_auth {
             req = req.basic_auth(user, Some(pass));
         }
