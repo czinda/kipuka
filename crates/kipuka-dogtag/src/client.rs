@@ -1,8 +1,9 @@
 //! HTTP client for the Dogtag CA REST API.
 //!
-//! Uses `reqwest` with `native-tls` (OpenSSL) for mTLS agent authentication
-//! on HTTPS, or HTTP basic auth on HTTP (for PQ deployments where NSS cannot
-//! validate ML-DSA-87 client certs — Bug 2025246).
+//! Uses `reqwest` with `native-tls` (OpenSSL 3.5+) for mTLS agent
+//! authentication on HTTPS. OpenSSL 3.5 supports ML-DSA-87 TLS
+//! SignatureSchemes, enabling mTLS with PQ agent certs. Falls back
+//! to HTTP basic auth when ca_url uses the http scheme.
 
 use std::time::Duration;
 
@@ -38,7 +39,7 @@ impl DogtagClient {
             builder = builder.identity(identity);
             info!("Dogtag client: HTTPS with mTLS agent cert");
         } else {
-            info!("Dogtag client: HTTP with basic auth (NSS ML-DSA TLS limitation)");
+            info!("Dogtag client: HTTP with basic auth (no mTLS)");
         }
 
         let ca_pem = std::fs::read(&config.ca_cert_file)?;
