@@ -180,17 +180,38 @@ impl DogtagClient {
             }
         };
 
-        // Auto-approve pending requests using the agent cert.
-        // Dogtag's caServerCert profile requires agent approval — kipuka
-        // acts as the RA agent and approves immediately after submission.
+        // Auto-approve pending requests: two-step Dogtag REST flow.
+        // Step 1: GET the review response (populates requestId in the body)
+        // Step 2: POST the review response back to the approve endpoint
+        // Sending an empty body causes NullPointerException in Dogtag's
+        // RequestProcessor because CertReviewResponse.getRequestId() is null.
         let (status, certificate_der) = if status == EnrollStatus::Pending {
             debug!(request_id = %request_id, "auto-approving pending enrollment");
-            let approve_resp = self
-                .post_json(
-                    &format!("/ca/rest/agent/certrequests/{request_id}/approve"),
-                    &serde_json::json!({}),
-                )
+
+            // Step 1: GET the review form
+            let review_resp = self
+                .get(&format!("/ca/rest/agent/certrequests/{request_id}"))
                 .await;
+
+            let approve_resp = match review_resp {
+                Ok(resp) => {
+                    let review_body: serde_json::Value = Self::json_response(resp).await?;
+                    // Step 2: POST the review body back with approval
+                    self.post_json(
+                        &format!("/ca/rest/agent/certrequests/{request_id}/approve"),
+                        &review_body,
+                    )
+                    .await
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to GET review form, trying empty approve");
+                    self.post_json(
+                        &format!("/ca/rest/agent/certrequests/{request_id}/approve"),
+                        &serde_json::json!({}),
+                    )
+                    .await
+                }
+            };
 
             match approve_resp {
                 Ok(resp) => {
