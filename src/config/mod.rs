@@ -261,8 +261,14 @@ impl Config {
 
         // ── Dogtag ───────────────────────────────────────────────────────
         if let Some(ref dogtag) = self.dogtag {
-            if dogtag.ca_url.scheme() != "https" {
-                return Err("dogtag.ca_url must use HTTPS".into());
+            if dogtag.ca_url.scheme() != "https" && dogtag.ca_url.scheme() != "http" {
+                return Err("dogtag.ca_url must use HTTPS or HTTP".into());
+            }
+            if dogtag.ca_url.scheme() == "http" {
+                tracing::warn!(
+                    url = %dogtag.ca_url,
+                    "dogtag.ca_url uses HTTP — agent credentials sent in cleartext"
+                );
             }
             if dogtag.agent_cert_file.is_empty() {
                 return Err("dogtag.agent_cert_file must not be empty".into());
