@@ -82,11 +82,20 @@ pub struct DogtagConfig {
     pub retry_max: u32,
 
     /// Delay between retry attempts in milliseconds.
-    ///
-    /// Simple fixed-delay retry. Future versions may support exponential
-    /// backoff.
     #[serde(default = "default_retry_delay")]
     pub retry_delay_ms: u64,
+
+    /// Username for HTTP basic auth (used when ca_url is HTTP).
+    ///
+    /// NSS cannot validate ML-DSA-87 client certs in the TLS handshake
+    /// (Bug 2025246). When ca_url uses HTTP, basic auth with username/password
+    /// is used instead of mTLS agent cert authentication.
+    #[serde(default)]
+    pub username: Option<String>,
+
+    /// Password for HTTP basic auth.
+    #[serde(default)]
+    pub password: Option<String>,
 }
 
 fn default_timeout() -> u64 {

@@ -1,11 +1,13 @@
 //! HTTP client for the Dogtag CA REST API.
 //!
-//! Uses `reqwest` with `native-tls` (OpenSSL) for mTLS agent authentication.
+//! Uses `reqwest` with `native-tls` (OpenSSL) for mTLS agent authentication
+//! on HTTPS, or HTTP basic auth on HTTP (for PQ deployments where NSS cannot
+//! validate ML-DSA-87 client certs — Bug 2025246).
 
 use std::time::Duration;
 
 use reqwest::{Certificate, Client, Identity};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::config::DogtagConfig;
 use crate::{DogtagError, DogtagResult};
@@ -13,35 +15,55 @@ use crate::{DogtagError, DogtagResult};
 pub struct DogtagClient {
     http: Client,
     base_url: String,
+    basic_auth: Option<(String, String)>,
     retry_max: u32,
     retry_delay: Duration,
 }
 
 impl DogtagClient {
     pub fn new(config: &DogtagConfig) -> DogtagResult<Self> {
-        let cert_pem = std::fs::read(&config.agent_cert_file)?;
-        let key_pem = std::fs::read(&config.agent_key_file)?;
+        let is_http = config.ca_url.scheme() == "http";
+
+        let mut builder = Client::builder()
+            .danger_accept_invalid_certs(true)
+            .timeout(Duration::from_secs(config.timeout_secs));
+
+        // HTTPS: use mTLS with agent cert (reqwest Identity)
+        // HTTP: skip Identity (no TLS), use basic auth instead
+        if !is_http {
+            let cert_pem = std::fs::read(&config.agent_cert_file)?;
+            let key_pem = std::fs::read(&config.agent_key_file)?;
+            let identity = Identity::from_pkcs8_pem(&cert_pem, &key_pem)
+                .map_err(|e| DogtagError::TlsError(format!("Failed to load agent identity: {e}")))?;
+            builder = builder.identity(identity);
+            info!("Dogtag client: HTTPS with mTLS agent cert");
+        } else {
+            info!("Dogtag client: HTTP with basic auth (NSS ML-DSA TLS limitation)");
+        }
+
         let ca_pem = std::fs::read(&config.ca_cert_file)?;
-
-        let identity = Identity::from_pkcs8_pem(&cert_pem, &key_pem)
-            .map_err(|e| DogtagError::TlsError(format!("Failed to load agent identity: {e}")))?;
-
         let ca_cert = Certificate::from_pem(&ca_pem)
             .map_err(|e| DogtagError::TlsError(format!("Failed to load CA certificate: {e}")))?;
+        builder = builder.add_root_certificate(ca_cert);
 
-        let http = Client::builder()
-            .identity(identity)
-            .add_root_certificate(ca_cert)
-            .danger_accept_invalid_certs(true)
-            .timeout(Duration::from_secs(config.timeout_secs))
+        let http = builder
             .build()
             .map_err(|e| DogtagError::TlsError(format!("HTTP client build failed: {e:?}")))?;
 
         let base_url = config.ca_url.as_str().trim_end_matches('/').to_owned();
 
+        let basic_auth = if is_http {
+            let user = config.username.clone().unwrap_or_else(|| "caadmin".into());
+            let pass = config.password.clone().unwrap_or_else(|| "RedHat123".into());
+            Some((user, pass))
+        } else {
+            None
+        };
+
         Ok(Self {
             http,
             base_url,
+            basic_auth,
             retry_max: config.retry_max,
             retry_delay: Duration::from_millis(config.retry_delay_ms),
         })
@@ -51,7 +73,7 @@ impl DogtagClient {
         let url = format!("{}/ca/rest/info", self.base_url);
         debug!(url = %url, "Dogtag health check");
 
-        match self.http.get(&url).send().await {
+        match self.do_get(&url).await {
             Ok(resp) => Ok(resp.status().is_success()),
             Err(e) => {
                 warn!(error = %e, "Dogtag health check failed");
@@ -62,7 +84,7 @@ impl DogtagClient {
 
     pub(crate) async fn get(&self, path: &str) -> DogtagResult<reqwest::Response> {
         let url = format!("{}{}", self.base_url, path);
-        self.request_with_retry(|| self.http.get(&url).send()).await
+        self.request_with_retry(|| self.do_get(&url)).await
     }
 
     pub(crate) async fn post_json<T: serde::Serialize + ?Sized>(
@@ -71,7 +93,7 @@ impl DogtagClient {
         body: &T,
     ) -> DogtagResult<reqwest::Response> {
         let url = format!("{}{}", self.base_url, path);
-        self.request_with_retry(|| self.http.post(&url).json(body).send())
+        self.request_with_retry(|| self.do_post_json(&url, body))
             .await
     }
 
@@ -84,13 +106,31 @@ impl DogtagClient {
         let url = format!("{}{}", self.base_url, path);
         let ct = content_type.to_owned();
         self.request_with_retry(|| {
-            self.http
-                .post(&url)
+            let mut req = self.http.post(&url)
                 .header("Content-Type", &ct)
-                .body(body.clone())
-                .send()
+                .body(body.clone());
+            if let Some((ref user, ref pass)) = self.basic_auth {
+                req = req.basic_auth(user, Some(pass));
+            }
+            req.send()
         })
         .await
+    }
+
+    fn do_get(&self, url: &str) -> impl std::future::Future<Output = reqwest::Result<reqwest::Response>> + '_ {
+        let mut req = self.http.get(url);
+        if let Some((ref user, ref pass)) = self.basic_auth {
+            req = req.basic_auth(user, Some(pass));
+        }
+        req.send()
+    }
+
+    fn do_post_json<'a, T: serde::Serialize + ?Sized>(&'a self, url: &'a str, body: &'a T) -> impl std::future::Future<Output = reqwest::Result<reqwest::Response>> + 'a {
+        let mut req = self.http.post(url).json(body);
+        if let Some((ref user, ref pass)) = self.basic_auth {
+            req = req.basic_auth(user, Some(pass));
+        }
+        req.send()
     }
 
     async fn request_with_retry<F, Fut>(&self, make_request: F) -> DogtagResult<reqwest::Response>
