@@ -29,8 +29,8 @@ impl DogtagClient {
             .danger_accept_invalid_certs(true)
             .timeout(Duration::from_secs(config.timeout_secs));
 
-        // HTTPS: use mTLS with agent cert (reqwest Identity)
-        // HTTP: skip Identity (no TLS), use basic auth instead
+        // HTTPS: mTLS with agent cert + basic auth for Dogtag REST authorization
+        // HTTP: basic auth only (no TLS)
         if !is_http {
             let cert_pem = std::fs::read(&config.agent_cert_file)?;
             let key_pem = std::fs::read(&config.agent_key_file)?;
@@ -39,7 +39,7 @@ impl DogtagClient {
             builder = builder.identity(identity);
             info!("Dogtag client: HTTPS with mTLS agent cert");
         } else {
-            info!("Dogtag client: HTTP with basic auth (no mTLS)");
+            info!("Dogtag client: HTTP (no TLS)");
         }
 
         let ca_pem = std::fs::read(&config.ca_cert_file)?;
@@ -53,12 +53,16 @@ impl DogtagClient {
 
         let base_url = config.ca_url.as_str().trim_end_matches('/').to_owned();
 
-        let basic_auth = if is_http {
-            let user = config.username.clone().unwrap_or_else(|| "caadmin".into());
-            let pass = config.password.clone().unwrap_or_else(|| "RedHat123".into());
-            Some((user, pass))
-        } else {
-            None
+        // Basic auth for Dogtag REST API authorization (used on both HTTP and HTTPS)
+        let basic_auth = match (&config.username, &config.password) {
+            (Some(user), Some(pass)) => {
+                info!("Dogtag client: basic auth enabled for REST API");
+                Some((user.clone(), pass.clone()))
+            }
+            _ if is_http => {
+                Some(("caadmin".into(), "RedHat123".into()))
+            }
+            _ => None,
         };
 
         Ok(Self {
