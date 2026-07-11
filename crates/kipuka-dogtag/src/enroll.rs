@@ -263,26 +263,42 @@ impl DogtagClient {
                         );
                         (EnrollStatus::Pending, None)
                     } else {
-                        let approved: EnrollmentEntry = Self::json_response(resp).await?;
-                        let new_status = match approved.request_status.as_deref() {
-                            Some("complete") => {
-                                tracing::info!(request_id = %request_id, "auto-approve succeeded");
-                                EnrollStatus::Complete
-                            }
-                            Some("pending") => {
-                                tracing::warn!(request_id = %request_id, "still pending after approve");
-                                EnrollStatus::Pending
-                            }
+                        // Approve returns CertReviewResponse (different from EnrollmentEntry).
+                        // Parse as Value and extract requestStatus + certId.
+                        let approved: serde_json::Value = Self::json_response(resp).await?;
+                        let status_str = approved.get("requestStatus")
+                            .or_else(|| approved.get("requestStatus"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown");
+                        let cert_id = approved.get("certId")
+                            .or_else(|| approved.get("CertId"))
+                            .and_then(|v| v.as_str())
+                            .map(String::from);
+
+                        tracing::info!(request_id = %request_id, status = %status_str, "approve result");
+
+                        let new_status = match status_str {
+                            "complete" => EnrollStatus::Complete,
+                            "pending" => EnrollStatus::Pending,
                             other => {
-                                tracing::warn!(request_id = %request_id, status = ?other, "unexpected status after approval");
+                                tracing::warn!(request_id = %request_id, status = %other, "unexpected status after approval");
                                 EnrollStatus::Pending
                             }
                         };
                         let cert = if new_status == EnrollStatus::Complete {
-                            if let Some(cert_id) = &approved.cert_id {
-                                Some(self.fetch_cert_der(cert_id).await?)
+                            if let Some(ref cid) = cert_id {
+                                Some(self.fetch_cert_der(cid).await?)
                             } else {
-                                None
+                                // Try to find cert ID in the response
+                                let alt_id = approved.get("certificateId")
+                                    .or_else(|| approved.get("CertificateID"))
+                                    .and_then(|v| v.as_str());
+                                if let Some(aid) = alt_id {
+                                    Some(self.fetch_cert_der(aid).await?)
+                                } else {
+                                    tracing::warn!("approve succeeded but no cert ID found in response");
+                                    None
+                                }
                             }
                         } else {
                             None
