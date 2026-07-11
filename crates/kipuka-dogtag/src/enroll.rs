@@ -263,9 +263,18 @@ impl DogtagClient {
                         );
                         (EnrollStatus::Pending, None)
                     } else {
-                        // Approve returns CertReviewResponse (different from EnrollmentEntry).
-                        // Parse as Value and extract requestStatus + certId.
-                        let approved: serde_json::Value = Self::json_response(resp).await?;
+                        // Approve may return JSON (CertReviewResponse) or HTML.
+                        // If JSON parsing fails, fall back to polling the request.
+                        let approved: serde_json::Value = match resp.json().await {
+                            Ok(v) => v,
+                            Err(e) => {
+                                tracing::warn!(error = %e, "approve response not JSON, polling request status");
+                                let poll = self.get_enrollment_status(&request_id).await?;
+                                let status = poll.status;
+                                let cert = poll.certificate_der;
+                                return Ok(EnrollResult { request_id: request_id.to_owned(), status, certificate_der: cert });
+                            }
+                        };
                         let status_str = approved.get("requestStatus")
                             .or_else(|| approved.get("requestStatus"))
                             .and_then(|v| v.as_str())
