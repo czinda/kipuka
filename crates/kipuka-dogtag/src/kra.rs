@@ -12,6 +12,7 @@ use crate::{DogtagError, DogtagResult};
 pub struct KraClient {
     http: Client,
     base_url: String,
+    basic_auth: Option<(String, String)>,
     retry_max: u32,
     retry_delay: Duration,
 }
@@ -66,29 +67,41 @@ impl KraClient {
             DogtagError::ConfigError("kra_url is required for KRA operations".into())
         })?;
 
-        let cert_pem = std::fs::read(&config.agent_cert_file)?;
-        let key_pem = std::fs::read(&config.agent_key_file)?;
+        let is_http = kra_url.scheme() == "http";
+
+        let mut builder = Client::builder()
+            .cookie_store(true)
+            .danger_accept_invalid_certs(true)
+            .timeout(Duration::from_secs(config.timeout_secs));
+
+        if !is_http {
+            let cert_pem = std::fs::read(&config.agent_cert_file)?;
+            let key_pem = std::fs::read(&config.agent_key_file)?;
+            let identity = Identity::from_pkcs8_pem(&cert_pem, &key_pem)
+                .map_err(|e| DogtagError::TlsError(format!("Failed to load agent identity: {e}")))?;
+            builder = builder.identity(identity);
+        }
+
         let ca_pem = std::fs::read(&config.ca_cert_file)?;
-
-        let identity = Identity::from_pkcs8_pem(&cert_pem, &key_pem)
-            .map_err(|e| DogtagError::TlsError(format!("Failed to load agent identity: {e}")))?;
-
         let ca_cert = Certificate::from_pem(&ca_pem)
             .map_err(|e| DogtagError::TlsError(format!("Failed to load CA certificate: {e}")))?;
+        builder = builder.add_root_certificate(ca_cert);
 
-        let http = Client::builder()
-            .identity(identity)
-            .add_root_certificate(ca_cert)
-            .danger_accept_invalid_certs(true)
-            .timeout(Duration::from_secs(config.timeout_secs))
-            .build()
+        let http = builder.build()
             .map_err(|e| DogtagError::TlsError(format!("KRA client build failed: {e:?}")))?;
 
         let base_url = kra_url.as_str().trim_end_matches('/').to_owned();
 
+        let basic_auth = match (&config.username, &config.password) {
+            (Some(user), Some(pass)) => Some((user.clone(), pass.clone())),
+            _ if is_http => Some(("caadmin".into(), "RedHat123".into())),
+            _ => None,
+        };
+
         Ok(Self {
             http,
             base_url,
+            basic_auth,
             retry_max: config.retry_max,
             retry_delay: Duration::from_millis(config.retry_delay_ms),
         })
@@ -182,7 +195,13 @@ impl KraClient {
                 tokio::time::sleep(self.retry_delay).await;
             }
 
-            match self.http.post(&url).json(body).send().await {
+            let mut req = self.http.post(&url)
+                .header("Accept", "application/json")
+                .json(body);
+            if let Some((ref user, ref pass)) = self.basic_auth {
+                req = req.basic_auth(user, Some(pass));
+            }
+            match req.send().await {
                 Ok(resp) if resp.status().is_server_error() => {
                     let status = resp.status();
                     let body = resp.text().await.unwrap_or_default();
