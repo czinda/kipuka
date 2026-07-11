@@ -25,14 +25,30 @@ pub struct KeyGenResult {
     pub wrapped_private_key: Option<Vec<u8>>,
 }
 
+/// Dogtag RESTMessage attribute entry.
+#[derive(Serialize)]
+struct RestAttribute {
+    name: String,
+    value: String,
+}
+
+/// Dogtag RESTMessage-format request for KRA key generation.
+///
+/// Dogtag's KRA REST API uses the RESTMessage wire format where parameters
+/// are carried in `Attributes.Attribute[]`, not as flat JSON fields.
+/// `ClassName` selects the Java handler class via reflection.
 #[derive(Serialize)]
 struct KeyGenRequest {
-    #[serde(rename = "keyAlgorithm")]
-    key_algorithm: String,
-    #[serde(rename = "keySize")]
-    key_size: u32,
-    #[serde(rename = "clientKeyID")]
-    client_key_id: String,
+    #[serde(rename = "ClassName")]
+    class_name: String,
+    #[serde(rename = "Attributes")]
+    attributes: RestAttributes,
+}
+
+#[derive(Serialize)]
+struct RestAttributes {
+    #[serde(rename = "Attribute")]
+    attribute: Vec<RestAttribute>,
 }
 
 #[derive(Deserialize)]
@@ -110,16 +126,32 @@ impl KraClient {
     pub async fn generate_key(&self, key_type: &str, key_size: u32) -> DogtagResult<KeyGenResult> {
         debug!(key_type, key_size, "Generating key on KRA");
 
-        let request = KeyGenRequest {
-            key_algorithm: key_type.to_owned(),
-            key_size,
-            client_key_id: format!("kipuka-{:x}", std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()),
+        let class_name = if key_type.eq_ignore_ascii_case("AES")
+            || key_type.eq_ignore_ascii_case("DESede")
+        {
+            "com.netscape.certsrv.key.SymKeyGenerationRequest"
+        } else {
+            "com.netscape.certsrv.key.AsymKeyGenerationRequest"
         };
 
-        let resp = self.post_json("/kra/rest/agent/keys/generate", &request).await?;
+        let client_key_id = format!("kipuka-{:x}", std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos());
+
+        let request = KeyGenRequest {
+            class_name: class_name.to_owned(),
+            attributes: RestAttributes {
+                attribute: vec![
+                    RestAttribute { name: "clientKeyID".into(), value: client_key_id },
+                    RestAttribute { name: "keyAlgorithm".into(), value: key_type.to_owned() },
+                    RestAttribute { name: "keySize".into(), value: key_size.to_string() },
+                    RestAttribute { name: "keyUsage".into(), value: "wrap,unwrap".into() },
+                ],
+            },
+        };
+
+        let resp = self.post_json("/kra/rest/agent/keyrequests", &request).await?;
         let keygen_resp: KeyGenResponse = Self::json_response(resp).await?;
 
         let info = keygen_resp
