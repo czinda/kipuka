@@ -32,13 +32,17 @@ impl DogtagClient {
 
         // HTTPS: mTLS with agent cert + basic auth for Dogtag REST authorization
         // HTTP: basic auth only (no TLS)
-        if !is_http {
+        // skip_mtls: HTTPS with basic auth only (for PQ CAs where NSS cannot
+        //   validate ML-DSA-signed agent cert chains during TLS client auth)
+        if !is_http && !config.skip_mtls {
             let cert_pem = std::fs::read(&config.agent_cert_file)?;
             let key_pem = std::fs::read(&config.agent_key_file)?;
             let identity = Identity::from_pkcs8_pem(&cert_pem, &key_pem)
                 .map_err(|e| DogtagError::TlsError(format!("Failed to load agent identity: {e}")))?;
             builder = builder.identity(identity);
             info!("Dogtag client: HTTPS with mTLS agent cert");
+        } else if !is_http {
+            info!("Dogtag client: HTTPS without mTLS (skip_mtls=true, basic auth only)");
         } else {
             info!("Dogtag client: HTTP (no TLS)");
         }

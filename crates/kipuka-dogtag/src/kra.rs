@@ -74,7 +74,7 @@ impl KraClient {
             .danger_accept_invalid_certs(true)
             .timeout(Duration::from_secs(config.timeout_secs));
 
-        if !is_http {
+        if !is_http && !config.skip_mtls {
             let cert_pem = std::fs::read(&config.agent_cert_file)?;
             let key_pem = std::fs::read(&config.agent_key_file)?;
             let identity = Identity::from_pkcs8_pem(&cert_pem, &key_pem)

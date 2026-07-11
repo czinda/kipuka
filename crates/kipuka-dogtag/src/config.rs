@@ -96,6 +96,17 @@ pub struct DogtagConfig {
     /// Password for HTTP basic auth.
     #[serde(default)]
     pub password: Option<String>,
+
+    /// Skip mTLS client certificate presentation on HTTPS connections.
+    ///
+    /// When true, the client connects to HTTPS endpoints using basic auth
+    /// only, without presenting the agent certificate during the TLS
+    /// handshake. Required for PQ (ML-DSA-87) CAs where the Dogtag
+    /// server's NSS cannot validate ML-DSA-signed agent cert chains
+    /// during TLS client authentication (NSS lacks ML-DSA TLS
+    /// SignatureScheme support).
+    #[serde(default)]
+    pub skip_mtls: bool,
 }
 
 fn default_timeout() -> u64 {
