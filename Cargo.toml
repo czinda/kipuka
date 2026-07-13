@@ -114,6 +114,7 @@ path = "src/main.rs"
 [dependencies]
 kipuka-coap.workspace = true
 kipuka-dogtag.workspace = true
+openssl = "0.10"
 kipuka-est.workspace = true
 kipuka-hsm.workspace = true
 kipuka-otp.workspace = true

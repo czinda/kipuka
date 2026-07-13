@@ -119,8 +119,9 @@ pub async fn post_serverkeygen(
 
     // ── Dogtag KRA path ─────────────────────────────────────────────────────
     //
-    // If a Dogtag backend with KRA is configured, generate the key pair on
-    // the KRA, enroll the certificate via the CA, and return both.
+    // Generate the key pair on the KRA (key escrow), build a CSR from the
+    // KRA's public key + client identity, enroll via the CA, then recover
+    // the private key from the KRA as PKCS#12.
     if let Some(ref dogtag_pool) = state.dogtag {
         let dogtag_cfg = state
             .config
@@ -128,46 +129,116 @@ pub async fn post_serverkeygen(
             .as_ref()
             .expect("dogtag config present when pool is set");
 
-        if dogtag_cfg.kra_url.is_none() {
-            return Err(KipukaError::Ca(
-                "server-side key generation requires dogtag.kra_url to be configured".into(),
-            ));
-        }
+        // Step 1: Detect key type from the CSR template.
+        let requested_key = detect_key_type_from_csr(&csr_der);
+        let (kra_key_type, kra_key_size) = match &requested_key {
+            crate::ca::keygen::KeyType::Rsa(bits) => ("RSA", *bits),
+            crate::ca::keygen::KeyType::Ecdsa(_) => ("EC", 256u32),
+            // KRA doesn't support ML-DSA/ML-KEM keygen yet; fall back to RSA
+            _ => ("RSA", 2048u32),
+        };
 
         let kra_client = kipuka_dogtag::KraClient::new(dogtag_cfg)
-            .map_err(|e| KipukaError::Ca(format!("KRA client initialization failed: {e}")))?;
-
-        // Determine key type from the CSR template or use defaults.
-        // For now, default to RSA 2048 — a full implementation would
-        // extract the desired key type from the CSR template attributes.
-        let key_type = "RSA";
-        let key_size = 2048u32;
+            .map_err(|e| KipukaError::ServiceUnavailable(format!("KRA client init failed: {e}")))?;
 
         tracing::info!(
             ca_id = %ca_id,
             identity = %identity,
-            key_type = key_type,
-            key_size = key_size,
-            "generating key pair on Dogtag KRA"
+            key_type = kra_key_type,
+            key_size = kra_key_size,
+            "generating key pair on KRA for server-side keygen"
         );
 
         let keygen_result = kra_client
-            .generate_key(key_type, key_size)
+            .generate_key(kra_key_type, kra_key_size)
             .await
             .map_err(|e| KipukaError::Ca(format!("KRA key generation failed: {e}")))?;
 
-        // Now enroll the certificate via the CA using the generated public key.
-        // Build a CSR from the template + generated public key.
-        // For now, we forward the original CSR template and let Dogtag handle it.
+        let public_key_b64 = keygen_result.public_key.ok_or_else(|| {
+            KipukaError::Ca("KRA did not return public key".into())
+        })?;
+
+        tracing::info!(
+            key_id = %keygen_result.key_id,
+            "KRA key generated, building CSR from KRA public key"
+        );
+
+        // Step 2: Decode the public key SPKI and build a CSR.
+        // Extract subject from the template CSR (not the auth identity)
+        // so the issued cert matches the client's requested subject.
+        use base64::Engine;
+        let public_key_der = base64::engine::general_purpose::STANDARD
+            .decode(&public_key_b64)
+            .map_err(|e| KipukaError::Ca(format!("KRA public key base64 decode failed: {e}")))?;
+
+        let pkey = openssl::pkey::PKey::public_key_from_der(&public_key_der)
+            .map_err(|e| KipukaError::Ca(format!("KRA public key parse failed: {e}")))?;
+
+        // Extract subject DN from client's template CSR.
+        let template_subject = openssl::x509::X509Req::from_der(&csr_der)
+            .ok()
+            .and_then(|req| {
+                let subj = req.subject_name();
+                // Use template subject if it has entries; fall back to identity
+                if subj.entries().next().is_some() {
+                    Some(subj.to_owned().ok()?)
+                } else {
+                    None
+                }
+            });
+
+        let mut csr_builder = openssl::x509::X509ReqBuilder::new()
+            .map_err(|e| KipukaError::Ca(format!("CSR builder: {e}")))?;
+        csr_builder.set_pubkey(&pkey)
+            .map_err(|e| KipukaError::Ca(format!("CSR set pubkey: {e}")))?;
+
+        if let Some(ref subj) = template_subject {
+            csr_builder.set_subject_name(subj)
+                .map_err(|e| KipukaError::Ca(format!("set template subject: {e}")))?;
+        } else {
+            let mut name = openssl::x509::X509NameBuilder::new()
+                .map_err(|e| KipukaError::Ca(format!("X509Name: {e}")))?;
+            name.append_entry_by_text("CN", &identity)
+                .map_err(|e| KipukaError::Ca(format!("CN: {e}")))?;
+            let name = name.build();
+            csr_builder.set_subject_name(&name)
+                .map_err(|e| KipukaError::Ca(format!("set subject: {e}")))?;
+        }
+
+        let mut san = openssl::x509::extension::SubjectAlternativeName::new();
+        san.dns(&identity);
+        let san_ext = san.build(&csr_builder.x509v3_context(None))
+            .map_err(|e| KipukaError::Ca(format!("SAN extension: {e}")))?;
+        let mut extensions = openssl::stack::Stack::new()
+            .map_err(|e| KipukaError::Ca(format!("Stack: {e}")))?;
+        extensions.push(san_ext)
+            .map_err(|e| KipukaError::Ca(format!("push SAN: {e}")))?;
+        csr_builder.add_extensions(&extensions)
+            .map_err(|e| KipukaError::Ca(format!("add extensions: {e}")))?;
+
+        // Ephemeral ECDSA P-256 key for CSR PoP signature (~1ms vs ~100ms
+        // for RSA-2048). Dogtag skips PoP verification for agent-submitted
+        // enrollment — the signature just needs to be structurally valid.
+        let ec_group = openssl::ec::EcGroup::from_curve_name(openssl::nid::Nid::X9_62_PRIME256V1)
+            .map_err(|e| KipukaError::Ca(format!("EC group: {e}")))?;
+        let ephemeral_ec = openssl::ec::EcKey::generate(&ec_group)
+            .map_err(|e| KipukaError::Ca(format!("Ephemeral EC keygen: {e}")))?;
+        let ephemeral_pkey = openssl::pkey::PKey::from_ec_key(ephemeral_ec)
+            .map_err(|e| KipukaError::Ca(format!("Ephemeral PKey: {e}")))?;
+
+        csr_builder.sign(&ephemeral_pkey, openssl::hash::MessageDigest::sha256())
+            .map_err(|e| KipukaError::Ca(format!("CSR sign: {e}")))?;
+        let csr = csr_builder.build();
+        let csr_pem = String::from_utf8(csr.to_pem()
+            .map_err(|e| KipukaError::Ca(format!("CSR to PEM: {e}")))?)
+            .map_err(|e| KipukaError::Ca(format!("CSR PEM UTF-8: {e}")))?;
+
+        tracing::info!("CSR built with KRA-generated public key");
+
+        // Step 3: Enroll via Dogtag CA.
         let client = dogtag_pool
             .get_client()
             .map_err(|e| KipukaError::ServiceUnavailable(format!("Dogtag CA unavailable: {e}")))?;
-
-        use base64::Engine;
-        let csr_b64 = base64::engine::general_purpose::STANDARD.encode(&csr_der);
-        let csr_pem = format!(
-            "-----BEGIN CERTIFICATE REQUEST-----\n{csr_b64}\n-----END CERTIFICATE REQUEST-----"
-        );
 
         let enroll_result = client
             .enroll_certificate(&csr_pem, &dogtag_cfg.profile_id)
@@ -185,10 +256,18 @@ pub async fn post_serverkeygen(
             KipukaError::Ca("Dogtag returned complete but no certificate for keygen".into())
         })?;
 
-        // The private key from KRA — must be the wrapped key, never the public key.
-        let private_key_der = keygen_result
-            .wrapped_private_key
-            .ok_or_else(|| KipukaError::Ca("KRA did not return a wrapped private key".into()))?;
+        tracing::info!(
+            key_id = %keygen_result.key_id,
+            "certificate issued, recovering private key from KRA"
+        );
+
+        // Step 4: Recover the private key from KRA as PKCS#12.
+        let private_key_der = kra_client
+            .recover_key_p12(&keygen_result.key_id, &cert_der)
+            .await
+            .map_err(|e| KipukaError::Ca(format!("KRA key recovery failed: {e}")))?;
+
+        tracing::info!(key_len = private_key_der.len(), "private key recovered from KRA");
 
         // Build the multipart/mixed response.
         let response_body = build_multipart_response(&cert_der, &private_key_der);
@@ -208,7 +287,7 @@ pub async fn post_serverkeygen(
             .record_audit_event(
                 "serverkeygen_success",
                 &format!(
-                    "ca_id={ca_id}, identity={identity}, backend=dogtag, kra_key_id={}",
+                    "ca_id={ca_id}, identity={identity}, backend=dogtag-kra, key_id={}, key_type={kra_key_type}-{kra_key_size}",
                     keygen_result.key_id
                 ),
             )
