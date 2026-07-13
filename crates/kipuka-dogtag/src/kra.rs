@@ -145,7 +145,23 @@ impl KraClient {
         })
     }
 
+    pub async fn login(&self) {
+        let login_resp = self.post_json("/kra/rest/account/login", &serde_json::json!({})).await;
+        match login_resp {
+            Ok(r) if r.status().is_success() => {
+                tracing::info!("KRA session login succeeded");
+            }
+            Ok(r) => {
+                tracing::warn!(status = r.status().as_u16(), "KRA session login returned non-200 (continuing)");
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "KRA session login failed (continuing without session)");
+            }
+        }
+    }
+
     pub async fn generate_key(&self, key_type: &str, key_size: u32) -> DogtagResult<KeyGenResult> {
+        self.login().await;
         debug!(key_type, key_size, "Generating key on KRA");
 
         let class_name = if key_type.eq_ignore_ascii_case("AES")
@@ -341,6 +357,29 @@ impl KraClient {
 
         tracing::info!(key_len = der.len(), "private key recovered from PKCS#12");
         Ok(der)
+    }
+
+    /// Fetch the KRA transport certificate as DER.
+    ///
+    /// The transport cert's ML-KEM-1024 public key is used by clients to
+    /// encapsulate the shared secret for key archival.
+    pub async fn get_transport_cert(&self) -> DogtagResult<Vec<u8>> {
+        let resp = self.get_json("/kra/v2/config/cert/transport").await?;
+        let body: serde_json::Value = Self::json_response(resp).await?;
+        let pem = body.get("Encoded")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| DogtagError::KraError(
+                "No Encoded field in transport cert response".into(),
+            ))?;
+
+        // Strip PEM headers and decode
+        let b64: String = pem.lines()
+            .filter(|l| !l.starts_with("-----"))
+            .collect();
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD
+            .decode(&b64)
+            .map_err(|e| DogtagError::KraError(format!("Transport cert base64 decode failed: {e}")))
     }
 
     /// Fetch the public key (base64 SPKI DER) for a KRA-generated key.
