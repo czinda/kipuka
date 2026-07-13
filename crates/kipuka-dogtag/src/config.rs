@@ -97,6 +97,15 @@ pub struct DogtagConfig {
     #[serde(default)]
     pub password: Option<String>,
 
+    /// Username for KRA basic auth. Defaults to `username` if not set.
+    /// Dogtag creates `kraadmin` as the KRA admin (separate from `caadmin`).
+    #[serde(default)]
+    pub kra_username: Option<String>,
+
+    /// Password for KRA basic auth. Defaults to `password` if not set.
+    #[serde(default)]
+    pub kra_password: Option<String>,
+
     /// Skip mTLS client certificate presentation on HTTPS connections.
     ///
     /// When true, the client connects to HTTPS endpoints using basic auth

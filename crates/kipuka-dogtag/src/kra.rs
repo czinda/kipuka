@@ -130,9 +130,12 @@ impl KraClient {
 
         let base_url = kra_url.as_str().trim_end_matches('/').to_owned();
 
-        let basic_auth = match (&config.username, &config.password) {
+        let basic_auth = match (
+            config.kra_username.as_ref().or(config.username.as_ref()),
+            config.kra_password.as_ref().or(config.password.as_ref()),
+        ) {
             (Some(user), Some(pass)) => Some((user.clone(), pass.clone())),
-            _ if is_http => Some(("caadmin".into(), "RedHat123".into())),
+            _ if is_http => Some(("kraadmin".into(), "RedHat123".into())),
             _ => None,
         };
 
