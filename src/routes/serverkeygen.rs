@@ -260,7 +260,7 @@ pub async fn post_serverkeygen(
 
         // ── Step 7: Build multipart response ───────────────────────────────
         let cert_pkcs7_der =
-            crate::routes::cacerts::build_certs_only_pkcs7(&cert_der)?;
+            crate::routes::cacerts::build_certs_only_pkcs7(std::slice::from_ref(&cert_der))?;
         let response_body = build_multipart_response(&cert_pkcs7_der, &private_key_der);
 
         let content_type = format!(
@@ -351,7 +351,7 @@ pub async fn post_serverkeygen(
 
     // Step 6: Wrap the certificate in PKCS#7 certs-only.
     let cert_pkcs7_der =
-        crate::routes::cacerts::build_certs_only_pkcs7(&issuance_result.certificate_der)?;
+        crate::routes::cacerts::build_certs_only_pkcs7(std::slice::from_ref(&issuance_result.certificate_der))?;
 
     // Step 7: Build the multipart/mixed response with cert + PKCS#8 private key.
     let response_body = build_multipart_response(&cert_pkcs7_der, &keygen_result.private_key_der);

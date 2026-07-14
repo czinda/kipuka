@@ -62,19 +62,13 @@ pub async fn get_cacerts(
         KipukaError::NotFound
     })?;
 
-    // Build a PKCS#7 certs-only message containing the CA certificate chain.
-    //
-    // A certs-only PKCS#7 SignedData has:
-    // - version: 1
-    // - digestAlgorithms: empty SET
-    // - encapContentInfo: empty (no content)
-    // - certificates: [0] IMPLICIT SET OF Certificate (the CA chain)
-    // - signerInfos: empty SET
-    //
-    // In a full implementation this uses `synta` or `cms` to build the
-    // proper ASN.1 structure.  For now we return the DER-encoded CA cert
-    // wrapped in a minimal PKCS#7 envelope.
-    let pkcs7_der = build_certs_only_pkcs7(&ca.cert_der)?;
+    let chain: &[Vec<u8>] = if !ca.cert_chain.is_empty() {
+        &ca.cert_chain
+    } else {
+        tracing::warn!(ca_id = %ca_id, "cert_chain empty; serving CA cert only");
+        std::slice::from_ref(&ca.cert_der)
+    };
+    let pkcs7_der = build_certs_only_pkcs7(chain)?;
 
     // Base64-encode per RFC 7030 §4.1.
     let body = encode_est_base64(&pkcs7_der);
@@ -115,11 +109,11 @@ pub async fn get_cacerts(
 ///     signerInfos         SET (empty)
 /// }
 /// ```
-pub(crate) fn build_certs_only_pkcs7(cert_der: &[u8]) -> Result<Vec<u8>, KipukaError> {
+pub(crate) fn build_certs_only_pkcs7(certs_der: &[impl AsRef<[u8]>]) -> Result<Vec<u8>, KipukaError> {
     use synta::{Encoder, Encoding, ObjectIdentifier, Tag, tag};
 
-    if cert_der.is_empty() {
-        return Err(KipukaError::Ca("CA certificate DER is empty".into()));
+    if certs_der.is_empty() {
+        return Err(KipukaError::Ca("No certificates provided for PKCS#7".into()));
     }
 
     // OID constants from synta-certificate.
@@ -172,7 +166,9 @@ pub(crate) fn build_certs_only_pkcs7(cert_der: &[u8]) -> Result<Vec<u8>, KipukaE
     // certificates [0] IMPLICIT SET OF Certificate
     enc.start_constructed_no_guard(ctx0_tag)
         .map_err(|e| KipukaError::Ca(format!("certificates [0]: {e}")))?;
-    enc.write_bytes(cert_der);
+    for cert in certs_der {
+        enc.write_bytes(cert.as_ref());
+    }
     enc.end_constructed()
         .map_err(|e| KipukaError::Ca(format!("certificates end: {e}")))?;
 
@@ -200,7 +196,7 @@ pub(crate) fn build_certs_only_pkcs7(cert_der: &[u8]) -> Result<Vec<u8>, KipukaE
 
     tracing::debug!(
         pkcs7_len = pkcs7_der.len(),
-        cert_len = cert_der.len(),
+        cert_count = certs_der.len(),
         "built PKCS#7 certs-only SignedData"
     );
 

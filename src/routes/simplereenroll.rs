@@ -191,7 +191,7 @@ pub async fn post_simplereenroll(
     }
 
     let cert_der = result.certificate_der;
-    let pkcs7_der = crate::routes::cacerts::build_certs_only_pkcs7(&cert_der)?;
+    let pkcs7_der = crate::routes::cacerts::build_certs_only_pkcs7(std::slice::from_ref(&cert_der))?;
 
     let body = encode_est_base64(&pkcs7_der);
 
