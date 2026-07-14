@@ -36,6 +36,14 @@ pub enum EnrollStatus {
     Canceled,
 }
 
+/// Result of a server-side key generation request.
+#[derive(Debug, Clone)]
+pub struct ServerKeygenResult {
+    pub request_id: String,
+    pub certificate_der: Option<Vec<u8>>,
+    pub pkcs12_b64: Option<String>,
+}
+
 /// Enrollment request body sent to Dogtag CA.
 ///
 /// Maps to the JSON payload for `POST /ca/rest/certrequests`.
@@ -111,7 +119,17 @@ impl DogtagClient {
         csr_pem: &str,
         profile_id: &str,
     ) -> DogtagResult<EnrollResult> {
-        debug!(profile = profile_id, "Submitting enrollment request");
+        self.enroll_certificate_with_type(csr_pem, profile_id, "pkcs10").await
+    }
+
+    /// Enroll a certificate with an explicit request type (`pkcs10` or `crmf`).
+    pub async fn enroll_certificate_with_type(
+        &self,
+        request_data: &str,
+        profile_id: &str,
+        request_type: &str,
+    ) -> DogtagResult<EnrollResult> {
+        debug!(profile = profile_id, request_type, "Submitting enrollment request");
 
         // Login to establish a session — SessionAuthentication profiles
         // (e.g. acmeServerCert) require a valid JSESSIONID cookie.
@@ -137,11 +155,11 @@ impl DogtagClient {
                     attributes: vec![
                         ProfileAttribute {
                             name: "cert_request_type".to_owned(),
-                            value: "pkcs10".to_owned(),
+                            value: request_type.to_owned(),
                         },
                         ProfileAttribute {
                             name: "cert_request".to_owned(),
-                            value: csr_pem.to_owned(),
+                            value: request_data.to_owned(),
                         },
                     ],
                 },
@@ -338,6 +356,140 @@ impl DogtagClient {
         })
     }
 
+    /// Server-side key generation via Dogtag's `caServerKeygen_UserCert` profile.
+    ///
+    /// Dogtag CA + KRA generate the key pair internally. The CA archives
+    /// the private key via the KRA (using ML-KEM if the transport cert is
+    /// ML-KEM-1024) and returns the cert + PKCS#12.
+    pub async fn server_keygen(
+        &self,
+        subject_uid: &str,
+        subject_cn: &str,
+        p12_password: &str,
+        key_type: &str,
+        key_size: u32,
+    ) -> DogtagResult<ServerKeygenResult> {
+        debug!(subject_cn, key_type, key_size, "Server-side key generation");
+
+        // Login for session
+        let _ = self.post_json("/ca/rest/account/login", &serde_json::json!({})).await;
+
+        let request = EnrollmentRequest {
+            profile_id: "caServerKeygen_UserCert".to_owned(),
+            renewal: false,
+            input: vec![
+                ProfileInput {
+                    class_id: "serverKeygenInputImpl".to_owned(),
+                    attributes: vec![
+                        ProfileAttribute {
+                            name: "serverSideKeygenP12Passwd".to_owned(),
+                            value: p12_password.to_owned(),
+                        },
+                        ProfileAttribute {
+                            name: "keyType".to_owned(),
+                            value: key_type.to_owned(),
+                        },
+                        ProfileAttribute {
+                            name: "keySize".to_owned(),
+                            value: key_size.to_string(),
+                        },
+                    ],
+                },
+                ProfileInput {
+                    class_id: "subjectNameInputImpl".to_owned(),
+                    attributes: vec![
+                        ProfileAttribute {
+                            name: "sn_uid".to_owned(),
+                            value: subject_uid.to_owned(),
+                        },
+                        ProfileAttribute {
+                            name: "sn_cn".to_owned(),
+                            value: subject_cn.to_owned(),
+                        },
+                    ],
+                },
+                ProfileInput {
+                    class_id: "submitterInfoInputImpl".to_owned(),
+                    attributes: vec![
+                        ProfileAttribute {
+                            name: "requestor_name".to_owned(),
+                            value: "kipuka EST Server".to_owned(),
+                        },
+                        ProfileAttribute {
+                            name: "requestor_email".to_owned(),
+                            value: String::new(),
+                        },
+                        ProfileAttribute {
+                            name: "requestor_phone".to_owned(),
+                            value: String::new(),
+                        },
+                    ],
+                },
+            ],
+        };
+
+        let resp = self.post_json("/ca/rest/certrequests", &request).await?;
+        let resp_body: serde_json::Value = Self::json_response(resp).await?;
+
+        // The server-keygen response includes the PKCS#12 in the output
+        let entries = resp_body.get("entries")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| DogtagError::ParseError("No entries in server-keygen response".into()))?;
+
+        let entry = entries.first()
+            .ok_or_else(|| DogtagError::ParseError("Empty entries in server-keygen response".into()))?;
+
+        let status = entry.get("requestStatus")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+
+        if status != "complete" {
+            let error_msg = entry.get("errorMessage")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown error");
+            return Err(DogtagError::EnrollmentRejected {
+                reason: format!("status={status}: {error_msg}"),
+            });
+        }
+
+        // Extract cert ID and fetch the certificate
+        let cert_id_str = entry.get("certId")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_owned())
+            .or_else(|| {
+                entry.get("certURL")
+                    .and_then(|u| u.as_str())
+                    .and_then(|u| u.rsplit('/').next())
+                    .map(|s| s.to_owned())
+            })
+            .unwrap_or_default();
+        let cert_id = cert_id_str.as_str();
+
+        let certificate_der = if !cert_id.is_empty() {
+            Some(self.fetch_cert_der(cert_id).await?)
+        } else {
+            None
+        };
+
+        // Extract PKCS#12 data from the output
+        let p12_b64 = entry.get("pkcs12")
+            .or_else(|| resp_body.get("pkcs12"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_owned());
+
+        let request_id = entry.get("requestID")
+            .or_else(|| entry.get("requestId"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned();
+
+        Ok(ServerKeygenResult {
+            request_id,
+            certificate_der,
+            pkcs12_b64: p12_b64,
+        })
+    }
+
     /// Poll the status of an enrollment request.
     ///
     /// Sends `GET /ca/rest/certrequests/{request_id}` to check whether
@@ -384,21 +536,61 @@ impl DogtagClient {
     /// Fetch DER-encoded certificate by serial/cert ID.
     async fn fetch_cert_der(&self, cert_id: &str) -> DogtagResult<Vec<u8>> {
         let resp = self.get(&format!("/ca/rest/certs/{cert_id}")).await?;
-        let cert_data: CertDataResponse = Self::json_response(resp).await?;
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
 
-        let encoded = cert_data
-            .encoded
-            .ok_or_else(|| DogtagError::ParseError("Missing certificate data".into()))?;
+        if !status.is_success() {
+            return Err(DogtagError::ApiError {
+                status: status.as_u16(),
+                body,
+            });
+        }
 
-        // Strip PEM headers if present, then decode base64.
-        let b64: String = encoded
+        // Try JSON first (normal path).
+        if let Ok(cert_data) = serde_json::from_str::<CertDataResponse>(&body) {
+            if let Some(ref encoded) = cert_data.encoded {
+                return Self::decode_pem_to_der(encoded);
+            }
+        }
+
+        // Fallback: raw PEM certificate in the response body.
+        if body.contains("-----BEGIN CERTIFICATE-----") {
+            tracing::debug!("response is raw PEM, extracting directly");
+            return Self::decode_pem_to_der(&body);
+        }
+
+        // Fallback: XML response with <Encoded> or <encoded> tag.
+        if let Some(pem) = Self::extract_cert_from_xml(&body) {
+            tracing::debug!("extracted certificate from XML response");
+            return Self::decode_pem_to_der(&pem);
+        }
+
+        Err(DogtagError::ParseError(format!(
+            "cannot extract certificate from response; body: {}",
+            &body[..body.len().min(500)]
+        )))
+    }
+
+    fn decode_pem_to_der(pem: &str) -> DogtagResult<Vec<u8>> {
+        let b64: String = pem
             .lines()
             .filter(|l| !l.starts_with("-----"))
             .collect();
-
         use base64::Engine;
         base64::engine::general_purpose::STANDARD
             .decode(&b64)
-            .map_err(|e| DogtagError::ParseError(format!("Invalid base64 in certificate: {e}")))
+            .map_err(|e| DogtagError::ParseError(format!("invalid base64 in certificate: {e}")))
+    }
+
+    fn extract_cert_from_xml(xml: &str) -> Option<String> {
+        for (open, close) in [("<Encoded>", "</Encoded>"), ("<encoded>", "</encoded>")] {
+            if let Some(start) = xml.find(open) {
+                let start = start + open.len();
+                if let Some(end) = xml[start..].find(close) {
+                    return Some(xml[start..start + end].to_owned());
+                }
+            }
+        }
+        None
     }
 }

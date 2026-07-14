@@ -195,15 +195,33 @@ impl DogtagClient {
         resp: reqwest::Response,
     ) -> DogtagResult<T> {
         let status = resp.status();
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("unknown")
+            .to_owned();
+
+        let body = resp.text().await.unwrap_or_default();
+
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
             return Err(DogtagError::ApiError {
                 status: status.as_u16(),
                 body,
             });
         }
-        resp.json::<T>()
-            .await
-            .map_err(|e| DogtagError::ParseError(e.to_string()))
+
+        tracing::debug!(
+            body_len = body.len(),
+            content_type = %content_type,
+            "parsing Dogtag response"
+        );
+
+        serde_json::from_str(&body).map_err(|e| {
+            let preview = &body[..body.len().min(500)];
+            DogtagError::ParseError(format!(
+                "JSON parse failed (content-type: {content_type}): {e}; body: {preview}"
+            ))
+        })
     }
 }

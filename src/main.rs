@@ -128,6 +128,12 @@ async fn run() -> Result<(), String> {
         if cert_chain_der.is_empty() {
             return Err(format!("no certificates found in {}", ca_cfg.cert_file));
         }
+        tracing::info!(
+            ca_id = %ca_cfg.id,
+            cert_count = cert_chain_der.len(),
+            cert_file = %ca_cfg.cert_file,
+            "loaded CA certificate chain"
+        );
         let cert_der = cert_chain_der[0].clone();
 
         let ca_state = Arc::new(CaState {
