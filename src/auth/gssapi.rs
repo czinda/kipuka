@@ -124,7 +124,7 @@ pub async fn try_extract_gssapi(
     let require_crypto = app.gssapi_require_crypto;
     let result = tokio::task::spawn_blocking(move || {
         negotiate_accept(
-            &gss_cred,
+            gss_cred.as_ref(),
             &token_owned,
             binding_owned.as_deref(),
             require_crypto,
