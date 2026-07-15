@@ -272,14 +272,17 @@ fn verify_gssapi_token(
     use libgssapi::context::{SecurityContext, ServerCtx};
     use libgssapi::credential::Cred;
 
-    // Downcast to the actual Cred type stored at startup.
+    // Downcast to the Cred stored inside Arc<dyn Any>.
+    // main.rs does Arc::new(cred) which coerces Arc<Cred> → Arc<dyn Any>;
+    // .as_ref() on Arc<dyn Any> yields &dyn Any whose inner type is Cred.
     let gss_cred = cred.downcast_ref::<Cred>().ok_or_else(|| {
-        NegotiateError::Failed(
-            "internal error: GSS credential has wrong type (expected libgssapi::Cred)".into(),
-        )
+        NegotiateError::Failed(format!(
+            "internal error: GSS credential has wrong type (expected libgssapi::Cred, got TypeId {:?})",
+            cred.type_id(),
+        ))
     })?;
 
-    // Clone the credential (reference-counted GSS handle) for this context.
+    // Clone the credential (Cred is Arc<CredInner> — cheap ref count bump).
     let cred_clone = gss_cred.clone();
 
     let mut ctx = ServerCtx::new(Some(cred_clone));
