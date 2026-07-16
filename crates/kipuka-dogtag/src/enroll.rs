@@ -67,7 +67,6 @@ struct ProfileInput {
 
 #[derive(Serialize)]
 struct ProfileAttribute {
-    #[serde(rename = "Name")]
     name: String,
     #[serde(rename = "Value")]
     value: String,

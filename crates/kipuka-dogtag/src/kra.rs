@@ -29,7 +29,6 @@ pub struct KeyGenResult {
 /// Dogtag RESTMessage attribute entry.
 #[derive(Serialize)]
 struct RestAttribute {
-    #[serde(rename = "Name")]
     name: String,
     #[serde(rename = "Value")]
     value: String,
