@@ -228,26 +228,26 @@ pub async fn post_fullcmc(
     })?;
 
     // Step 3: Extract control attributes for audit and response construction.
-    let transaction_id = extract_transaction_id(&pki_data.control_sequence);
-    let sender_nonce = extract_sender_nonce(&pki_data.control_sequence);
+    let transaction_id = extract_transaction_id(&pki_data.controls);
+    let sender_nonce = extract_sender_nonce(&pki_data.controls);
 
     let control_names: Vec<String> = pki_data
-        .control_sequence
+        .controls
         .iter()
-        .map(|c| format!("{:?}", c.attr_type))
+        .map(|c| format!("{:?}", c.oid))
         .collect();
 
     tracing::info!(
         ca_id = %ca_id,
         identity = %identity,
         transaction_id = ?transaction_id,
-        num_requests = pki_data.req_sequence.len(),
-        num_controls = pki_data.control_sequence.len(),
+        num_requests = pki_data.certification_requests.len(),
+        num_controls = pki_data.controls.len(),
         controls = ?control_names,
         "CMC PKIData parsed"
     );
 
-    if pki_data.req_sequence.is_empty() {
+    if pki_data.certification_requests.is_empty() {
         return Err(KipukaError::BadRequest(
             "CMC request contains no certification requests".into(),
         ));
@@ -277,33 +277,12 @@ pub async fn post_fullcmc(
     let mut body_part_ids: Vec<u32> = Vec::new();
     let mut failed_body_part_ids: Vec<u32> = Vec::new();
 
-    // Each entry in req_sequence is a TaggedRequest CHOICE encoded as RawDer.
-    // Outer context tag: [0] = PKCS#10 (TaggedCertificationRequest), [1] = CRMF.
-    for (req_idx, req_raw) in pki_data.req_sequence.iter().enumerate() {
-        let req_bytes = req_raw.0;
-        // Peek at the outer tag to determine request type
-        let outer_tag = req_bytes.first().copied().unwrap_or(0);
-        let is_pkcs10 = (outer_tag & 0x1F) == 0; // [0] EXPLICIT
+    for entry in &pki_data.certification_requests {
+        let body_part_id = entry.body_part_id;
 
-        if is_pkcs10 {
-            // Parse TaggedCertificationRequest from the [0] EXPLICIT wrapper
-            let inner = synta::Decoder::new(req_bytes, synta::Encoding::Der)
-                .decode::<synta_cmc::cmc_types::TaggedCertificationRequest<'_>>();
-            let (body_part_id, csr_der) = match inner {
-                Ok(tcr) => {
-                    let bpid = tcr.body_part_id.as_u32().unwrap_or(req_idx as u32);
-                    (bpid, tcr.certification_request.0.to_vec())
-                }
-                Err(e) => {
-                    let body_part_id = req_idx as u32;
-                    tracing::error!(req_idx, error = %e, "CMC: failed to parse TaggedCertificationRequest");
-                    failed_body_part_ids.push(body_part_id);
-                    continue;
-                }
-            };
-
+        if entry.request_type == synta_cmc::parser::RequestType::Pkcs10 {
             match crate::ca::issue::issue_certificate(
-                &csr_der,
+                &entry.der,
                 &profile,
                 &ca.cert_der,
                 resolved_key.as_signing_key(),
@@ -370,13 +349,11 @@ pub async fn post_fullcmc(
                 }
             }
         } else {
-            // [1] = CRMF, or anything else — no parsed bodyPartID available, fall back to index
-            let body_part_id = req_idx as u32;
-            tracing::warn!(body_part_id, outer_tag, "CMC: non-PKCS#10 requests not yet supported");
+            tracing::warn!(body_part_id, request_type = ?entry.request_type, "CMC: non-PKCS#10 requests not yet supported");
             failed_body_part_ids.push(body_part_id);
             state.record_audit_event(
                 "fullcmc_request_failed",
-                &format!("ca_id={ca_id}, identity={identity}, body_part_id={body_part_id}, reason=unsupported tag {outer_tag}"),
+                &format!("ca_id={ca_id}, identity={identity}, body_part_id={body_part_id}, reason=unsupported request type {:?}", entry.request_type),
             ).await;
         }
     }
@@ -455,7 +432,7 @@ pub async fn post_fullcmc(
             &format!(
                 "ca_id={ca_id}, identity={identity}, transaction_id={:?}, requests={}, issued={}, failed={}",
                 transaction_id,
-                pki_data.req_sequence.len(),
+                pki_data.certification_requests.len(),
                 issued_certs.len(),
                 failed_body_part_ids.len()
             ),
