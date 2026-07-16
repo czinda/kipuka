@@ -24,6 +24,7 @@ pub mod client;
 pub mod cmc;
 pub mod config;
 pub mod enroll;
+pub mod kem;
 pub mod kra;
 pub mod pool;
 pub mod profiles;
@@ -32,7 +33,7 @@ pub use certs::{CertFilter, CertInfo, RevocationReason};
 pub use client::DogtagClient;
 pub use cmc::CmcClient;
 pub use config::DogtagConfig;
-pub use enroll::{EnrollResult, EnrollStatus};
+pub use enroll::{EnrollResult, EnrollStatus, ServerKeygenResult};
 pub use kra::KraClient;
 pub use pool::DogtagPool;
 pub use profiles::{ProfileConstraints, ProfileDetail, ProfileInfo};
@@ -96,3 +97,14 @@ pub enum DogtagError {
 
 /// Result type alias for Dogtag operations.
 pub type DogtagResult<T> = Result<T, DogtagError>;
+
+pub(crate) fn truncate_str(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}

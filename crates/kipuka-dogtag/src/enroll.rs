@@ -232,7 +232,7 @@ impl DogtagClient {
                         let body = resp.text().await.unwrap_or_default();
                         tracing::error!(
                             status = resp_status.as_u16(),
-                            body_preview = %&body[..body.len().min(200)],
+                            body_preview = %crate::truncate_str(&body, 200),
                             "GET review form failed"
                         );
                         self.post_json(
@@ -275,7 +275,7 @@ impl DogtagClient {
                         let body = resp.text().await.unwrap_or_default();
                         tracing::error!(
                             status = resp_status.as_u16(),
-                            body_preview = %&body[..body.len().min(300)],
+                            body_preview = %crate::truncate_str(&body, 300),
                             "approve POST returned error"
                         );
                         (EnrollStatus::Pending, None)
@@ -293,7 +293,7 @@ impl DogtagClient {
                             }
                         };
                         let status_str = approved.get("requestStatus")
-                            .or_else(|| approved.get("requestStatus"))
+                            .or_else(|| approved.get("RequestStatus"))
                             .and_then(|v| v.as_str())
                             .unwrap_or("unknown");
                         let cert_id = approved.get("certId")
@@ -566,7 +566,7 @@ impl DogtagClient {
 
         Err(DogtagError::ParseError(format!(
             "cannot extract certificate from response; body: {}",
-            &body[..body.len().min(500)]
+            crate::truncate_str(&body, 500)
         )))
     }
 

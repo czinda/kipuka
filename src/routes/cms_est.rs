@@ -468,18 +468,18 @@ pub async fn post_cms_fullcmc(
     let pki_data = synta_cmc::parser::parse_pki_data(&pki_data_der)
         .map_err(|e| KipukaError::BadRequest(format!("CMC PKIData parse failed: {e}")))?;
 
-    let transaction_id = synta_cmc::controls::extract_transaction_id(&pki_data.controls);
-    let sender_nonce = synta_cmc::controls::extract_sender_nonce(&pki_data.controls);
+    let transaction_id = synta_cmc::controls::extract_transaction_id(&pki_data.control_sequence);
+    let sender_nonce = synta_cmc::controls::extract_sender_nonce(&pki_data.control_sequence);
 
     tracing::info!(
         ca_id = %ca_id,
         identity = %identity,
         transaction_id = ?transaction_id,
-        num_requests = pki_data.certification_requests.len(),
+        num_requests = pki_data.req_sequence.len(),
         "CMS fullcmc: PKIData parsed"
     );
 
-    if pki_data.certification_requests.is_empty() {
+    if pki_data.req_sequence.is_empty() {
         return Err(KipukaError::BadRequest(
             "CMC request contains no certification requests".into(),
         ));
@@ -490,12 +490,25 @@ pub async fn post_cms_fullcmc(
     let mut body_part_ids: Vec<u32> = Vec::new();
     let mut failed_body_part_ids: Vec<u32> = Vec::new();
 
-    for (req_idx, entry) in pki_data.certification_requests.iter().enumerate() {
-        let body_part_id = entry.body_part_id;
-        let is_pkcs10 = entry.request_type == synta_cmc::parser::RequestType::Pkcs10;
+    for (req_idx, req_raw) in pki_data.req_sequence.iter().enumerate() {
+        let req_bytes = req_raw.0;
+        let outer_tag = req_bytes.first().copied().unwrap_or(0);
+        let is_pkcs10 = (outer_tag & 0x1F) == 0; // [0] EXPLICIT = PKCS#10
 
         if is_pkcs10 {
-            let csr_der = entry.der.clone();
+            let inner = synta::Decoder::new(req_bytes, synta::Encoding::Der)
+                .decode::<synta_cmc::cmc_types::TaggedCertificationRequest<'_>>();
+            let (body_part_id, csr_der) = match inner {
+                Ok(tcr) => {
+                    let bpid = tcr.body_part_id.as_u32().unwrap_or(req_idx as u32);
+                    (bpid, tcr.certification_request.0.to_vec())
+                }
+                Err(e) => {
+                    tracing::error!(req_idx, error = %e, "CMS fullcmc: failed to parse TaggedCertificationRequest");
+                    failed_body_part_ids.push(req_idx as u32);
+                    continue;
+                }
+            };
             match issue_certificate_from_csr(&state, ca_id, &csr_der).await {
                 Ok(cert) => {
                     issued_certs.push(cert);
@@ -507,6 +520,7 @@ pub async fn post_cms_fullcmc(
                 }
             }
         } else {
+            let body_part_id = req_idx as u32;
             tracing::warn!(body_part_id, "CMS fullcmc: unsupported request type (only PKCS#10 supported)");
             failed_body_part_ids.push(body_part_id);
         }

@@ -116,6 +116,19 @@ pub struct DogtagConfig {
     /// SignatureScheme support).
     #[serde(default)]
     pub skip_mtls: bool,
+
+    /// Accept invalid TLS server certificates (self-signed, expired, wrong hostname).
+    ///
+    /// **WARNING**: Setting this to `true` disables TLS certificate validation,
+    /// allowing MITM attacks. Use only in development/test environments with
+    /// self-signed Dogtag certificates. Production deployments should set this
+    /// to `false` and configure `ca_cert_file` with the proper root CA.
+    #[serde(default = "default_accept_invalid_certs")]
+    pub accept_invalid_certs: bool,
+}
+
+fn default_accept_invalid_certs() -> bool {
+    true
 }
 
 fn default_timeout() -> u64 {

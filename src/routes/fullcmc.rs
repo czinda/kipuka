@@ -20,7 +20,7 @@ use axum::response::{IntoResponse, Response};
 
 use synta_cmc::builder::PKIResponseBuilder;
 use synta_cmc::controls::{extract_sender_nonce, extract_transaction_id};
-use synta_cmc::parser::{self, RequestType};
+use synta_cmc::parser;
 use synta_cmc::status::CMCFailInfo;
 
 use crate::auth::{AuthMethod, EstAuth};
@@ -228,26 +228,26 @@ pub async fn post_fullcmc(
     })?;
 
     // Step 3: Extract control attributes for audit and response construction.
-    let transaction_id = extract_transaction_id(&pki_data.controls);
-    let sender_nonce = extract_sender_nonce(&pki_data.controls);
+    let transaction_id = extract_transaction_id(&pki_data.control_sequence);
+    let sender_nonce = extract_sender_nonce(&pki_data.control_sequence);
 
     let control_names: Vec<String> = pki_data
-        .controls
+        .control_sequence
         .iter()
-        .map(|c| format!("{:?}", c.oid))
+        .map(|c| format!("{:?}", c.attr_type))
         .collect();
 
     tracing::info!(
         ca_id = %ca_id,
         identity = %identity,
         transaction_id = ?transaction_id,
-        num_requests = pki_data.certification_requests.len(),
-        num_controls = pki_data.controls.len(),
+        num_requests = pki_data.req_sequence.len(),
+        num_controls = pki_data.control_sequence.len(),
         controls = ?control_names,
         "CMC PKIData parsed"
     );
 
-    if pki_data.certification_requests.is_empty() {
+    if pki_data.req_sequence.is_empty() {
         return Err(KipukaError::BadRequest(
             "CMC request contains no certification requests".into(),
         ));
@@ -277,110 +277,107 @@ pub async fn post_fullcmc(
     let mut body_part_ids: Vec<u32> = Vec::new();
     let mut failed_body_part_ids: Vec<u32> = Vec::new();
 
-    for req_entry in &pki_data.certification_requests {
-        match req_entry.request_type {
-            RequestType::Pkcs10 => {
-                match crate::ca::issue::issue_certificate(
-                    &req_entry.der,
-                    &profile,
-                    &ca.cert_der,
-                    resolved_key.as_signing_key(),
-                    &ca.hash_algorithm,
-                    ca.ocsp_url.as_deref(),
-                    ca.crl_url.as_deref(),
-                ) {
-                    Ok(result) => {
-                        tracing::info!(
-                            body_part_id = req_entry.body_part_id,
-                            serial = %result.serial_number,
-                            subject = %result.subject_dn,
-                            "CMC: certificate issued for PKCS#10 request"
-                        );
+    // Each entry in req_sequence is a TaggedRequest CHOICE encoded as RawDer.
+    // Outer context tag: [0] = PKCS#10 (TaggedCertificationRequest), [1] = CRMF.
+    for (req_idx, req_raw) in pki_data.req_sequence.iter().enumerate() {
+        let req_bytes = req_raw.0;
+        // Peek at the outer tag to determine request type
+        let outer_tag = req_bytes.first().copied().unwrap_or(0);
+        let is_pkcs10 = (outer_tag & 0x1F) == 0; // [0] EXPLICIT
 
-                        // Store the issued certificate in the database.
-                        let serial = &result.serial_number;
-                        let subject_dn = &result.subject_dn;
-                        let issuer_dn = match synta_certificate::Certificate::from_der(&ca.cert_der)
-                        {
-                            Ok(c) => synta_certificate::format_dn(c.tbs_certificate.subject.0),
-                            Err(e) => {
-                                tracing::warn!(error = %e, "failed to parse CA certificate for issuer DN");
-                                String::from("unknown")
-                            }
-                        };
-                        let not_before_str =
-                            result.not_before.format("%Y-%m-%dT%H:%M:%SZ").to_string();
-                        let not_after_str =
-                            result.not_after.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        if is_pkcs10 {
+            // Parse TaggedCertificationRequest from the [0] EXPLICIT wrapper
+            let inner = synta::Decoder::new(req_bytes, synta::Encoding::Der)
+                .decode::<synta_cmc::cmc_types::TaggedCertificationRequest<'_>>();
+            let (body_part_id, csr_der) = match inner {
+                Ok(tcr) => {
+                    let bpid = tcr.body_part_id.as_u32().unwrap_or(req_idx as u32);
+                    (bpid, tcr.certification_request.0.to_vec())
+                }
+                Err(e) => {
+                    let body_part_id = req_idx as u32;
+                    tracing::error!(req_idx, error = %e, "CMC: failed to parse TaggedCertificationRequest");
+                    failed_body_part_ids.push(body_part_id);
+                    continue;
+                }
+            };
 
-                        match sqlx::query(crate::db::pg_sql(
-                            "INSERT INTO certificates (serial, subject_dn, issuer_dn, not_before, not_after, der_encoded, ca_id, profile, status) \
-                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')",
-                        ))
-                        .bind(serial)
-                        .bind(subject_dn)
-                        .bind(&issuer_dn)
-                        .bind(&not_before_str)
-                        .bind(&not_after_str)
-                        .bind(&result.certificate_der)
-                        .bind(ca_id)
-                        .bind(&profile.name)
-                        .execute(&state.db)
-                        .await
-                        {
-                            Ok(_) => {
-                                issued_certs.push(result.certificate_der);
-                                body_part_ids.push(req_entry.body_part_id);
-                            }
-                            Err(e) => {
-                                tracing::error!(error = %e, serial = %serial, "failed to store CMC-issued certificate in DB");
-                                failed_body_part_ids.push(req_entry.body_part_id);
-                                state.record_audit_event(
-                                    "fullcmc_db_error",
-                                    &format!("ca_id={ca_id}, serial={serial}, error={e}"),
-                                ).await;
-                            }
+            match crate::ca::issue::issue_certificate(
+                &csr_der,
+                &profile,
+                &ca.cert_der,
+                resolved_key.as_signing_key(),
+                &ca.hash_algorithm,
+                ca.ocsp_url.as_deref(),
+                ca.crl_url.as_deref(),
+            ) {
+                Ok(result) => {
+                    tracing::info!(
+                        body_part_id,
+                        serial = %result.serial_number,
+                        subject = %result.subject_dn,
+                        "CMC: certificate issued for PKCS#10 request"
+                    );
+
+                    let serial = &result.serial_number;
+                    let subject_dn = &result.subject_dn;
+                    let issuer_dn = match synta_certificate::Certificate::from_der(&ca.cert_der) {
+                        Ok(c) => synta_certificate::format_dn(c.tbs_certificate.subject.0),
+                        Err(e) => {
+                            tracing::warn!(error = %e, "failed to parse CA certificate for issuer DN");
+                            String::from("unknown")
+                        }
+                    };
+                    let not_before_str = result.not_before.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+                    let not_after_str = result.not_after.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+
+                    match sqlx::query(crate::db::pg_sql(
+                        "INSERT INTO certificates (serial, subject_dn, issuer_dn, not_before, not_after, der_encoded, ca_id, profile, status) \
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')",
+                    ))
+                    .bind(serial)
+                    .bind(subject_dn)
+                    .bind(&issuer_dn)
+                    .bind(&not_before_str)
+                    .bind(&not_after_str)
+                    .bind(&result.certificate_der)
+                    .bind(ca_id)
+                    .bind(&profile.name)
+                    .execute(&state.db)
+                    .await
+                    {
+                        Ok(_) => {
+                            issued_certs.push(result.certificate_der);
+                            body_part_ids.push(body_part_id);
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, serial = %serial, "failed to store CMC-issued certificate in DB");
+                            failed_body_part_ids.push(body_part_id);
+                            state.record_audit_event(
+                                "fullcmc_db_error",
+                                &format!("ca_id={ca_id}, serial={serial}, error={e}"),
+                            ).await;
                         }
                     }
-                    Err(e) => {
-                        tracing::error!(
-                            body_part_id = req_entry.body_part_id,
-                            error = %e,
-                            "CMC: certificate issuance failed for PKCS#10 request"
-                        );
-                        failed_body_part_ids.push(req_entry.body_part_id);
-
-                        state
-                            .record_audit_event(
-                                "fullcmc_request_failed",
-                                &format!(
-                                    "ca_id={ca_id}, identity={identity}, body_part_id={}, error={e}",
-                                    req_entry.body_part_id
-                                ),
-                            )
-                            .await;
-                    }
+                }
+                Err(e) => {
+                    tracing::error!(body_part_id, error = %e, "CMC: certificate issuance failed");
+                    failed_body_part_ids.push(body_part_id);
+                    state.record_audit_event(
+                        "fullcmc_request_failed",
+                        &format!("ca_id={ca_id}, identity={identity}, body_part_id={body_part_id}, error={e}"),
+                    ).await;
                 }
             }
-            RequestType::Crmf => {
-                tracing::warn!(
-                    body_part_id = req_entry.body_part_id,
-                    "CMC: CRMF requests not yet supported"
-                );
-                failed_body_part_ids.push(req_entry.body_part_id);
-                state.record_audit_event(
-                    "fullcmc_request_failed",
-                    &format!("ca_id={ca_id}, identity={identity}, body_part_id={}, reason=CRMF unsupported", req_entry.body_part_id),
-                ).await;
-            }
-            RequestType::Other(ref oid) => {
-                tracing::warn!(body_part_id = req_entry.body_part_id, oid = ?oid, "CMC: unsupported request type");
-                failed_body_part_ids.push(req_entry.body_part_id);
-                state.record_audit_event(
-                    "fullcmc_request_failed",
-                    &format!("ca_id={ca_id}, identity={identity}, body_part_id={}, reason=unsupported type {:?}", req_entry.body_part_id, oid),
-                ).await;
-            }
+        } else {
+            // [1] = CRMF, or anything else — no parsed bodyPartID available, fall back to index
+            let body_part_id = req_idx as u32;
+            tracing::warn!(body_part_id, outer_tag, "CMC: non-PKCS#10 requests not yet supported");
+            failed_body_part_ids.push(body_part_id);
+            state.record_audit_event(
+                "fullcmc_request_failed",
+                &format!("ca_id={ca_id}, identity={identity}, body_part_id={body_part_id}, reason=unsupported tag {outer_tag}"),
+            ).await;
         }
     }
 
@@ -458,7 +455,7 @@ pub async fn post_fullcmc(
             &format!(
                 "ca_id={ca_id}, identity={identity}, transaction_id={:?}, requests={}, issued={}, failed={}",
                 transaction_id,
-                pki_data.certification_requests.len(),
+                pki_data.req_sequence.len(),
                 issued_certs.len(),
                 failed_body_part_ids.len()
             ),

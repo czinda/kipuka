@@ -187,13 +187,12 @@ pub async fn post_serverkeygen(
         let pkey = openssl::pkey::PKey::from_rsa(rsa_private)
             .map_err(|e| KipukaError::Ca(format!("PKey from RSA: {e}")))?;
 
-        // Extract subject from the template CSR (the client's original request).
-        let subject_name = {
-            let template = openssl::x509::X509Req::from_der(&csr_der)
-                .map_err(|e| KipukaError::BadRequest(format!("CSR template parse: {e}")))?;
-            template.subject_name().to_owned()
-                .map_err(|e| KipukaError::Ca(format!("CSR subject clone: {e}")))?
-        };
+        // Extract subject and extensions from the template CSR (the client's original request).
+        let template = openssl::x509::X509Req::from_der(&csr_der)
+            .map_err(|e| KipukaError::BadRequest(format!("CSR template parse: {e}")))?;
+        let subject_name = template.subject_name().to_owned()
+            .map_err(|e| KipukaError::Ca(format!("CSR subject clone: {e}")))?;
+        let template_extensions = template.extensions();
 
         let mut csr_builder = openssl::x509::X509ReqBuilder::new()
             .map_err(|e| KipukaError::Ca(format!("X509ReqBuilder: {e}")))?;
@@ -203,6 +202,13 @@ pub async fn post_serverkeygen(
             .map_err(|e| KipukaError::Ca(format!("CSR set_subject: {e}")))?;
         csr_builder.set_pubkey(&pkey)
             .map_err(|e| KipukaError::Ca(format!("CSR set_pubkey: {e}")))?;
+
+        // Copy extensions from the template CSR (SANs, Key Usage, EKUs).
+        if let Ok(exts) = template_extensions {
+            csr_builder.add_extensions(&exts)
+                .map_err(|e| KipukaError::Ca(format!("CSR add_extensions: {e}")))?;
+        }
+
         csr_builder.sign(&pkey, openssl::hash::MessageDigest::sha256())
             .map_err(|e| KipukaError::Ca(format!("CSR sign: {e}")))?;
 
@@ -470,69 +476,6 @@ fn detect_key_type_from_csr(csr_der: &[u8]) -> crate::ca::keygen::KeyType {
             KeyType::Rsa(2048)
         }
     }
-}
-
-fn wrap_sequence(content: &[u8]) -> Vec<u8> {
-    let mut out = vec![0x30]; // SEQUENCE tag
-    encode_der_length(content.len(), &mut out);
-    out.extend_from_slice(content);
-    out
-}
-
-fn wrap_octet_string(content: &[u8]) -> Vec<u8> {
-    let mut out = vec![0x04]; // OCTET STRING tag
-    encode_der_length(content.len(), &mut out);
-    out.extend_from_slice(content);
-    out
-}
-
-fn encode_der_length(len: usize, out: &mut Vec<u8>) {
-    if len < 0x80 {
-        out.push(len as u8);
-    } else if len < 0x100 {
-        out.push(0x81);
-        out.push(len as u8);
-    } else {
-        out.push(0x82);
-        out.push((len >> 8) as u8);
-        out.push(len as u8);
-    }
-}
-
-/// Build `PKIArchiveOptions` DER from KEM ciphertext and wrapped key.
-///
-/// Constructs: `PKIArchiveOptions ::= [0] EXPLICIT EncryptedKey`
-/// where `EncryptedKey ::= EncryptedValue { enc_symm_key, enc_value }`.
-///
-/// `enc_symm_key` carries the ML-KEM ciphertext (the encapsulated shared secret).
-/// `enc_value` carries the AES-KWP-wrapped private key.
-fn build_pki_archive_options_der(
-    kem_ciphertext: &[u8],
-    wrapped_key: &[u8],
-) -> Result<Vec<u8>, KipukaError> {
-    use synta_certificate::crmf_types::{EncryptedKey, EncryptedValue, PKIArchiveOptions};
-
-    let ct_bits = synta::BitStringRef::new(kem_ciphertext, 0)
-        .map_err(|e| KipukaError::Ca(format!("ciphertext BitString: {e}")))?;
-    let wk_bits = synta::BitStringRef::new(wrapped_key, 0)
-        .map_err(|e| KipukaError::Ca(format!("wrapped key BitString: {e}")))?;
-
-    let ev = EncryptedValue {
-        intended_alg: None,
-        symm_alg: None,
-        enc_symm_key: Some(ct_bits),
-        key_alg: None,
-        value_hint: None,
-        enc_value: wk_bits,
-    };
-
-    let archive_opts = PKIArchiveOptions::EncryptedPrivKey(
-        EncryptedKey::EncryptedValue(ev),
-    );
-
-    archive_opts
-        .to_der()
-        .map_err(|e| KipukaError::Ca(format!("PKIArchiveOptions DER encode failed: {e}")))
 }
 
 /// Build a `multipart/mixed` response body with the certificate and private key.

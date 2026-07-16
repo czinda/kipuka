@@ -12,6 +12,7 @@ description = "Dogtag PKI CA REST API client for kipuka EST server"
 # OpenSSL 3.x provider API (engine API removed in openssl 0.10.80+).
 reqwest = { version = "0.12", default-features = false, features = ["native-tls", "json", "cookies"] }
 openssl = "0.10"
+openssl-sys = "0.9"
 serde.workspace = true
 serde_json.workspace = true
 base64.workspace = true
@@ -20,3 +21,4 @@ thiserror.workspace = true
 tracing.workspace = true
 tokio.workspace = true
 parking_lot.workspace = true
+zeroize = "1"

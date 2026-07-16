@@ -25,8 +25,13 @@ impl DogtagClient {
     pub fn new(config: &DogtagConfig) -> DogtagResult<Self> {
         let is_http = config.ca_url.scheme() == "http";
 
+        if config.accept_invalid_certs {
+            warn!("Dogtag client: TLS certificate verification DISABLED (accept_invalid_certs=true). \
+                   This is insecure and should only be used in development/testing environments.");
+        }
+
         let mut builder = Client::builder()
-            .danger_accept_invalid_certs(true)
+            .danger_accept_invalid_certs(config.accept_invalid_certs)
             .cookie_store(true)
             .timeout(Duration::from_secs(config.timeout_secs));
 
@@ -218,7 +223,7 @@ impl DogtagClient {
         );
 
         serde_json::from_str(&body).map_err(|e| {
-            let preview = &body[..body.len().min(500)];
+            let preview = crate::truncate_str(&body, 500);
             DogtagError::ParseError(format!(
                 "JSON parse failed (content-type: {content_type}): {e}; body: {preview}"
             ))

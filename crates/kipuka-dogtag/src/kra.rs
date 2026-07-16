@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::debug;
+use zeroize::{Zeroize, Zeroizing};
 
 use reqwest::{Certificate, Client, Identity};
 
@@ -109,8 +110,12 @@ impl KraClient {
 
         let mut builder = Client::builder()
             .cookie_store(true)
-            .danger_accept_invalid_certs(true)
+            .danger_accept_invalid_certs(config.accept_invalid_certs)
             .timeout(Duration::from_secs(config.timeout_secs));
+
+        if config.accept_invalid_certs {
+            tracing::warn!("KRA client: TLS certificate validation disabled (accept_invalid_certs=true)");
+        }
 
         if !is_http && !config.skip_mtls {
             let cert_pem = std::fs::read(&config.agent_cert_file)?;
@@ -260,32 +265,59 @@ impl KraClient {
             .map_err(|e| DogtagError::KraError(format!("Invalid base64 in recovered key: {e}")))
     }
 
-    /// Recover a private key via PKCS#12 passphrase path (no ML-KEM encapsulation needed).
+    /// Recover a private key via PKCS#12 passphrase path.
     ///
-    /// Three-call flow per Dogtag master `KeyClient.retrieveKeyByPKCS12()`:
-    /// 1. Submit recovery request (keyId + certificate, no passphrase)
+    /// Three-call flow per Dogtag `KeyClient.retrieveKeyByPKCS12()`:
+    /// 1. Submit recovery request (keyId + certificate)
     /// 2. Approve the recovery (mandatory, even with single agent)
     /// 3. Retrieve PKCS#12 (keyId + requestId + passphrase)
     ///
-    /// Returns the DER-encoded private key extracted from the PKCS#12.
+    /// Returns the PKCS#8 DER-encoded private key.
     pub async fn recover_key_p12(
         &self,
         key_id: &str,
         cert_der: &[u8],
     ) -> DogtagResult<Vec<u8>> {
-        use base64::Engine;
-        let cert_b64 = base64::engine::general_purpose::STANDARD.encode(cert_der);
+        self.recover_key_inner(key_id, Some(cert_der)).await
+    }
 
-        // Call 1: submit recovery (no passphrase — just keyId + certificate)
-        tracing::info!(key_id, "submitting PKCS#12 recovery request");
+    /// Recover a private key via PKCS#12 without requiring a certificate.
+    ///
+    /// Variant for freshly KRA-generated keys (SSKG flow: generate →
+    /// recover → build CSR → enroll). Returns PKCS#8 DER.
+    pub async fn recover_key_no_cert(
+        &self,
+        key_id: &str,
+    ) -> DogtagResult<Vec<u8>> {
+        self.recover_key_inner(key_id, None).await
+    }
+
+    /// Shared PKCS#12 recovery implementation.
+    ///
+    /// Sensitive intermediates (passphrase, PKCS#12 blob, random bytes)
+    /// are wrapped in `Zeroizing` to ensure cleanup on all exit paths.
+    async fn recover_key_inner(
+        &self,
+        key_id: &str,
+        cert_der: Option<&[u8]>,
+    ) -> DogtagResult<Vec<u8>> {
+        use base64::Engine;
+
+        self.login().await;
+
+        let mut attrs = vec![
+            RestAttribute { name: "keyId".into(), value: key_id.to_owned() },
+        ];
+        if let Some(cert) = cert_der {
+            let cert_b64 = base64::engine::general_purpose::STANDARD.encode(cert);
+            attrs.push(RestAttribute { name: "certificate".into(), value: cert_b64 });
+        }
+
+        // Call 1: submit recovery request
+        tracing::info!(key_id, has_cert = cert_der.is_some(), "submitting PKCS#12 recovery request");
         let submit_req = KeyGenRequest {
             class_name: "com.netscape.certsrv.key.KeyRecoveryRequest".to_owned(),
-            attributes: RestAttributes {
-                attribute: vec![
-                    RestAttribute { name: "keyId".into(), value: key_id.to_owned() },
-                    RestAttribute { name: "certificate".into(), value: cert_b64 },
-                ],
-            },
+            attributes: RestAttributes { attribute: attrs },
         };
         let resp = self.post_json("/kra/v2/agent/keyrequests", &submit_req).await?;
         let submit_body: serde_json::Value = Self::json_response(resp).await?;
@@ -296,125 +328,30 @@ impl KraClient {
             .to_owned();
         tracing::info!(request_id = %request_id, "recovery request submitted");
 
-        // Call 2: approve (mandatory — empty body, treat 2xx as success)
-        let approve_url = format!("/kra/v2/agent/keyrequests/{request_id}/approve");
-        tracing::info!(request_id = %request_id, url = %approve_url, base = %self.base_url, "approving recovery request");
-        let approve_resp = self
-            .post_json(&approve_url, &serde_json::json!({}))
-            .await?;
-        let approve_status = approve_resp.status();
-        let approve_body = approve_resp.text().await.unwrap_or_default();
-        tracing::info!(status = approve_status.as_u16(), body_len = approve_body.len(), "approve response");
-        if !approve_status.is_success() {
-            return Err(DogtagError::KraError(
-                format!("Recovery approve failed (HTTP {}): {}", approve_status.as_u16(), &approve_body[..approve_body.len().min(200)])
-            ));
-        }
-        tracing::info!("recovery approved");
-
-        // Call 3: retrieve PKCS#12 (fixed path: /kra/v2/agent/keys/retrieve, NOT /keys/{id}/retrieve)
-        let mut rand_bytes = [0u8; 16];
-        openssl::rand::rand_bytes(&mut rand_bytes)
-            .map_err(|e| DogtagError::KraError(format!("Failed to generate random passphrase: {e}")))?;
-        let passphrase: String = rand_bytes.iter().map(|b| format!("{b:02x}")).collect();
-
-        let retrieve_req = KeyGenRequest {
-            class_name: "com.netscape.certsrv.key.KeyRecoveryRequest".to_owned(),
-            attributes: RestAttributes {
-                attribute: vec![
-                    RestAttribute { name: "keyId".into(), value: key_id.to_owned() },
-                    RestAttribute { name: "requestId".into(), value: request_id.clone() },
-                    RestAttribute { name: "passphrase".into(), value: passphrase.clone() },
-                ],
-            },
-        };
-        tracing::info!(key_id = %key_id, request_id = %request_id, "retrieving PKCS#12 from /kra/v2/agent/keys/retrieve");
-        let resp = self.post_json("/kra/v2/agent/keys/retrieve", &retrieve_req).await?;
-        let resp_status = resp.status();
-        if resp_status == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(DogtagError::KraError(
-                "Recovery retrieve returned 401 — approve may not have completed".into()
-            ));
-        }
-        let retrieve: P12RecoverResponse = Self::json_response(resp).await?;
-
-        let p12_b64 = retrieve.p12_data()
-            .ok_or_else(|| DogtagError::KraError(
-                "No p12Data in recovery response (field name mismatch or key not found)".into()
-            ))?;
-
-        let p12_der = base64::engine::general_purpose::STANDARD
-            .decode(p12_b64)
-            .map_err(|e| DogtagError::KraError(format!("Invalid base64 in p12Data: {e}")))?;
-
-        // Extract private key from PKCS#12 using OpenSSL
-        let pkcs12 = openssl::pkcs12::Pkcs12::from_der(&p12_der)
-            .map_err(|e| DogtagError::KraError(format!("Failed to parse PKCS#12: {e}")))?;
-        let parsed = pkcs12.parse2(&passphrase)
-            .map_err(|e| DogtagError::KraError(format!("Failed to decrypt PKCS#12: {e}")))?;
-        let pkey = parsed.pkey
-            .ok_or_else(|| DogtagError::KraError("No private key in PKCS#12".into()))?;
-
-        let der = pkey.private_key_to_der()
-            .map_err(|e| DogtagError::KraError(format!("Failed to serialize private key: {e}")))?;
-
-        tracing::info!(key_len = der.len(), "private key recovered from PKCS#12");
-        Ok(der)
-    }
-
-    /// Recover a private key via PKCS#12 without requiring a certificate.
-    ///
-    /// Variant of [`recover_key_p12`] for freshly KRA-generated keys that
-    /// have no associated certificate yet (SSKG flow: generate → recover →
-    /// build CSR → enroll).  The submit step sends only `keyId`; the
-    /// `certificate` attribute is omitted.
-    ///
-    /// Returns the DER-encoded private key.
-    pub async fn recover_key_no_cert(
-        &self,
-        key_id: &str,
-    ) -> DogtagResult<Vec<u8>> {
-        use base64::Engine;
-
-        // Call 1: submit recovery (keyId only — no certificate for freshly generated keys)
-        tracing::info!(key_id, "submitting PKCS#12 recovery request (no cert)");
-        let submit_req = KeyGenRequest {
-            class_name: "com.netscape.certsrv.key.KeyRecoveryRequest".to_owned(),
-            attributes: RestAttributes {
-                attribute: vec![
-                    RestAttribute { name: "keyId".into(), value: key_id.to_owned() },
-                ],
-            },
-        };
-        let resp = self.post_json("/kra/v2/agent/keyrequests", &submit_req).await?;
-        let submit_body: serde_json::Value = Self::json_response(resp).await?;
-        let request_id = submit_body.get("requestInfo")
-            .and_then(|ri| ri.get("requestID").or_else(|| ri.get("requestId")))
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| DogtagError::KraError("No requestID in recovery submit response".into()))?
-            .to_owned();
-        tracing::info!(request_id = %request_id, "recovery request submitted (no cert)");
-
-        // Call 2: approve (mandatory — even for single-agent KRA)
+        // Call 2: approve (mandatory even for single-agent KRA)
         let approve_url = format!("/kra/v2/agent/keyrequests/{request_id}/approve");
         tracing::info!(request_id = %request_id, "approving recovery request");
         let approve_resp = self
             .post_json(&approve_url, &serde_json::json!({}))
             .await?;
         let approve_status = approve_resp.status();
-        let approve_body = approve_resp.text().await.unwrap_or_default();
-        tracing::info!(status = approve_status.as_u16(), body_len = approve_body.len(), "approve response");
         if !approve_status.is_success() {
+            let approve_body = approve_resp.text().await.unwrap_or_default();
             return Err(DogtagError::KraError(
-                format!("Recovery approve failed (HTTP {}): {}", approve_status.as_u16(), &approve_body[..approve_body.len().min(200)])
+                format!("Recovery approve failed (HTTP {}): {}",
+                    approve_status.as_u16(), crate::truncate_str(&approve_body, 200))
             ));
         }
+        tracing::info!("recovery approved");
 
-        // Call 3: retrieve PKCS#12
+        // Call 3: retrieve PKCS#12 with a random passphrase
         let mut rand_bytes = [0u8; 16];
         openssl::rand::rand_bytes(&mut rand_bytes)
             .map_err(|e| DogtagError::KraError(format!("Failed to generate random passphrase: {e}")))?;
-        let passphrase: String = rand_bytes.iter().map(|b| format!("{b:02x}")).collect();
+        let passphrase = Zeroizing::new(
+            rand_bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+        );
+        rand_bytes.zeroize();
 
         let retrieve_req = KeyGenRequest {
             class_name: "com.netscape.certsrv.key.KeyRecoveryRequest".to_owned(),
@@ -422,28 +359,27 @@ impl KraClient {
                 attribute: vec![
                     RestAttribute { name: "keyId".into(), value: key_id.to_owned() },
                     RestAttribute { name: "requestId".into(), value: request_id.clone() },
-                    RestAttribute { name: "passphrase".into(), value: passphrase.clone() },
+                    RestAttribute { name: "passphrase".into(), value: (*passphrase).clone() },
                 ],
             },
         };
         tracing::info!(key_id = %key_id, request_id = %request_id, "retrieving PKCS#12");
         let resp = self.post_json("/kra/v2/agent/keys/retrieve", &retrieve_req).await?;
-        let resp_status = resp.status();
-        if resp_status == reqwest::StatusCode::UNAUTHORIZED {
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
             return Err(DogtagError::KraError(
-                "Recovery retrieve returned 401 — approve may not have completed".into()
+                "Recovery retrieve returned 401 — session may have expired".into()
             ));
         }
         let retrieve: P12RecoverResponse = Self::json_response(resp).await?;
 
         let p12_b64 = retrieve.p12_data()
-            .ok_or_else(|| DogtagError::KraError(
-                "No p12Data in recovery response".into()
-            ))?;
+            .ok_or_else(|| DogtagError::KraError("No p12Data in recovery response".into()))?;
 
-        let p12_der = base64::engine::general_purpose::STANDARD
-            .decode(p12_b64)
-            .map_err(|e| DogtagError::KraError(format!("Invalid base64 in p12Data: {e}")))?;
+        let p12_der = Zeroizing::new(
+            base64::engine::general_purpose::STANDARD
+                .decode(p12_b64)
+                .map_err(|e| DogtagError::KraError(format!("Invalid base64 in p12Data: {e}")))?
+        );
 
         let pkcs12 = openssl::pkcs12::Pkcs12::from_der(&p12_der)
             .map_err(|e| DogtagError::KraError(format!("Failed to parse PKCS#12: {e}")))?;
@@ -452,10 +388,10 @@ impl KraClient {
         let pkey = parsed.pkey
             .ok_or_else(|| DogtagError::KraError("No private key in PKCS#12".into()))?;
 
-        let der = pkey.private_key_to_der()
-            .map_err(|e| DogtagError::KraError(format!("Failed to serialize private key: {e}")))?;
+        // Serialize as PKCS#8 DER (not PKCS#1) for RFC 7030 §4.4.2 compliance
+        let der = pkey_to_pkcs8_der(&pkey)?;
 
-        tracing::info!(key_len = der.len(), "private key recovered from PKCS#12 (no cert path)");
+        tracing::info!(key_len = der.len(), "private key recovered as PKCS#8 DER");
         Ok(der)
     }
 
@@ -573,10 +509,27 @@ impl KraClient {
         );
 
         serde_json::from_str(&body).map_err(|e| {
-            let preview = &body[..body.len().min(500)];
+            let preview = crate::truncate_str(&body, 500);
             DogtagError::ParseError(format!(
                 "JSON parse failed (content-type: {content_type}): {e}; body: {preview}"
             ))
         })
     }
+}
+
+fn pkey_to_pkcs8_der(pkey: &openssl::pkey::PKey<openssl::pkey::Private>) -> DogtagResult<Vec<u8>> {
+    use zeroize::Zeroizing;
+    let pem = Zeroizing::new(
+        pkey.private_key_to_pem_pkcs8()
+            .map_err(|e| DogtagError::KraError(format!("PKCS#8 conversion failed: {e}")))?
+    );
+    let pem_str = std::str::from_utf8(&pem)
+        .map_err(|e| DogtagError::KraError(format!("PKCS#8 PEM encoding error: {e}")))?;
+    let b64: String = pem_str.lines()
+        .filter(|l| !l.starts_with("-----"))
+        .collect();
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .decode(&b64)
+        .map_err(|e| DogtagError::KraError(format!("PKCS#8 base64 decode failed: {e}")))
 }
