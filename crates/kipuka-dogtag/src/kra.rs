@@ -27,10 +27,10 @@ pub struct KeyGenResult {
 }
 
 /// Dogtag RESTMessage attribute entry.
+/// KRA REST API uses lowercase name/value (unlike CA ProfileAttribute).
 #[derive(Serialize)]
 struct RestAttribute {
     name: String,
-    #[serde(rename = "Value")]
     value: String,
 }
 
