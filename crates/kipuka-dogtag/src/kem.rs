@@ -1,13 +1,15 @@
 //! ML-KEM encapsulation and AES Key Wrap for CRMF key archival.
 
 use crate::{DogtagError, DogtagResult};
+use zeroize::Zeroizing;
 
 /// Result of an ML-KEM encapsulation.
 pub struct KemEncapsulation {
     /// KEM ciphertext — sent to the KRA alongside the wrapped key.
     pub ciphertext: Vec<u8>,
     /// Shared secret — used as the AES-KWP key to wrap the private key.
-    pub shared_secret: Vec<u8>,
+    /// Wrapped in Zeroizing to clear from memory on drop.
+    pub shared_secret: Zeroizing<Vec<u8>>,
 }
 
 /// ML-KEM encapsulate against a transport cert's SPKI DER.
@@ -90,7 +92,7 @@ pub fn ml_kem_encapsulate(transport_pub_key_der: &[u8]) -> DogtagResult<KemEncap
 
         Ok(KemEncapsulation {
             ciphertext,
-            shared_secret,
+            shared_secret: Zeroizing::new(shared_secret),
         })
     }
 }

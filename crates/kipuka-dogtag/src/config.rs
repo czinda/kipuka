@@ -128,7 +128,7 @@ pub struct DogtagConfig {
 }
 
 fn default_accept_invalid_certs() -> bool {
-    true
+    false
 }
 
 fn default_timeout() -> u64 {

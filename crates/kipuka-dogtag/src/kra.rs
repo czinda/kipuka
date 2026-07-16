@@ -82,16 +82,6 @@ impl P12RecoverResponse {
     fn p12_data(&self) -> Option<&str> {
         self.fields.get("p12Data").and_then(|v| v.as_str())
     }
-    fn request_id(&self) -> Option<&str> {
-        self.fields.get("requestID")
-            .or_else(|| self.fields.get("requestId"))
-            .and_then(|v| v.as_str())
-    }
-    fn request_status(&self) -> Option<&str> {
-        self.fields.get("requestInfo")
-            .and_then(|ri| ri.get("requestStatus"))
-            .and_then(|v| v.as_str())
-    }
 }
 
 #[derive(Deserialize)]
@@ -518,18 +508,6 @@ impl KraClient {
 }
 
 fn pkey_to_pkcs8_der(pkey: &openssl::pkey::PKey<openssl::pkey::Private>) -> DogtagResult<Vec<u8>> {
-    use zeroize::Zeroizing;
-    let pem = Zeroizing::new(
-        pkey.private_key_to_pem_pkcs8()
-            .map_err(|e| DogtagError::KraError(format!("PKCS#8 conversion failed: {e}")))?
-    );
-    let pem_str = std::str::from_utf8(&pem)
-        .map_err(|e| DogtagError::KraError(format!("PKCS#8 PEM encoding error: {e}")))?;
-    let b64: String = pem_str.lines()
-        .filter(|l| !l.starts_with("-----"))
-        .collect();
-    use base64::Engine;
-    base64::engine::general_purpose::STANDARD
-        .decode(&b64)
-        .map_err(|e| DogtagError::KraError(format!("PKCS#8 base64 decode failed: {e}")))
+    pkey.private_key_to_der()
+        .map_err(|e| DogtagError::KraError(format!("PKCS#8 DER conversion failed: {e}")))
 }

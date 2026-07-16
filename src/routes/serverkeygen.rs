@@ -182,10 +182,8 @@ pub async fn post_serverkeygen(
         // Signature.initVerify(publicKey).
         tracing::info!("SSKG step 4: building self-signed CSR with KRA key pair");
 
-        let rsa_private = openssl::rsa::Rsa::private_key_from_der(&private_key_der)
-            .map_err(|e| KipukaError::Ca(format!("RSA private key parse: {e}")))?;
-        let pkey = openssl::pkey::PKey::from_rsa(rsa_private)
-            .map_err(|e| KipukaError::Ca(format!("PKey from RSA: {e}")))?;
+        let pkey = openssl::pkey::PKey::private_key_from_der(&private_key_der)
+            .map_err(|e| KipukaError::Ca(format!("PKCS#8 private key parse: {e}")))?;
 
         // Extract subject and extensions from the template CSR (the client's original request).
         let template = openssl::x509::X509Req::from_der(&csr_der)
@@ -204,9 +202,14 @@ pub async fn post_serverkeygen(
             .map_err(|e| KipukaError::Ca(format!("CSR set_pubkey: {e}")))?;
 
         // Copy extensions from the template CSR (SANs, Key Usage, EKUs).
-        if let Ok(exts) = template_extensions {
-            csr_builder.add_extensions(&exts)
-                .map_err(|e| KipukaError::Ca(format!("CSR add_extensions: {e}")))?;
+        match template_extensions {
+            Ok(exts) => {
+                csr_builder.add_extensions(&exts)
+                    .map_err(|e| KipukaError::Ca(format!("CSR add_extensions: {e}")))?;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "SSKG: failed to parse template CSR extensions — certificate will lack SANs/EKU from template");
+            }
         }
 
         csr_builder.sign(&pkey, openssl::hash::MessageDigest::sha256())
@@ -222,7 +225,7 @@ pub async fn post_serverkeygen(
 
         tracing::info!("SSKG step 4: CSR built and self-signed with KRA private key");
 
-        // ── Step 6: Enroll CSR via Dogtag CA ───────────────────────────────
+        // ── Step 5: Enroll CSR via Dogtag CA ───────────────────────────────
         let ca_client = dogtag_pool
             .get_client()
             .map_err(|e| KipukaError::ServiceUnavailable(format!("Dogtag CA unavailable: {e}")))?;
