@@ -106,21 +106,24 @@ pub async fn try_extract_mtls(parts: &Parts, _app: &Arc<AppState>) -> Option<Aut
 ///
 /// Returns `Ok(())` if subjects match, `Err` with a description if not.
 pub fn validate_pop_linking(auth: &AuthResult, csr_subject: &str) -> Result<(), String> {
-    // If the client certificate has SANs, use RFC 6125 identity matching
-    // against the CSR subject.  Per RFC 6125 §6.4.4, when SANs are
-    // present the subject CN is ignored.
+    // If the client certificate has SANs, use RFC 6125 identity matching.
+    // Per RFC 6125 §6.4.4, when SANs are present the subject CN is ignored.
+    //
+    // The csr_subject is a full DN (e.g., "CN=host.example.com, O=Org, C=US").
+    // Extract the CN for hostname-based SAN matching.
     if !auth.subject_alt_names.is_empty() {
+        let cn = extract_cn(csr_subject);
+        let match_target = cn.as_deref().unwrap_or(csr_subject);
+
         let matched = auth.subject_alt_names.iter().any(|san| {
-            // Try domain matching for DNS-like SANs.
-            super::name_match::matches_domain(san, csr_subject)
-                // Try email matching for email-like SANs.
-                || super::name_match::matches_email(san, csr_subject)
+            super::name_match::matches_domain(san, match_target)
+                || super::name_match::matches_email(san, match_target)
         });
         if matched {
             return Ok(());
         }
         return Err(format!(
-            "POP linking failed: no SAN in TLS cert matches CSR subject {csr_subject:?} \
+            "POP linking failed: no SAN in TLS cert matches CSR CN {match_target:?} \
              (RFC 6125 §6.4.4: SANs present, CN ignored)"
         ));
     }
@@ -144,6 +147,20 @@ pub fn validate_pop_linking(auth: &AuthResult, csr_subject: &str) -> Result<(), 
     }
 
     Ok(())
+}
+
+/// Extract the CN value from a formatted DN string.
+///
+/// Handles both `CN = value` (with spaces) and `CN=value` (without).
+/// Returns `None` if no CN is found.
+fn extract_cn(dn: &str) -> Option<String> {
+    for part in dn.split(',') {
+        let part = part.trim();
+        if let Some(val) = part.strip_prefix("CN=").or_else(|| part.strip_prefix("CN =")) {
+            return Some(val.trim().to_string());
+        }
+    }
+    None
 }
 
 /// Validate that the mTLS client certificate subject matches the CSR subject
