@@ -597,9 +597,22 @@ fn wrap_passphrase_for_transport(
     // RSA-wrap the session key with the transport cert's public key
     let rsa_pub = transport_pub.rsa()
         .map_err(|e| DogtagError::KraError(format!("Transport cert is not RSA: {e}")))?;
-    let mut wrapped_session_key = vec![0u8; rsa_pub.size() as usize];
-    let wrapped_len = rsa_pub.public_encrypt(&session_key, &mut wrapped_session_key, openssl::rsa::Padding::PKCS1)
-        .map_err(|e| DogtagError::KraError(format!("Failed to RSA-wrap session key: {e}")))?;
+    // Use RSA-OAEP (SHA-256) for wrapping — JSS's CryptoUtil.wrapUsingPublicKey
+    // uses KeyWrapAlgorithm.RSA_OAEP by default in Dogtag 11.x.
+    let transport_pkey = openssl::pkey::PKey::from_rsa(rsa_pub)
+        .map_err(|e| DogtagError::KraError(format!("Failed to create PKey from RSA: {e}")))?;
+    let mut encrypter = openssl::encrypt::Encrypter::new(&transport_pkey)
+        .map_err(|e| DogtagError::KraError(format!("Failed to create RSA encrypter: {e}")))?;
+    encrypter.set_rsa_padding(openssl::rsa::Padding::PKCS1_OAEP)
+        .map_err(|e| DogtagError::KraError(format!("Failed to set OAEP padding: {e}")))?;
+    encrypter.set_rsa_oaep_md(openssl::hash::MessageDigest::sha256())
+        .map_err(|e| DogtagError::KraError(format!("Failed to set OAEP hash: {e}")))?;
+
+    let buf_len = encrypter.encrypt_len(&session_key)
+        .map_err(|e| DogtagError::KraError(format!("Failed to get encrypt length: {e}")))?;
+    let mut wrapped_session_key = vec![0u8; buf_len];
+    let wrapped_len = encrypter.encrypt(&session_key, &mut wrapped_session_key)
+        .map_err(|e| DogtagError::KraError(format!("Failed to RSA-OAEP wrap session key: {e}")))?;
     wrapped_session_key.truncate(wrapped_len);
 
     let b64 = &base64::engine::general_purpose::STANDARD;
