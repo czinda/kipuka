@@ -447,9 +447,40 @@ impl DogtagClient {
         let entry = entries.first()
             .ok_or_else(|| DogtagError::ParseError("Empty entries in server-keygen response".into()))?;
 
-        let status = entry.get("requestStatus")
+        let mut status = entry.get("requestStatus")
             .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
+            .unwrap_or("unknown")
+            .to_owned();
+
+        let request_id = entry.get("requestID")
+            .or_else(|| entry.get("requestId"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned();
+
+        // Auto-approve pending SSKG requests (same pattern as enroll_certificate_with_type)
+        if status == "pending" && !request_id.is_empty() {
+            tracing::info!(request_id = %request_id, "SSKG: auto-approving pending request");
+            let review_url = format!("/ca/rest/agent/certrequests/{request_id}");
+            let review_body = match self.get(&review_url).await {
+                Ok(resp) if resp.status().is_success() => {
+                    Self::json_response::<serde_json::Value>(resp).await.unwrap_or_default()
+                }
+                _ => serde_json::json!({}),
+            };
+            let approve_url = format!("/ca/rest/agent/certrequests/{request_id}/approve");
+            let _ = self.post_json(&approve_url, &review_body).await;
+
+            // Re-check status after approval
+            let check_url = format!("/ca/rest/agent/certrequests/{request_id}");
+            if let Ok(resp) = self.get(&check_url).await {
+                if let Ok(info) = Self::json_response::<serde_json::Value>(resp).await {
+                    if let Some(s) = info.get("requestStatus").and_then(|v| v.as_str()) {
+                        status = s.to_owned();
+                    }
+                }
+            }
+        }
 
         if status != "complete" {
             let error_msg = entry.get("errorMessage")
