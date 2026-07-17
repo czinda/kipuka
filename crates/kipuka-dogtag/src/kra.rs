@@ -145,10 +145,25 @@ impl KraClient {
     }
 
     pub async fn login(&self) {
+        // Dogtag v2 uses GET for session login (v1 uses POST).
+        // Try GET first, fall back to POST for older KRAs.
+        let login_resp = self.get_json("/kra/v2/account/login").await;
+        match login_resp {
+            Ok(r) if r.status().is_success() => {
+                tracing::info!("KRA session login succeeded (v2 GET)");
+                return;
+            }
+            Ok(r) => {
+                tracing::debug!(status = r.status().as_u16(), "KRA v2 GET login returned non-200, trying v1 POST");
+            }
+            Err(e) => {
+                tracing::debug!(error = %e, "KRA v2 GET login failed, trying v1 POST");
+            }
+        }
         let login_resp = self.post_json("/kra/rest/account/login", &serde_json::json!({})).await;
         match login_resp {
             Ok(r) if r.status().is_success() => {
-                tracing::info!("KRA session login succeeded");
+                tracing::info!("KRA session login succeeded (v1 POST)");
             }
             Ok(r) => {
                 tracing::warn!(status = r.status().as_u16(), "KRA session login returned non-200 (continuing)");
