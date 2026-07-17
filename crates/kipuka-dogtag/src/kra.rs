@@ -298,35 +298,28 @@ impl KraClient {
         self.recover_key_inner(key_id, None).await
     }
 
-    /// Session-key-based key recovery.
+    /// Session-key-based key recovery for escrow recovery and PQ paths.
     ///
-    /// Uses the Dogtag double-envelope scheme:
-    /// 1. Generate AES-128 session key
-    /// 2. RSA-OAEP wrap session key with KRA transport cert
-    /// 3. Submit recovery request → approve → retrieve with wrapped session key
-    /// 4. KRA returns the private key AES-wrapped with our session key
-    /// 5. We AES-unwrap locally
-    ///
-    /// This avoids the PKCS#12 path which produces malformed DER in
-    /// Dogtag 11.x (issue #2658).
+    /// NOT for routine EST serverkeygen — use the CA's SSKG profile for that.
+    /// This path is for explicit escrow recovery of archived keys and the
+    /// PQ path where the SSKG profile machinery doesn't exist yet.
     async fn recover_key_inner(
         &self,
         key_id: &str,
         cert_der: Option<&[u8]>,
     ) -> DogtagResult<Vec<u8>> {
         use base64::Engine;
-        use openssl::symm::{Cipher, decrypt as sym_decrypt};
 
         self.login().await;
 
-        // Generate AES-128 session key and IV for payload wrapping
+        // 128-bit session key matches KRA default sessionKeyLength
         let mut session_key = Zeroizing::new(vec![0u8; 16]);
         openssl::rand::rand_bytes(&mut session_key)
             .map_err(|e| DogtagError::KraError(format!("Failed to generate session key: {e}")))?;
 
-        // RSA-OAEP wrap the session key with the transport cert
         let transport_der = self.get_transport_cert().await?;
-        let trans_wrapped_b64 = wrap_session_key_for_transport(&transport_der, &session_key)?;
+        // Default: RSA PKCS#1 v1.5. Only use OAEP if KRA has keyWrap.useOAEP=true.
+        let trans_wrapped_b64 = wrap_session_key(&transport_der, &session_key, false)?;
 
         // Call 1: submit recovery request
         let mut attrs = vec![
@@ -365,7 +358,7 @@ impl KraClient {
         }
         tracing::info!("recovery approved");
 
-        // Call 3: retrieve with session-key wrapping (no PKCS#12)
+        // Call 3: retrieve with session-key wrapping
         let retrieve_req = KeyGenRequest {
             class_name: "com.netscape.certsrv.key.KeyRecoveryRequest".to_owned(),
             attributes: RestAttributes {
@@ -373,7 +366,7 @@ impl KraClient {
                     RestAttribute { name: "keyId".into(), value: key_id.to_owned() },
                     RestAttribute { name: "requestId".into(), value: request_id.clone() },
                     RestAttribute { name: "transWrappedSessionKey".into(), value: trans_wrapped_b64 },
-                    RestAttribute { name: "payloadWrappingName".into(), value: "AES/CBC/PKCS5Padding".into() },
+                    RestAttribute { name: "payloadWrappingName".into(), value: "AES KeyWrap/Padding".into() },
                 ],
             },
         };
@@ -385,34 +378,36 @@ impl KraClient {
             ));
         }
 
-        let retrieve_body: serde_json::Value = Self::json_response(resp).await?;
+        let body: serde_json::Value = Self::json_response(resp).await?;
 
-        // The KRA returns the private key wrapped with our session key
-        let wrapped_b64 = retrieve_body.get("wrappedPrivateData")
+        let wrapped_b64 = body.get("wrappedPrivateData")
             .and_then(|v| v.as_str())
             .ok_or_else(|| DogtagError::KraError(
                 format!("No wrappedPrivateData in retrieve response: {}", crate::truncate_str(
-                    &retrieve_body.to_string(), 300))
+                    &body.to_string(), 300))
             ))?;
-
-        let wrapped_data = base64::engine::general_purpose::STANDARD
+        let wrapped = base64::engine::general_purpose::STANDARD
             .decode(wrapped_b64)
             .map_err(|e| DogtagError::KraError(format!("Invalid base64 in wrappedPrivateData: {e}")))?;
 
-        // Extract the IV from the response (or use the nonce from the wrapping params)
-        let nonce_b64 = retrieve_body.get("nonceData")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| DogtagError::KraError("No nonceData in retrieve response".into()))?;
-        let iv = base64::engine::general_purpose::STANDARD
-            .decode(nonce_b64)
-            .map_err(|e| DogtagError::KraError(format!("Invalid base64 in nonceData: {e}")))?;
+        // Branch on wrap mode: nonceData present → AES-CBC, absent → AES-KWP
+        let der = match body.get("nonceData").and_then(|v| v.as_str()) {
+            Some(nonce_b64) => {
+                let iv = base64::engine::general_purpose::STANDARD
+                    .decode(nonce_b64)
+                    .map_err(|e| DogtagError::KraError(format!("Invalid nonceData: {e}")))?;
+                Zeroizing::new(openssl::symm::decrypt(
+                    openssl::symm::Cipher::aes_128_cbc(),
+                    &session_key, Some(&iv), &wrapped,
+                ).map_err(|e| DogtagError::KraError(format!("AES-CBC unwrap failed: {e}")))?)
+            }
+            None => {
+                aes_kwp_unwrap(&session_key, &wrapped)?
+            }
+        };
 
-        // AES-128-CBC decrypt the wrapped private key with our session key
-        let der = sym_decrypt(Cipher::aes_128_cbc(), &session_key, Some(&iv), &wrapped_data)
-            .map_err(|e| DogtagError::KraError(format!("Failed to AES-unwrap private key: {e}")))?;
-
-        tracing::info!(key_len = der.len(), "private key recovered via session-key wrapping as PKCS#8 DER");
-        Ok(der)
+        tracing::info!(key_len = der.len(), "private key recovered (PKCS#8 DER)");
+        Ok(der.to_vec())
     }
 
     /// Fetch the KRA transport certificate as DER.
@@ -542,43 +537,100 @@ fn pkey_to_pkcs8_der(pkey: &openssl::pkey::PKey<openssl::pkey::Private>) -> Dogt
         .map_err(|e| DogtagError::KraError(format!("PKCS#8 DER conversion failed: {e}")))
 }
 
-/// Wrap a passphrase for transport to the KRA using the double-envelope scheme.
+/// RSA-wrap a session key with the KRA transport cert's public key.
 ///
-/// Dogtag's `KeyProcessor.validateRequest()` requires `transWrappedSessionKey`
-/// to be non-null — plaintext passphrases are rejected. The wrapping protocol:
-///
-/// 1. Generate a random AES-128 session key and 16-byte IV (nonce)
-/// 2. Encrypt the passphrase with the session key using AES-128-CBC with PKCS#5 padding
-/// 3. RSA-wrap the session key with the KRA transport cert's public key
-///
-/// Returns `(transWrappedSessionKey_b64, sessionWrappedPassphrase_b64, nonceData_b64)`.
-/// RSA-OAEP wrap a session key with the KRA transport cert's public key.
-///
-/// Returns the base64-encoded wrapped session key for `transWrappedSessionKey`.
-fn wrap_session_key_for_transport(
+/// `use_oaep`: false = PKCS#1 v1.5 (Dogtag default), true = RSA-OAEP
+/// (only when KRA has `keyWrap.useOAEP=true` in CS.cfg).
+fn wrap_session_key(
     transport_cert_der: &[u8],
     session_key: &[u8],
+    use_oaep: bool,
 ) -> DogtagResult<String> {
     use base64::Engine;
 
     let transport_cert = openssl::x509::X509::from_der(transport_cert_der)
         .map_err(|e| DogtagError::KraError(format!("Failed to parse transport cert: {e}")))?;
-    let transport_pub = transport_cert.public_key()
-        .map_err(|e| DogtagError::KraError(format!("Failed to extract transport public key: {e}")))?;
+    let rsa = transport_cert.public_key()
+        .map_err(|e| DogtagError::KraError(format!("Failed to extract transport public key: {e}")))?
+        .rsa()
+        .map_err(|e| DogtagError::KraError(format!("Transport cert is not RSA: {e}")))?;
 
-    let mut encrypter = openssl::encrypt::Encrypter::new(&transport_pub)
-        .map_err(|e| DogtagError::KraError(format!("Failed to create RSA encrypter: {e}")))?;
-    encrypter.set_rsa_padding(openssl::rsa::Padding::PKCS1_OAEP)
-        .map_err(|e| DogtagError::KraError(format!("Failed to set OAEP padding: {e}")))?;
-    encrypter.set_rsa_oaep_md(openssl::hash::MessageDigest::sha256())
-        .map_err(|e| DogtagError::KraError(format!("Failed to set OAEP hash: {e}")))?;
+    let padding = if use_oaep {
+        openssl::rsa::Padding::PKCS1_OAEP
+    } else {
+        openssl::rsa::Padding::PKCS1
+    };
 
-    let buf_len = encrypter.encrypt_len(session_key)
-        .map_err(|e| DogtagError::KraError(format!("Failed to get encrypt length: {e}")))?;
-    let mut wrapped = vec![0u8; buf_len];
-    let wrapped_len = encrypter.encrypt(session_key, &mut wrapped)
-        .map_err(|e| DogtagError::KraError(format!("Failed to RSA-OAEP wrap session key: {e}")))?;
-    wrapped.truncate(wrapped_len);
+    let mut out = vec![0u8; rsa.size() as usize];
+    let n = rsa.public_encrypt(session_key, &mut out, padding)
+        .map_err(|e| DogtagError::KraError(format!("RSA session key wrap failed: {e}")))?;
+    out.truncate(n);
 
-    Ok(base64::engine::general_purpose::STANDARD.encode(&wrapped))
+    Ok(base64::engine::general_purpose::STANDARD.encode(&out))
+}
+
+/// AES Key Wrap with Padding (RFC 5649) unwrap.
+///
+/// Used when the KRA returns `wrappedPrivateData` without `nonceData` —
+/// the default config (`kra.allowEncDecrypt.recovery=false`).
+fn aes_kwp_unwrap(key: &[u8], wrapped: &[u8]) -> DogtagResult<Zeroizing<Vec<u8>>> {
+    unsafe {
+        let cipher_name = match key.len() {
+            16 => c"AES-128-WRAP-PAD",
+            24 => c"AES-192-WRAP-PAD",
+            32 => c"AES-256-WRAP-PAD",
+            _ => return Err(DogtagError::KraError(format!("Invalid KEK length {}", key.len()))),
+        };
+
+        let cipher = openssl_sys::EVP_CIPHER_fetch(
+            std::ptr::null_mut(), cipher_name.as_ptr(), std::ptr::null(),
+        );
+        if cipher.is_null() {
+            return Err(DogtagError::KraError("AES-KWP cipher not available".into()));
+        }
+
+        let ctx = openssl_sys::EVP_CIPHER_CTX_new();
+        if ctx.is_null() {
+            openssl_sys::EVP_CIPHER_free(cipher as *mut _);
+            return Err(DogtagError::KraError("EVP_CIPHER_CTX_new failed".into()));
+        }
+
+        openssl_sys::EVP_CIPHER_CTX_set_flags(ctx, openssl_sys::EVP_CIPHER_CTX_FLAG_WRAP_ALLOW);
+
+        let rc = openssl_sys::EVP_DecryptInit_ex(
+            ctx, cipher, std::ptr::null_mut(), key.as_ptr(), std::ptr::null(),
+        );
+        openssl_sys::EVP_CIPHER_free(cipher as *mut _);
+        if rc != 1 {
+            openssl_sys::EVP_CIPHER_CTX_free(ctx);
+            return Err(DogtagError::KraError("EVP_DecryptInit_ex failed for AES-KWP".into()));
+        }
+
+        let max_out = wrapped.len() + 32;
+        let mut output = Zeroizing::new(vec![0u8; max_out]);
+        let mut out_len: i32 = 0;
+
+        let rc = openssl_sys::EVP_DecryptUpdate(
+            ctx, output.as_mut_ptr(), &mut out_len,
+            wrapped.as_ptr(), wrapped.len() as i32,
+        );
+        if rc != 1 {
+            openssl_sys::EVP_CIPHER_CTX_free(ctx);
+            return Err(DogtagError::KraError("AES-KWP unwrap failed (DecryptUpdate)".into()));
+        }
+
+        let mut final_len: i32 = 0;
+        let rc = openssl_sys::EVP_DecryptFinal_ex(
+            ctx, output.as_mut_ptr().add(out_len as usize), &mut final_len,
+        );
+        openssl_sys::EVP_CIPHER_CTX_free(ctx);
+
+        if rc != 1 {
+            return Err(DogtagError::KraError("AES-KWP unwrap failed (DecryptFinal)".into()));
+        }
+
+        let total = (out_len + final_len) as usize;
+        output.truncate(total);
+        Ok(output)
+    }
 }

@@ -363,19 +363,27 @@ impl DogtagClient {
     /// ML-KEM-1024) and returns the cert + PKCS#12.
     pub async fn server_keygen(
         &self,
+        profile_id: &str,
         subject_uid: &str,
         subject_cn: &str,
         p12_password: &str,
         key_type: &str,
         key_size: u32,
     ) -> DogtagResult<ServerKeygenResult> {
-        debug!(subject_cn, key_type, key_size, "Server-side key generation");
+        debug!(profile_id, subject_cn, key_type, key_size, "Server-side key generation via SSKG profile");
 
-        // Login for session
-        let _ = self.post_json("/ca/rest/account/login", &serde_json::json!({})).await;
+        // Login for session — try v2 GET first, fall back to v1 POST
+        match self.get("/ca/v2/account/login").await {
+            Ok(r) if r.status().is_success() => {
+                tracing::info!("CA session login succeeded (v2 GET)");
+            }
+            _ => {
+                let _ = self.post_json("/ca/rest/account/login", &serde_json::json!({})).await;
+            }
+        }
 
         let request = EnrollmentRequest {
-            profile_id: "caServerKeygen_UserCert".to_owned(),
+            profile_id: profile_id.to_owned(),
             renewal: false,
             input: vec![
                 ProfileInput {

@@ -117,157 +117,106 @@ pub async fn post_serverkeygen(
     // Look up the CA backend.
     let _ca = state.get_ca(ca_id).ok_or(KipukaError::NotFound)?;
 
-    // ── Dogtag KRA-based server-side keygen path ─────────────────────────────
+    // ── CA-driven SSKG via serverKeygenInputImpl profile ──────────────────────
     //
-    // Option A: generate key on KRA, recover private key, build a valid
-    // self-signed CSR (RFC 2986), and enroll via the CA's standard profile.
-    //
-    // Flow: KRA generate → KRA recover → build CSR → CA enroll → respond.
-    //
-    // This avoids the caServerKeygen_UserCert profile whose PKCS#10
-    // self-signature validation rejects CSRs signed with a mismatched
-    // ephemeral key.
+    // One authenticated enrollment to the SSKG profile. The CA↔KRA connector
+    // handles keygen + archival server-side. PKCS#12 comes back in the
+    // enrollment output. No KRA agent credentials in Kipuka.
     if let Some(ref dogtag_pool) = state.dogtag {
-        let key_size = 2048u32;
-        tracing::info!(
-            ca_id = %ca_id,
-            identity = %identity,
-            key_size,
-            "SSKG: starting KRA-based key generation (Option A)"
-        );
-
-        // ── Step 1: Create KRA client ──────────────────────────────────────
         let dogtag_cfg = state
             .config
             .dogtag
             .as_ref()
             .expect("dogtag config present when pool is set");
 
-        let kra_client = kipuka_dogtag::KraClient::new(dogtag_cfg)
-            .map_err(|e| KipukaError::Ca(format!("KRA client init failed: {e}")))?;
+        let sskg_profile = dogtag_cfg.sskg_profile_id
+            .as_deref()
+            .unwrap_or("caServerKeygenEST");
 
-        // ── Step 2: Generate key on KRA ────────────────────────────────────
-        tracing::info!(key_size, "SSKG step 1: generating RSA key on KRA");
-        let keygen = kra_client
-            .generate_key("RSA", key_size)
-            .await
-            .map_err(|e| KipukaError::Ca(format!("KRA key generation failed: {e}")))?;
-
-        let key_id = &keygen.key_id;
-        let pub_key_b64_len = keygen.public_key.as_ref().map(|k| k.len()).unwrap_or(0);
-
-        tracing::info!(
-            key_id = %key_id,
-            pub_key_len = pub_key_b64_len,
-            "SSKG step 2: key generated on KRA"
-        );
-
-        // ── Step 3: Recover private key from KRA ───────────────────────────
-        tracing::info!(key_id = %key_id, "SSKG step 3: recovering private key from KRA");
-        let private_key_der = kra_client
-            .recover_key_no_cert(key_id)
-            .await
-            .map_err(|e| KipukaError::Ca(format!("KRA key recovery failed: {e}")))?;
-
-        tracing::info!(
-            key_id = %key_id,
-            key_len = private_key_der.len(),
-            "SSKG step 3: private key recovered"
-        );
-
-        // ── Step 4: Build self-signed CSR (RFC 2986) ───────────────────────
-        //
-        // The CSR must be signed by the private key matching the public key
-        // inside it. JSS's PKCS10 constructor validates this via
-        // Signature.initVerify(publicKey).
-        tracing::info!("SSKG step 4: building self-signed CSR with KRA key pair");
-
-        let pkey = openssl::pkey::PKey::private_key_from_der(&private_key_der)
-            .map_err(|e| KipukaError::Ca(format!("PKCS#8 private key parse: {e}")))?;
-
-        // Extract subject and extensions from the template CSR (the client's original request).
+        // Extract subject from the CSR template
         let template = openssl::x509::X509Req::from_der(&csr_der)
             .map_err(|e| KipukaError::BadRequest(format!("CSR template parse: {e}")))?;
-        let subject_name = template.subject_name().to_owned()
-            .map_err(|e| KipukaError::Ca(format!("CSR subject clone: {e}")))?;
-        let template_extensions = template.extensions();
-
-        let mut csr_builder = openssl::x509::X509ReqBuilder::new()
-            .map_err(|e| KipukaError::Ca(format!("X509ReqBuilder: {e}")))?;
-        csr_builder.set_version(0)
-            .map_err(|e| KipukaError::Ca(format!("CSR set_version: {e}")))?;
-        csr_builder.set_subject_name(&subject_name)
-            .map_err(|e| KipukaError::Ca(format!("CSR set_subject: {e}")))?;
-        csr_builder.set_pubkey(&pkey)
-            .map_err(|e| KipukaError::Ca(format!("CSR set_pubkey: {e}")))?;
-
-        // Copy extensions from the template CSR (SANs, Key Usage, EKUs).
-        match template_extensions {
-            Ok(exts) => {
-                csr_builder.add_extensions(&exts)
-                    .map_err(|e| KipukaError::Ca(format!("CSR add_extensions: {e}")))?;
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "SSKG: failed to parse template CSR extensions — certificate will lack SANs/EKU from template");
-            }
-        }
-
-        csr_builder.sign(&pkey, openssl::hash::MessageDigest::sha256())
-            .map_err(|e| KipukaError::Ca(format!("CSR sign: {e}")))?;
-
-        let new_csr = csr_builder.build();
-        let new_csr_pem = {
-            let pem_bytes = new_csr.to_pem()
-                .map_err(|e| KipukaError::Ca(format!("CSR to PEM: {e}")))?;
-            String::from_utf8(pem_bytes)
-                .map_err(|e| KipukaError::Ca(format!("CSR PEM to UTF-8: {e}")))?
+        let subject_cn = {
+            let sn = template.subject_name();
+            sn.entries_by_nid(openssl::nid::Nid::COMMONNAME)
+                .next()
+                .and_then(|e| e.data().as_utf8().ok())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| identity.to_string())
         };
 
-        tracing::info!("SSKG step 4: CSR built and self-signed with KRA private key");
+        // Key params from CSR template or defaults
+        let key_type = detect_key_type_from_csr(&csr_der);
+        let (kt_str, ks_str) = match &key_type {
+            crate::ca::keygen::KeyType::Rsa(bits) => ("RSA".to_string(), bits.to_string()),
+            crate::ca::keygen::KeyType::Ecdsa(curve) => ("EC".to_string(), format!("{curve}")),
+        };
 
-        // ── Step 5: Enroll CSR via Dogtag CA ───────────────────────────────
+        // One-time P12 passphrase — generated by Kipuka, never leaves it
+        use zeroize::Zeroizing;
+        let mut rand = [0u8; 24];
+        openssl::rand::rand_bytes(&mut rand)
+            .map_err(|e| KipukaError::Ca(format!("rand: {e}")))?;
+        let p12_password = Zeroizing::new(hex::encode(rand));
+
+        tracing::info!(
+            ca_id = %ca_id,
+            identity = %identity,
+            sskg_profile = %sskg_profile,
+            subject_cn = %subject_cn,
+            key_type = %kt_str,
+            key_size = %ks_str,
+            "SSKG: submitting to CA SSKG profile"
+        );
+
         let ca_client = dogtag_pool
             .get_client()
             .map_err(|e| KipukaError::ServiceUnavailable(format!("Dogtag CA unavailable: {e}")))?;
 
-        let profile_id = &dogtag_cfg.profile_id;
+        let sskg_result = ca_client
+            .server_keygen(sskg_profile, &subject_cn, &subject_cn, &p12_password, &kt_str, ks_str.parse().unwrap_or(2048))
+            .await
+            .map_err(|e| KipukaError::Ca(format!("SSKG enrollment failed: {e}")))?;
 
-        tracing::info!(
-            profile_id = %profile_id,
-            "SSKG step 5: enrolling CSR via Dogtag CA"
+        // Open the PKCS#12 — Kipuka chose the password
+        let p12_b64 = sskg_result.pkcs12_b64
+            .ok_or_else(|| KipukaError::Ca(
+                "SSKG enrollment succeeded but no PKCS#12 output — check profile has pkcs12OutputImpl".into()
+            ))?;
+
+        use base64::Engine;
+        let p12_der = Zeroizing::new(
+            base64::engine::general_purpose::STANDARD.decode(&p12_b64)
+                .map_err(|e| KipukaError::Ca(format!("PKCS#12 base64 decode: {e}")))?
         );
 
-        let enroll_result = ca_client
-            .enroll_certificate(&new_csr_pem, profile_id)
-            .await
-            .map_err(|e| KipukaError::Ca(format!("Dogtag enrollment failed: {e}")))?;
+        let parsed = openssl::pkcs12::Pkcs12::from_der(&p12_der)
+            .map_err(|e| KipukaError::Ca(format!("PKCS#12 parse: {e}")))?
+            .parse2(&p12_password)
+            .map_err(|e| KipukaError::Ca(format!("PKCS#12 decrypt: {e}")))?;
 
-        let cert_der = match enroll_result.status {
-            kipuka_dogtag::EnrollStatus::Complete => {
-                enroll_result.certificate_der.ok_or_else(|| {
-                    KipukaError::Ca("Dogtag returned complete but no certificate".into())
-                })?
-            }
-            kipuka_dogtag::EnrollStatus::Pending => {
-                return Err(KipukaError::Ca(
-                    "SSKG enrollment is pending agent approval — auto-approve failed".into(),
-                ));
-            }
-            other => {
-                return Err(KipukaError::Ca(format!(
-                    "SSKG enrollment returned unexpected status: {other:?}"
-                )));
-            }
+        let pkey = parsed.pkey
+            .ok_or_else(|| KipukaError::Ca("No private key in PKCS#12".into()))?;
+        let private_key_der = pkey.private_key_to_der()
+            .map_err(|e| KipukaError::Ca(format!("PKCS#8 DER: {e}")))?;
+
+        // Use the cert from the PKCS#12, or fall back to the one from the enrollment response
+        let cert_der = if let Some(cert) = &parsed.cert {
+            cert.to_der().map_err(|e| KipukaError::Ca(format!("cert DER: {e}")))?
+        } else {
+            sskg_result.certificate_der.ok_or_else(|| {
+                KipukaError::Ca("No certificate in SSKG response".into())
+            })?
         };
 
         tracing::info!(
             cert_len = cert_der.len(),
             key_len = private_key_der.len(),
-            request_id = %enroll_result.request_id,
-            "SSKG step 6: enrollment complete — cert + key ready"
+            request_id = %sskg_result.request_id,
+            "SSKG complete via CA profile — cert + key ready"
         );
 
-        // ── Step 7: Build multipart response ───────────────────────────────
+        // Build multipart response
         let cert_pkcs7_der =
             crate::routes::cacerts::build_certs_only_pkcs7(std::slice::from_ref(&cert_der))?;
         let response_body = build_multipart_response(&cert_pkcs7_der, &private_key_der);
@@ -287,8 +236,8 @@ pub async fn post_serverkeygen(
             .record_audit_event(
                 "serverkeygen_success",
                 &format!(
-                    "ca_id={ca_id}, identity={identity}, backend=kra-enroll, key_type=RSA-{key_size}, request_id={}",
-                    enroll_result.request_id
+                    "ca_id={ca_id}, identity={identity}, backend=sskg-profile, profile={sskg_profile}, request_id={}",
+                    sskg_result.request_id
                 ),
             )
             .await;

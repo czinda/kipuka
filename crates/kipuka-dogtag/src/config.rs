@@ -66,6 +66,14 @@ pub struct DogtagConfig {
     /// - `caDualCert` — Dual-key (signing + encryption) certificates
     pub profile_id: String,
 
+    /// Server-Side Keygen (SSKG) enrollment profile ID.
+    ///
+    /// Used by EST `/serverkeygen`. Must have `serverKeygenInputImpl` input,
+    /// `pkcs12OutputImpl` output, and `serverKeygenUserKeyDefaultImpl` default.
+    /// Falls back to `"caServerKeygenEST"` if not set.
+    #[serde(default)]
+    pub sskg_profile_id: Option<String>,
+
     /// HTTP request timeout in seconds.
     ///
     /// Applied to each individual HTTP request to the Dogtag REST API.
