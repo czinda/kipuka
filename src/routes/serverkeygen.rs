@@ -140,7 +140,7 @@ pub async fn post_serverkeygen(
             let sn = template.subject_name();
             sn.entries_by_nid(openssl::nid::Nid::COMMONNAME)
                 .next()
-                .map(|e| e.data().to_string())
+                .and_then(|e| String::from_utf8(e.data().as_slice().to_vec()).ok())
                 .unwrap_or_else(|| identity.to_string())
         };
 
@@ -183,10 +183,8 @@ pub async fn post_serverkeygen(
             ))?;
 
         use base64::Engine;
-        let p12_der = Zeroizing::new(
-            base64::engine::general_purpose::STANDARD.decode(&p12_b64)
-                .map_err(|e| KipukaError::Ca(format!("PKCS#12 base64 decode: {e}")))?
-        );
+        let p12_der = base64::engine::general_purpose::STANDARD.decode(&p12_b64)
+            .map_err(|e| KipukaError::Ca(format!("PKCS#12 base64 decode: {e}")))?;
 
         let parsed = openssl::pkcs12::Pkcs12::from_der(&p12_der)
             .map_err(|e| KipukaError::Ca(format!("PKCS#12 parse: {e}")))?
