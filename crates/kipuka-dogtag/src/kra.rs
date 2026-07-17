@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::debug;
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
 use reqwest::{Certificate, Client, Identity};
 
@@ -71,18 +71,6 @@ struct RequestInfo {
 struct RecoverResponse {
     #[serde(rename = "wrappedPrivateData")]
     data: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct P12RecoverResponse {
-    #[serde(flatten)]
-    fields: serde_json::Value,
-}
-
-impl P12RecoverResponse {
-    fn p12_data(&self) -> Option<&str> {
-        self.fields.get("p12Data").and_then(|v| v.as_str())
-    }
 }
 
 #[derive(Deserialize)]
@@ -546,11 +534,6 @@ impl KraClient {
             ))
         })
     }
-}
-
-fn pkey_to_pkcs8_der(pkey: &openssl::pkey::PKey<openssl::pkey::Private>) -> DogtagResult<Vec<u8>> {
-    pkey.private_key_to_der()
-        .map_err(|e| DogtagError::KraError(format!("PKCS#8 DER conversion failed: {e}")))
 }
 
 /// RSA-wrap a session key with the KRA transport cert's public key.
