@@ -356,7 +356,23 @@ impl KraClient {
                     approve_status.as_u16(), crate::truncate_str(&approve_body, 200))
             ));
         }
-        tracing::info!("recovery approved");
+        // Verify the request actually reached APPROVED state.
+        // The approve REST call can return 2xx without the request reaching
+        // APPROVED — asymmetric-key recovery routes through async agent
+        // bookkeeping that may leave the request pending.
+        let req_info: serde_json::Value = Self::json_response(
+            self.get_json(&format!("/kra/v2/agent/keyrequests/{request_id}")).await?
+        ).await?;
+        let req_status = req_info.get("requestStatus")
+            .and_then(|v| v.as_str()).unwrap_or("unknown");
+        if !req_status.eq_ignore_ascii_case("approved")
+            && !req_status.eq_ignore_ascii_case("complete") {
+            return Err(DogtagError::KraError(format!(
+                "recovery request {request_id} is '{req_status}' after approve — \
+                 check kra.noOfRequiredRecoveryAgents in CS.cfg"
+            )));
+        }
+        tracing::info!(request_id = %request_id, status = %req_status, "recovery approval verified");
 
         // Call 3: retrieve with session-key wrapping
         let retrieve_req = KeyGenRequest {

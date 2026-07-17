@@ -85,7 +85,7 @@ impl DogtagClient {
     }
 
     pub async fn health_check(&self) -> DogtagResult<bool> {
-        let url = format!("{}/ca/rest/info", self.base_url);
+        let url = format!("{}/pki/v2/info", self.base_url);
         debug!(url = %url, "Dogtag health check");
 
         match self.do_get(&url).await {
