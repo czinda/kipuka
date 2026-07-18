@@ -128,7 +128,10 @@ impl KraClient {
             config.kra_password.as_ref().or(config.password.as_ref()),
         ) {
             (Some(user), Some(pass)) => Some((user.clone(), pass.clone())),
-            _ if is_http => Some(("kraadmin".into(), "RedHat123".into())),
+            _ if is_http => {
+                tracing::warn!("KRA: no credentials configured for HTTP — using defaults (set kra_username/kra_password in config)");
+                Some(("kraadmin".into(), String::new()))
+            }
             _ => None,
         };
 
@@ -409,8 +412,13 @@ impl KraClient {
                 let iv = base64::engine::general_purpose::STANDARD
                     .decode(nonce_b64)
                     .map_err(|e| DogtagError::KraError(format!("Invalid nonceData: {e}")))?;
+                let cipher = match session_key.len() {
+                    16 => openssl::symm::Cipher::aes_128_cbc(),
+                    32 => openssl::symm::Cipher::aes_256_cbc(),
+                    n => return Err(DogtagError::KraError(format!("Unsupported session key length {n} for AES-CBC"))),
+                };
                 Zeroizing::new(openssl::symm::decrypt(
-                    openssl::symm::Cipher::aes_128_cbc(),
+                    cipher,
                     &session_key, Some(&iv), &wrapped,
                 ).map_err(|e| DogtagError::KraError(format!("AES-CBC unwrap failed: {e}")))?)
             }
@@ -420,7 +428,7 @@ impl KraClient {
         };
 
         tracing::info!(key_len = der.len(), "private key recovered (PKCS#8 DER)");
-        Ok(der.to_vec())
+        Ok(der.into_inner())
     }
 
     /// Fetch the KRA transport certificate as DER.
@@ -456,13 +464,8 @@ impl KraClient {
 
         let mut path = format!("/kra/rest/agent/keys?maxResults={max_results}&status=active");
         if let Some(ckid) = client_key_id {
-            let encoded: String = ckid.bytes().map(|b| {
-                if b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' || b == b'~' {
-                    format!("{}", b as char)
-                } else {
-                    format!("%{b:02X}")
-                }
-            }).collect();
+            use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+            let encoded = utf8_percent_encode(ckid, NON_ALPHANUMERIC);
             path.push_str(&format!("&clientKeyID={encoded}"));
         }
 

@@ -148,7 +148,13 @@ pub async fn post_serverkeygen(
         let key_type = detect_key_type_from_csr(&csr_der);
         let (kt_str, ks_str) = match &key_type {
             crate::ca::keygen::KeyType::Rsa(bits) => ("RSA".to_string(), bits.to_string()),
-            crate::ca::keygen::KeyType::Ecdsa(curve) => ("EC".to_string(), format!("{curve}")),
+            crate::ca::keygen::KeyType::Ecdsa(curve) => {
+                let bits = match curve {
+                    crate::ca::keygen::EcCurve::P256 => 256,
+                    crate::ca::keygen::EcCurve::P384 => 384,
+                };
+                ("EC".to_string(), bits.to_string())
+            }
             // Dogtag SSKG (serverKeygenUserKeyDefaultImpl) generates RSA/EC only
             // in 11.x. PQ serverkeygen is served by the software/HSM path below.
             other => {
@@ -224,22 +230,45 @@ pub async fn post_serverkeygen(
             let kra_client = kipuka_dogtag::KraClient::new(dogtag_cfg)
                 .map_err(|e| KipukaError::Ca(format!("KRA client init: {e}")))?;
 
-            // Find the most recently archived key — the SSKG approval just archived it
-            let keys = kra_client.search_keys(None, 5).await
+            // Search KRA for the archived key using the cert subject CN as
+            // the clientKeyID (Dogtag CA uses the subject DN as clientKeyID
+            // when archiving through the connector).
+            let keys = kra_client.search_keys(Some(&subject_cn), 3).await
                 .map_err(|e| KipukaError::Ca(format!("KRA key search: {e}")))?;
+
+            // Fall back to unfiltered search if CN-based search returns nothing
+            let keys = if keys.is_empty() {
+                tracing::warn!("KRA key search by CN returned nothing, trying unfiltered");
+                kra_client.search_keys(None, 1).await
+                    .map_err(|e| KipukaError::Ca(format!("KRA key search (unfiltered): {e}")))?
+            } else {
+                keys
+            };
 
             let key_entry = keys.first()
                 .ok_or_else(|| KipukaError::Ca("No keys found on KRA after SSKG enrollment".into()))?;
 
             tracing::info!(
                 key_id = %key_entry.key_id,
+                client_key_id = %key_entry.client_key_id,
                 algorithm = %key_entry.algorithm,
                 size = key_entry.size,
                 "SSKG: found archived key on KRA, recovering"
             );
 
-            // Recover the private key
-            let key_der = kra_client.recover_key(&key_entry.key_id).await
+            state
+                .record_audit_event(
+                    "sskg_kra_recovery",
+                    &format!(
+                        "ca_id={ca_id}, identity={identity}, key_id={}, algorithm={}",
+                        key_entry.key_id, key_entry.algorithm
+                    ),
+                )
+                .await;
+
+            // Recover the private key using session-key wrapping (not plain
+            // recovery which requires kra.allowEncDecrypt.recovery=true)
+            let key_der = kra_client.recover_key_no_cert(&key_entry.key_id).await
                 .map_err(|e| KipukaError::Ca(format!("KRA key recovery: {e}")))?;
 
             (cert, key_der)

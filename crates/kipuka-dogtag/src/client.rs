@@ -85,16 +85,16 @@ impl DogtagClient {
     }
 
     pub async fn health_check(&self) -> DogtagResult<bool> {
-        let url = format!("{}/pki/v2/info", self.base_url);
-        debug!(url = %url, "Dogtag health check");
-
-        match self.do_get(&url).await {
-            Ok(resp) => Ok(resp.status().is_success()),
-            Err(e) => {
-                warn!(error = %e, "Dogtag health check failed");
-                Ok(false)
+        // Try v2 first, fall back to v1 for older Dogtag instances
+        for path in ["/pki/v2/info", "/ca/rest/info"] {
+            let url = format!("{}{}", self.base_url, path);
+            debug!(url = %url, "Dogtag health check");
+            match self.do_get(&url).await {
+                Ok(resp) if resp.status().is_success() => return Ok(true),
+                _ => continue,
             }
         }
+        Ok(false)
     }
 
     pub(crate) async fn get(&self, path: &str) -> DogtagResult<reqwest::Response> {

@@ -1,0 +1,22 @@
+---
+# Entrust nShield HSM variable overrides for kipuka deployment.
+# Apply when deploying against an nCipher nShield Connect or Solo HSM.
+#
+# Usage:
+#   ansible-playbook playbooks/deploy-full-stack.yml \
+#     -e @host_vars/entrust-nshield.yml
+
+kipuka_hsm_enabled: true
+kipuka_hsm_provider: "entrust"
+kipuka_hsm_library_path: "/opt/nfast/toolkits/pkcs11/libcknfast.so"
+kipuka_hsm_pin: "env:KIPUKA_HSM_PIN"
+kipuka_hsm_slot_id: 0
+kipuka_hsm_token_label: "kipuka-hsm"
+kipuka_hsm_max_sessions: 8
+
+# CA key in HSM — must be pre-provisioned before starting kipuka.
+# Generate with:
+#   /opt/nfast/bin/generatekey pkcs11 \
+#     --protect=module --type=EC --curve=NISTP384 \
+#     --plainname=kipuka-ca-key
+kipuka_ca_key_type: "ec:P-384"

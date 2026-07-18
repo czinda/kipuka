@@ -151,13 +151,15 @@ pub fn validate_pop_linking(auth: &AuthResult, csr_subject: &str) -> Result<(), 
 
 /// Extract the CN value from a formatted DN string.
 ///
-/// Handles both `CN = value` (with spaces) and `CN=value` (without).
+/// Case-insensitive: handles `CN=`, `cn=`, `CN =`, etc.
 /// Returns `None` if no CN is found.
 fn extract_cn(dn: &str) -> Option<String> {
     for part in dn.split(',') {
         let part = part.trim();
-        if let Some(val) = part.strip_prefix("CN=").or_else(|| part.strip_prefix("CN =")) {
-            return Some(val.trim().to_string());
+        let upper = part.to_ascii_uppercase();
+        if upper.starts_with("CN=") || upper.starts_with("CN =") {
+            let eq_pos = part.find('=')?;
+            return Some(part[eq_pos + 1..].trim().to_string());
         }
     }
     None

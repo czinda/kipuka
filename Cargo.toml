@@ -170,3 +170,12 @@ gssapi = ["dep:libgssapi"]
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["native-tls", "json"] }  # json feature only for tests
 tempfile = "3"
+
+[patch."https://codeberg.org/abbra/synta.git"]
+synta = { path = "../synta" }
+synta-certificate = { path = "../synta/synta-certificate" }
+synta-krb5 = { path = "../synta/synta-krb5" }
+
+[patch."https://codeberg.org/czinda/synta.git"]
+synta-cmc = { path = "../synta/synta-cmc" }
+

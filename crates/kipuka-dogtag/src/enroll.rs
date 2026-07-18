@@ -468,13 +468,22 @@ impl DogtagClient {
         if status == "pending" && !request_id.is_empty() {
             tracing::info!(request_id = %request_id, "SSKG: auto-approving pending request");
 
-            // Fresh login to establish an agent session for nonce validation
-            let _ = self.get("/ca/rest/account/login").await;
+            // Fresh login to establish an agent session for nonce validation.
+            // Try v2 GET first (matches the initial login at the top of server_keygen),
+            // fall back to v1 POST.
+            match self.get("/ca/v2/account/login").await {
+                Ok(r) if r.status().is_success() => {}
+                _ => { let _ = self.post_json("/ca/rest/account/login", &serde_json::json!({})).await; }
+            }
 
             let review_url = format!("/ca/rest/agent/certrequests/{request_id}");
             let review_body = match self.get(&review_url).await {
                 Ok(resp) if resp.status().is_success() => {
-                    Self::json_response::<serde_json::Value>(resp).await.unwrap_or_default()
+                    Self::json_response::<serde_json::Value>(resp).await
+                        .unwrap_or_else(|e| {
+                            tracing::warn!(error = %e, "SSKG: review response not valid JSON");
+                            serde_json::json!({})
+                        })
                 }
                 Ok(resp) => {
                     let status_code = resp.status();
@@ -547,12 +556,6 @@ impl DogtagClient {
             .or_else(|| resp_body.get("pkcs12"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_owned());
-
-        let request_id = entry.get("requestID")
-            .or_else(|| entry.get("requestId"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_owned();
 
         Ok(ServerKeygenResult {
             request_id,

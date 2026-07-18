@@ -22,3 +22,4 @@ tracing.workspace = true
 tokio.workspace = true
 parking_lot.workspace = true
 zeroize = "1"
+percent-encoding = "2"
