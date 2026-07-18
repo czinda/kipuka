@@ -428,7 +428,9 @@ impl KraClient {
         };
 
         tracing::info!(key_len = der.len(), "private key recovered (PKCS#8 DER)");
-        Ok(der.into_inner())
+        let out = der.to_vec();
+        // der (Zeroizing) scrubs on drop; out is the caller's responsibility
+        Ok(out)
     }
 
     /// Fetch the KRA transport certificate as DER.
