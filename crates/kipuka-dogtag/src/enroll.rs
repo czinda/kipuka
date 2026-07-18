@@ -458,18 +458,50 @@ impl DogtagClient {
             .unwrap_or("")
             .to_owned();
 
-        // Auto-approve pending SSKG requests (same pattern as enroll_certificate_with_type)
+        // Auto-approve pending SSKG requests.
+        // The agent approval endpoint requires a CSRF nonce: the GET to the
+        // review URL generates a nonce stored in the server-side session, and
+        // the POST must include that nonce (it's in the review JSON body).
+        // A fresh login establishes the session that the nonce is tied to —
+        // without it, the enrollment POST's session is used, and the nonce
+        // from the review GET belongs to a different session context.
         if status == "pending" && !request_id.is_empty() {
             tracing::info!(request_id = %request_id, "SSKG: auto-approving pending request");
+
+            // Fresh login to establish an agent session for nonce validation
+            let _ = self.get("/ca/rest/account/login").await;
+
             let review_url = format!("/ca/rest/agent/certrequests/{request_id}");
             let review_body = match self.get(&review_url).await {
                 Ok(resp) if resp.status().is_success() => {
                     Self::json_response::<serde_json::Value>(resp).await.unwrap_or_default()
                 }
-                _ => serde_json::json!({}),
+                Ok(resp) => {
+                    let status_code = resp.status();
+                    tracing::warn!(%status_code, "SSKG: review GET returned non-success");
+                    serde_json::json!({})
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "SSKG: review GET failed");
+                    serde_json::json!({})
+                }
             };
+
             let approve_url = format!("/ca/rest/agent/certrequests/{request_id}/approve");
-            let _ = self.post_json(&approve_url, &review_body).await;
+            match self.post_json(&approve_url, &review_body).await {
+                Ok(resp) => {
+                    let code = resp.status();
+                    if code.is_success() || code.as_u16() == 204 {
+                        tracing::info!("SSKG: approval succeeded (HTTP {code})");
+                    } else {
+                        let body = resp.text().await.unwrap_or_default();
+                        tracing::error!(%code, body = %body, "SSKG: approval POST failed");
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "SSKG: approval POST error");
+                }
+            }
 
             // Re-check status after approval
             let check_url = format!("/ca/rest/agent/certrequests/{request_id}");
