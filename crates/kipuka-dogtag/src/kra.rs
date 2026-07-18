@@ -26,6 +26,15 @@ pub struct KeyGenResult {
     pub wrapped_private_key: Option<Vec<u8>>,
 }
 
+#[derive(Debug, Clone)]
+pub struct KeySearchEntry {
+    pub key_id: String,
+    pub client_key_id: String,
+    pub algorithm: String,
+    pub size: u32,
+    pub status: String,
+}
+
 /// Dogtag RESTMessage attribute entry.
 /// KRA REST API uses lowercase name/value (unlike CA ProfileAttribute).
 #[derive(Serialize)]
@@ -435,6 +444,50 @@ impl KraClient {
         base64::engine::general_purpose::STANDARD
             .decode(&b64)
             .map_err(|e| DogtagError::KraError(format!("Transport cert base64 decode failed: {e}")))
+    }
+
+    /// Search for archived keys on the KRA.
+    ///
+    /// Returns the most recent key matching the query. The KRA stores keys
+    /// with a `clientKeyID` that typically contains the cert subject DN.
+    /// If no query is given, returns the most recently archived key.
+    pub async fn search_keys(&self, client_key_id: Option<&str>, max_results: u32) -> DogtagResult<Vec<KeySearchEntry>> {
+        self.login().await;
+
+        let mut path = format!("/kra/rest/agent/keys?maxResults={max_results}&status=active");
+        if let Some(ckid) = client_key_id {
+            let encoded: String = ckid.bytes().map(|b| {
+                if b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' || b == b'~' {
+                    format!("{}", b as char)
+                } else {
+                    format!("%{b:02X}")
+                }
+            }).collect();
+            path.push_str(&format!("&clientKeyID={encoded}"));
+        }
+
+        let resp = self.get_json(&path).await?;
+        let body: serde_json::Value = Self::json_response(resp).await?;
+
+        let entries = body.get("entries")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter().filter_map(|e| {
+                    let key_url = e.get("keyURL").and_then(|v| v.as_str()).unwrap_or("");
+                    let key_id = key_url.rsplit('/').next().unwrap_or("").to_owned();
+                    if key_id.is_empty() { return None; }
+                    Some(KeySearchEntry {
+                        key_id,
+                        client_key_id: e.get("clientKeyID").and_then(|v| v.as_str()).unwrap_or("").to_owned(),
+                        algorithm: e.get("algorithm").and_then(|v| v.as_str()).unwrap_or("").to_owned(),
+                        size: e.get("size").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                        status: e.get("status").and_then(|v| v.as_str()).unwrap_or("").to_owned(),
+                    })
+                }).collect()
+            })
+            .unwrap_or_default();
+
+        Ok(entries)
     }
 
     /// Fetch the public key (base64 SPKI DER) for a KRA-generated key.

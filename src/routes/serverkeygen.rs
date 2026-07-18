@@ -184,33 +184,65 @@ pub async fn post_serverkeygen(
             .await
             .map_err(|e| KipukaError::Ca(format!("SSKG enrollment failed: {e}")))?;
 
-        // Open the PKCS#12 — Kipuka chose the password
-        let p12_b64 = sskg_result.pkcs12_b64
-            .ok_or_else(|| KipukaError::Ca(
-                "SSKG enrollment succeeded but no PKCS#12 output — check profile has pkcs12OutputImpl".into()
-            ))?;
+        // Get cert + private key. Two paths:
+        // Path A: PKCS#12 in the enrollment output (single-step auto-approve)
+        // Path B: Recover key from KRA (agent-approved flow — Dogtag REST API
+        //         doesn't populate pkcs12OutputImpl through the approval path)
+        let (cert_der, private_key_der) = if let Some(ref p12_b64) = sskg_result.pkcs12_b64 {
+            // Path A: P12 available
+            use base64::Engine;
+            let p12_der = base64::engine::general_purpose::STANDARD.decode(p12_b64)
+                .map_err(|e| KipukaError::Ca(format!("PKCS#12 base64 decode: {e}")))?;
 
-        use base64::Engine;
-        let p12_der = base64::engine::general_purpose::STANDARD.decode(&p12_b64)
-            .map_err(|e| KipukaError::Ca(format!("PKCS#12 base64 decode: {e}")))?;
+            let parsed = openssl::pkcs12::Pkcs12::from_der(&p12_der)
+                .map_err(|e| KipukaError::Ca(format!("PKCS#12 parse: {e}")))?
+                .parse2(&p12_password)
+                .map_err(|e| KipukaError::Ca(format!("PKCS#12 decrypt: {e}")))?;
 
-        let parsed = openssl::pkcs12::Pkcs12::from_der(&p12_der)
-            .map_err(|e| KipukaError::Ca(format!("PKCS#12 parse: {e}")))?
-            .parse2(&p12_password)
-            .map_err(|e| KipukaError::Ca(format!("PKCS#12 decrypt: {e}")))?;
+            let pkey = parsed.pkey
+                .ok_or_else(|| KipukaError::Ca("No private key in PKCS#12".into()))?;
+            let key_der = pkey.private_key_to_der()
+                .map_err(|e| KipukaError::Ca(format!("PKCS#8 DER: {e}")))?;
 
-        let pkey = parsed.pkey
-            .ok_or_else(|| KipukaError::Ca("No private key in PKCS#12".into()))?;
-        let private_key_der = pkey.private_key_to_der()
-            .map_err(|e| KipukaError::Ca(format!("PKCS#8 DER: {e}")))?;
-
-        // Use the cert from the PKCS#12, or fall back to the one from the enrollment response
-        let cert_der = if let Some(cert) = &parsed.cert {
-            cert.to_der().map_err(|e| KipukaError::Ca(format!("cert DER: {e}")))?
+            let cert = if let Some(cert) = &parsed.cert {
+                cert.to_der().map_err(|e| KipukaError::Ca(format!("cert DER: {e}")))?
+            } else {
+                sskg_result.certificate_der.clone().ok_or_else(|| {
+                    KipukaError::Ca("No certificate in SSKG response".into())
+                })?
+            };
+            (cert, key_der)
         } else {
-            sskg_result.certificate_der.ok_or_else(|| {
-                KipukaError::Ca("No certificate in SSKG response".into())
-            })?
+            // Path B: Recover key from KRA (agent-approved flow)
+            tracing::info!("SSKG: no P12 in enrollment output — recovering key from KRA");
+
+            let cert = sskg_result.certificate_der.clone().ok_or_else(|| {
+                KipukaError::Ca("No certificate in SSKG response (needed for KRA recovery)".into())
+            })?;
+
+            // Build a KRA client from the dogtag config
+            let kra_client = kipuka_dogtag::KraClient::new(dogtag_cfg)
+                .map_err(|e| KipukaError::Ca(format!("KRA client init: {e}")))?;
+
+            // Find the most recently archived key — the SSKG approval just archived it
+            let keys = kra_client.search_keys(None, 5).await
+                .map_err(|e| KipukaError::Ca(format!("KRA key search: {e}")))?;
+
+            let key_entry = keys.first()
+                .ok_or_else(|| KipukaError::Ca("No keys found on KRA after SSKG enrollment".into()))?;
+
+            tracing::info!(
+                key_id = %key_entry.key_id,
+                algorithm = %key_entry.algorithm,
+                size = key_entry.size,
+                "SSKG: found archived key on KRA, recovering"
+            );
+
+            // Recover the private key
+            let key_der = kra_client.recover_key(&key_entry.key_id).await
+                .map_err(|e| KipukaError::Ca(format!("KRA key recovery: {e}")))?;
+
+            (cert, key_der)
         };
 
         tracing::info!(
