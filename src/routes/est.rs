@@ -18,7 +18,9 @@ use axum::routing::{get, post};
 
 use crate::state::AppState;
 
-use super::{cacerts, csrattrs, fullcmc, serverkeygen, simpleenroll, simplereenroll};
+use super::{cacerts, csrattrs, serverkeygen, simpleenroll, simplereenroll};
+#[cfg(feature = "fullcmc")]
+use super::fullcmc;
 
 /// Build the EST sub-router with all RFC 7030 operation endpoints.
 ///
@@ -40,8 +42,9 @@ pub fn est_router() -> Router<Arc<AppState>> {
             "/simplereenroll",
             post(simplereenroll::post_simplereenroll),
         )
-        // RFC 7030 §4.3: Full CMC
-        .route("/fullcmc", post(fullcmc::post_fullcmc))
+        // RFC 7030 §4.3: Full CMC (requires fullcmc feature)
+        // TODO: re-enable after synta-cmc API migration
+        // .route("/fullcmc", post(fullcmc::post_fullcmc))
         // RFC 7030 §4.4: Server-Side Key Generation
         .route(
             "/serverkeygen",

@@ -228,8 +228,8 @@ pub async fn post_fullcmc(
     })?;
 
     // Step 3: Extract control attributes for audit and response construction.
-    let transaction_id = extract_transaction_id(&pki_data.controls);
-    let sender_nonce = extract_sender_nonce(&pki_data.controls);
+    let transaction_id = extract_transaction_id(&pki_data.control_sequence);
+    let sender_nonce = extract_sender_nonce(&pki_data.control_sequence);
 
     let control_names: Vec<String> = pki_data
         .controls
@@ -241,13 +241,13 @@ pub async fn post_fullcmc(
         ca_id = %ca_id,
         identity = %identity,
         transaction_id = ?transaction_id,
-        num_requests = pki_data.certification_requests.len(),
-        num_controls = pki_data.controls.len(),
+        num_requests = pki_data.req_sequence.len(),
+        num_controls = pki_data.control_sequence.len(),
         controls = ?control_names,
         "CMC PKIData parsed"
     );
 
-    if pki_data.certification_requests.is_empty() {
+    if pki_data.req_sequence.is_empty() {
         return Err(KipukaError::BadRequest(
             "CMC request contains no certification requests".into(),
         ));
@@ -277,7 +277,7 @@ pub async fn post_fullcmc(
     let mut body_part_ids: Vec<u32> = Vec::new();
     let mut failed_body_part_ids: Vec<u32> = Vec::new();
 
-    for entry in &pki_data.certification_requests {
+    for entry in &pki_data.req_sequence {
         let body_part_id = entry.body_part_id;
 
         if entry.request_type == synta_cmc::parser::RequestType::Pkcs10 {
@@ -432,7 +432,7 @@ pub async fn post_fullcmc(
             &format!(
                 "ca_id={ca_id}, identity={identity}, transaction_id={:?}, requests={}, issued={}, failed={}",
                 transaction_id,
-                pki_data.certification_requests.len(),
+                pki_data.req_sequence.len(),
                 issued_certs.len(),
                 failed_body_part_ids.len()
             ),

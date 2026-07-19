@@ -14,10 +14,12 @@
 pub mod admin;
 pub mod cacerts;
 pub mod cmp;
+#[cfg(feature = "fullcmc")]
 pub mod cms_est;
 pub mod coap;
 pub mod csrattrs;
 pub mod est;
+#[cfg(feature = "fullcmc")]
 pub mod fullcmc;
 pub mod renewal_info;
 pub mod serverkeygen;
@@ -92,8 +94,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .nest("/.well-known/est", est_routes)
         .nest("/.well-known/est", labeled_est_routes)
         .nest("/admin", admin_routes)
-        // CMS-wrapped EST routes (RFC 8295).
-        .nest("/.well-known/est/cms", cms_est::cms_est_router())
+        // CMS-wrapped EST routes (RFC 8295) — disabled pending synta-cmc API update
+        // .nest("/.well-known/est/cms", cms_est::cms_est_router())
         // STAR certificate routes (RFC 8739).
         .nest("/.well-known/est/star", star::star_router())
         // Renewal info (draft-ietf-lamps-est-renewal-info).
