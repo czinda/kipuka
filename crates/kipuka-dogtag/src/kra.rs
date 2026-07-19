@@ -105,12 +105,14 @@ impl KraClient {
             tracing::warn!("KRA client: TLS certificate validation disabled (accept_invalid_certs=true)");
         }
 
-        if !is_http && !config.skip_mtls {
+        let use_mtls = !is_http && !config.skip_mtls;
+        if use_mtls {
             let cert_pem = std::fs::read(&config.agent_cert_file)?;
             let key_pem = std::fs::read(&config.agent_key_file)?;
             let identity = Identity::from_pkcs8_pem(&cert_pem, &key_pem)
                 .map_err(|e| DogtagError::TlsError(format!("Failed to load agent identity: {e}")))?;
             builder = builder.identity(identity);
+            tracing::info!("KRA client: HTTPS with mTLS agent cert (cert-only auth, no basic auth)");
         }
 
         let ca_pem = std::fs::read(&config.ca_cert_file)?;
@@ -123,16 +125,25 @@ impl KraClient {
 
         let base_url = kra_url.as_str().trim_end_matches('/').to_owned();
 
-        let basic_auth = match (
-            config.kra_username.as_ref().or(config.username.as_ref()),
-            config.kra_password.as_ref().or(config.password.as_ref()),
-        ) {
-            (Some(user), Some(pass)) => Some((user.clone(), pass.clone())),
-            _ if is_http => {
-                tracing::warn!("KRA: no credentials configured for HTTP — using defaults (set kra_username/kra_password in config)");
-                Some(("kraadmin".into(), String::new()))
+        // When mTLS is active, skip basic auth — cert-based auth triggers
+        // the correct recovery code path in Dogtag's SecurityDataProcessor.
+        // Basic auth + mTLS causes Dogtag to authenticate via password
+        // (ignoring the TLS cert identity), which routes through a different
+        // unwrap path that fails with NSS error -8152.
+        let basic_auth = if use_mtls {
+            None
+        } else {
+            match (
+                config.kra_username.as_ref().or(config.username.as_ref()),
+                config.kra_password.as_ref().or(config.password.as_ref()),
+            ) {
+                (Some(user), Some(pass)) => Some((user.clone(), pass.clone())),
+                _ if is_http => {
+                    tracing::warn!("KRA: no credentials configured for HTTP — using defaults");
+                    Some(("kraadmin".into(), String::new()))
+                }
+                _ => None,
             }
-            _ => None,
         };
 
         Ok(Self {
