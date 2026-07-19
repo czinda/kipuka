@@ -70,7 +70,10 @@ impl DogtagClient {
                 Some((user.clone(), pass.clone()))
             }
             _ if is_http => {
-                Some(("caadmin".into(), "RedHat123".into()))
+                tracing::error!("Dogtag HTTP mode requires explicit username/password in config");
+                return Err(DogtagError::ConfigError(
+                    "username and password are required for HTTP connections".into(),
+                ));
             }
             _ => None,
         };

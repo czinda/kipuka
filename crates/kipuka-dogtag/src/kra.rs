@@ -139,8 +139,10 @@ impl KraClient {
             ) {
                 (Some(user), Some(pass)) => Some((user.clone(), pass.clone())),
                 _ if is_http => {
-                    tracing::warn!("KRA: no credentials configured for HTTP — using defaults");
-                    Some(("kraadmin".into(), String::new()))
+                    tracing::error!("KRA HTTP mode requires explicit kra_username/kra_password in config");
+                    return Err(DogtagError::ConfigError(
+                        "kra_username and kra_password are required for HTTP connections".into(),
+                    ));
                 }
                 _ => None,
             }
