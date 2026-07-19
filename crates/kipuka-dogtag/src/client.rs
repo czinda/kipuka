@@ -132,6 +132,17 @@ impl DogtagClient {
         .await
     }
 
+    pub(crate) async fn get_raw(&self, path: &str) -> DogtagResult<reqwest::Response> {
+        let url = format!("{}{}", self.base_url, path);
+        self.request_with_retry(|| {
+            let mut req = self.http.get(&url);
+            if let Some((ref user, ref pass)) = self.basic_auth {
+                req = req.basic_auth(user, Some(pass));
+            }
+            req.send()
+        }).await
+    }
+
     fn do_get(&self, url: &str) -> impl std::future::Future<Output = reqwest::Result<reqwest::Response>> + '_ {
         let mut req = self.http.get(url)
             .header("Accept", "application/json");

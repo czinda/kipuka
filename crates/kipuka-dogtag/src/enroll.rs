@@ -458,77 +458,56 @@ impl DogtagClient {
             .unwrap_or("")
             .to_owned();
 
-        let mut cert_id_from_recheck: Option<String> = None;
-
-        // Auto-approve pending SSKG requests.
-        // The agent approval endpoint requires a CSRF nonce: the GET to the
-        // review URL generates a nonce stored in the server-side session, and
-        // the POST must include that nonce (it's in the review JSON body).
-        // A fresh login establishes the session that the nonce is tied to —
-        // without it, the enrollment POST's session is used, and the nonce
-        // from the review GET belongs to a different session context.
+        // Auto-approve pending SSKG requests via the agent servlet.
+        //
+        // The profileProcess servlet renders pkcs12OutputImpl in the approval
+        // response — the REST agent endpoint does not. Flow:
+        //   1. GET /ca/agent/ca/profileReview?requestId=X&xml=true → review XML
+        //   2. Parse defId/defVal + inputId/inputVal pairs from the XML
+        //   3. POST /ca/agent/ca/profileProcess with all fields + op=approve
+        //   4. Response body is the raw PKCS#12 binary
         if status == "pending" && !request_id.is_empty() {
-            tracing::info!(request_id = %request_id, "SSKG: auto-approving pending request");
+            tracing::info!(request_id = %request_id, "SSKG: approving via agent servlet (P12 in response)");
 
-            // Fresh login to establish an agent session for nonce validation.
-            // Try v2 GET first (matches the initial login at the top of server_keygen),
-            // fall back to v1 POST.
-            match self.get("/ca/v2/account/login").await {
-                Ok(r) if r.status().is_success() => {}
-                _ => { let _ = self.post_json("/ca/rest/account/login", &serde_json::json!({})).await; }
+            let review_url = format!(
+                "/ca/agent/ca/profileReview?requestId={request_id}&xml=true"
+            );
+            let review_resp = self.get_raw(&review_url).await?;
+            let review_xml = review_resp.text().await.unwrap_or_default();
+
+            if review_xml.contains("errorReason") && !review_xml.contains("<defId>") {
+                return Err(DogtagError::EnrollmentRejected {
+                    reason: format!("SSKG review failed: {}", &review_xml[..review_xml.len().min(200)]),
+                });
             }
 
-            let review_url = format!("/ca/rest/agent/certrequests/{request_id}");
-            let review_body = match self.get(&review_url).await {
-                Ok(resp) if resp.status().is_success() => {
-                    Self::json_response::<serde_json::Value>(resp).await
-                        .unwrap_or_else(|e| {
-                            tracing::warn!(error = %e, "SSKG: review response not valid JSON");
-                            serde_json::json!({})
-                        })
-                }
-                Ok(resp) => {
-                    let status_code = resp.status();
-                    tracing::warn!(%status_code, "SSKG: review GET returned non-success");
-                    serde_json::json!({})
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "SSKG: review GET failed");
-                    serde_json::json!({})
-                }
-            };
+            let form_body = build_approval_form(&review_xml, &request_id);
+            tracing::info!(form_len = form_body.len(), "SSKG: posting approval to profileProcess");
 
-            let approve_url = format!("/ca/rest/agent/certrequests/{request_id}/approve");
-            match self.post_json(&approve_url, &review_body).await {
-                Ok(resp) => {
-                    let code = resp.status();
-                    if code.is_success() || code.as_u16() == 204 {
-                        tracing::info!("SSKG: approval succeeded (HTTP {code})");
-                    } else {
-                        let body = resp.text().await.unwrap_or_default();
-                        tracing::error!(%code, body = %body, "SSKG: approval POST failed");
-                    }
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "SSKG: approval POST error");
-                }
+            let approve_resp = self.post_bytes(
+                "/ca/agent/ca/profileProcess",
+                form_body.into_bytes(),
+                "application/x-www-form-urlencoded",
+            ).await?;
+
+            let resp_status = approve_resp.status();
+            let p12_bytes = approve_resp.bytes().await.unwrap_or_default();
+
+            if !resp_status.is_success() || p12_bytes.len() < 100 {
+                let preview = String::from_utf8_lossy(&p12_bytes[..p12_bytes.len().min(300)]);
+                return Err(DogtagError::EnrollmentRejected {
+                    reason: format!("SSKG approval failed (HTTP {resp_status}): {preview}"),
+                });
             }
 
-            // Re-check status after approval using the non-agent endpoint
-            // which returns certId (the agent review endpoint does not).
-            let check_url = format!("/ca/rest/certrequests/{request_id}");
-            if let Ok(resp) = self.get(&check_url).await {
-                if let Ok(info) = Self::json_response::<serde_json::Value>(resp).await {
-                    if let Some(s) = info.get("requestStatus").and_then(|v| v.as_str()) {
-                        status = s.to_owned();
-                    }
-                    if let Some(cid) = info.get("certId").and_then(|v| v.as_str()) {
-                        tracing::info!(cert_id = %cid, "SSKG: certificate issued");
-                        // Stash cert ID for extraction below
-                        cert_id_from_recheck = Some(cid.to_owned());
-                    }
-                }
-            }
+            tracing::info!(p12_len = p12_bytes.len(), "SSKG: P12 received from profileProcess");
+
+            use base64::Engine;
+            return Ok(ServerKeygenResult {
+                request_id,
+                certificate_der: None,
+                pkcs12_b64: Some(base64::engine::general_purpose::STANDARD.encode(&p12_bytes)),
+            });
         }
 
         if status != "complete" {
@@ -540,10 +519,10 @@ impl DogtagClient {
             });
         }
 
-        // Extract cert ID: prefer the re-check result (has certId after
-        // approval), fall back to the initial enrollment response.
-        let cert_id_str = cert_id_from_recheck
-            .or_else(|| entry.get("certId").and_then(|v| v.as_str()).map(|s| s.to_owned()))
+        // Auto-approved path (SessionAuthentication): cert in response, no P12.
+        let cert_id_str = entry.get("certId")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_owned())
             .or_else(|| {
                 entry.get("certURL")
                     .and_then(|u| u.as_str())
@@ -559,16 +538,10 @@ impl DogtagClient {
             None
         };
 
-        // Extract PKCS#12 data from the output
-        let p12_b64 = entry.get("pkcs12")
-            .or_else(|| resp_body.get("pkcs12"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_owned());
-
         Ok(ServerKeygenResult {
             request_id,
             certificate_der,
-            pkcs12_b64: p12_b64,
+            pkcs12_b64: None,
         })
     }
 
@@ -675,4 +648,75 @@ impl DogtagClient {
         }
         None
     }
+}
+
+/// Parse the profileReview XML and build a form-encoded approval body.
+///
+/// Extracts `<defId>/<defVal>` pairs (policy defaults) and
+/// `<inputId>/<inputVal>` pairs (enrollment inputs) from the review
+/// XML, then appends the approval operation fields.
+fn build_approval_form(xml: &str, request_id: &str) -> String {
+    let mut pairs: Vec<(String, String)> = Vec::new();
+
+    // Extract defId/defVal pairs
+    for (id_tag, val_tag) in [("defId", "defVal"), ("inputId", "inputVal")] {
+        let open_id = format!("<{id_tag}>");
+        let close_id = format!("</{id_tag}>");
+        let open_val = format!("<{val_tag}>");
+        let close_val = format!("</{val_tag}>");
+
+        let mut pos = 0;
+        while let Some(id_start) = xml[pos..].find(&open_id) {
+            let id_start = pos + id_start + open_id.len();
+            let Some(id_end) = xml[id_start..].find(&close_id) else { break };
+            let name = xml[id_start..id_start + id_end].trim().to_owned();
+
+            let search_from = id_start + id_end;
+            let value = if let Some(val_start) = xml[search_from..].find(&open_val) {
+                let val_start = search_from + val_start + open_val.len();
+                if let Some(val_end) = xml[val_start..].find(&close_val) {
+                    xml[val_start..val_start + val_end].trim().to_owned()
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            };
+
+            if !name.is_empty() {
+                pairs.push((name, value));
+            }
+            pos = id_start + id_end;
+        }
+    }
+
+    pairs.push(("requestId".into(), request_id.to_owned()));
+    pairs.push(("op".into(), "approve".into()));
+    pairs.push(("submit".into(), "submit".into()));
+    pairs.push(("xml".into(), "true".into()));
+
+    pairs.iter()
+        .map(|(k, v)| {
+            format!("{}={}", urlencoded(k), urlencoded(v))
+        })
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+fn urlencoded(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 2);
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            b' ' => out.push('+'),
+            _ => {
+                out.push('%');
+                out.push(char::from(b"0123456789ABCDEF"[(b >> 4) as usize]));
+                out.push(char::from(b"0123456789ABCDEF"[(b & 0xf) as usize]));
+            }
+        }
+    }
+    out
 }
