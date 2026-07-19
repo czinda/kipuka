@@ -458,6 +458,8 @@ impl DogtagClient {
             .unwrap_or("")
             .to_owned();
 
+        let mut cert_id_from_recheck: Option<String> = None;
+
         // Auto-approve pending SSKG requests.
         // The agent approval endpoint requires a CSRF nonce: the GET to the
         // review URL generates a nonce stored in the server-side session, and
@@ -512,12 +514,18 @@ impl DogtagClient {
                 }
             }
 
-            // Re-check status after approval
-            let check_url = format!("/ca/rest/agent/certrequests/{request_id}");
+            // Re-check status after approval using the non-agent endpoint
+            // which returns certId (the agent review endpoint does not).
+            let check_url = format!("/ca/rest/certrequests/{request_id}");
             if let Ok(resp) = self.get(&check_url).await {
                 if let Ok(info) = Self::json_response::<serde_json::Value>(resp).await {
                     if let Some(s) = info.get("requestStatus").and_then(|v| v.as_str()) {
                         status = s.to_owned();
+                    }
+                    if let Some(cid) = info.get("certId").and_then(|v| v.as_str()) {
+                        tracing::info!(cert_id = %cid, "SSKG: certificate issued");
+                        // Stash cert ID for extraction below
+                        cert_id_from_recheck = Some(cid.to_owned());
                     }
                 }
             }
@@ -532,10 +540,10 @@ impl DogtagClient {
             });
         }
 
-        // Extract cert ID and fetch the certificate
-        let cert_id_str = entry.get("certId")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_owned())
+        // Extract cert ID: prefer the re-check result (has certId after
+        // approval), fall back to the initial enrollment response.
+        let cert_id_str = cert_id_from_recheck
+            .or_else(|| entry.get("certId").and_then(|v| v.as_str()).map(|s| s.to_owned()))
             .or_else(|| {
                 entry.get("certURL")
                     .and_then(|u| u.as_str())
