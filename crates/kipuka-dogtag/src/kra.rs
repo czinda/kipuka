@@ -298,95 +298,40 @@ impl KraClient {
         self.recover_key_inner(key_id, None).await
     }
 
-    /// Session-key-based key recovery for escrow recovery and PQ paths.
+    /// Session-key-based key recovery.
     ///
-    /// NOT for routine EST serverkeygen — use the CA's SSKG profile for that.
-    /// This path is for explicit escrow recovery of archived keys and the
-    /// PQ path where the SSKG profile machinery doesn't exist yet.
+    /// Uses a single POST to `/kra/v2/agent/keys/retrieve` with
+    /// `transWrappedSessionKey` — the same flow as Dogtag's `pki
+    /// kra-key-retrieve` CLI. `KeyProcessor.retrieveKey()` creates
+    /// the recovery request, auto-approves (when the caller is in
+    /// `Data Recovery Manager Agents` and `noOfRequiredRecoveryAgents=1`),
+    /// and returns the wrapped key in one round-trip.
     async fn recover_key_inner(
         &self,
         key_id: &str,
-        cert_der: Option<&[u8]>,
+        _cert_der: Option<&[u8]>,
     ) -> DogtagResult<Vec<u8>> {
         use base64::Engine;
 
         self.login().await;
 
-        // 128-bit session key matches KRA default sessionKeyLength
         let mut session_key = Zeroizing::new(vec![0u8; 16]);
         openssl::rand::rand_bytes(&mut session_key)
             .map_err(|e| DogtagError::KraError(format!("Failed to generate session key: {e}")))?;
 
         let transport_der = self.get_transport_cert().await?;
-        // Default: RSA PKCS#1 v1.5. Only use OAEP if KRA has keyWrap.useOAEP=true.
         let trans_wrapped_b64 = wrap_session_key(&transport_der, &session_key, false)?;
 
-        // Call 1: submit recovery request
-        let mut attrs = vec![
-            RestAttribute { name: "keyId".into(), value: key_id.to_owned() },
-        ];
-        if let Some(cert) = cert_der {
-            let cert_b64 = base64::engine::general_purpose::STANDARD.encode(cert);
-            attrs.push(RestAttribute { name: "certificate".into(), value: cert_b64 });
-        }
-
-        tracing::info!(key_id, has_cert = cert_der.is_some(), "submitting recovery request");
-        let submit_req = KeyGenRequest {
-            class_name: "com.netscape.certsrv.key.KeyRecoveryRequest".to_owned(),
-            attributes: RestAttributes { attribute: attrs },
-        };
-        let resp = self.post_json("/kra/v2/agent/keyrequests", &submit_req).await?;
-        let submit_body: serde_json::Value = Self::json_response(resp).await?;
-        let request_id = submit_body.get("requestInfo")
-            .and_then(|ri| ri.get("requestID").or_else(|| ri.get("requestId")))
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| DogtagError::KraError("No requestID in recovery submit response".into()))?
-            .to_owned();
-        tracing::info!(request_id = %request_id, "recovery request submitted");
-
-        // Call 2: approve
-        let approve_url = format!("/kra/v2/agent/keyrequests/{request_id}/approve");
-        tracing::info!(request_id = %request_id, "approving recovery request");
-        let approve_resp = self.post_json(&approve_url, &serde_json::json!({})).await?;
-        let approve_status = approve_resp.status();
-        if !approve_status.is_success() {
-            let approve_body = approve_resp.text().await.unwrap_or_default();
-            return Err(DogtagError::KraError(
-                format!("Recovery approve failed (HTTP {}): {}",
-                    approve_status.as_u16(), crate::truncate_str(&approve_body, 200))
-            ));
-        }
-        // Verify the request actually reached APPROVED state.
-        // The approve REST call can return 2xx without the request reaching
-        // APPROVED — asymmetric-key recovery routes through async agent
-        // bookkeeping that may leave the request pending.
-        let req_info: serde_json::Value = Self::json_response(
-            self.get_json(&format!("/kra/v2/agent/keyrequests/{request_id}")).await?
-        ).await?;
-        let req_status = req_info.get("requestStatus")
-            .and_then(|v| v.as_str()).unwrap_or("unknown");
-        if !req_status.eq_ignore_ascii_case("approved")
-            && !req_status.eq_ignore_ascii_case("complete") {
-            return Err(DogtagError::KraError(format!(
-                "recovery request {request_id} is '{req_status}' after approve — \
-                 check kra.noOfRequiredRecoveryAgents in CS.cfg"
-            )));
-        }
-        tracing::info!(request_id = %request_id, status = %req_status, "recovery approval verified");
-
-        // Call 3: retrieve with session-key wrapping
         let retrieve_req = KeyGenRequest {
             class_name: "com.netscape.certsrv.key.KeyRecoveryRequest".to_owned(),
             attributes: RestAttributes {
                 attribute: vec![
                     RestAttribute { name: "keyId".into(), value: key_id.to_owned() },
-                    RestAttribute { name: "requestId".into(), value: request_id.clone() },
                     RestAttribute { name: "transWrappedSessionKey".into(), value: trans_wrapped_b64 },
-                    RestAttribute { name: "payloadWrappingName".into(), value: "AES KeyWrap/Padding".into() },
                 ],
             },
         };
-        tracing::info!(key_id = %key_id, request_id = %request_id, "retrieving key via session-key wrapping");
+        tracing::info!(key_id = %key_id, "retrieving key via single-call session-key wrapping");
         let resp = self.post_json("/kra/v2/agent/keys/retrieve", &retrieve_req).await?;
         if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
             return Err(DogtagError::KraError(
