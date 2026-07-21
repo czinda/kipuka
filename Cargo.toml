@@ -1,6 +1,7 @@
 [workspace]
 members = [
     ".",
+    "crates/kipuka-cli",
     "crates/kipuka-coap",
     "crates/kipuka-dogtag",
     "crates/kipuka-est",
@@ -91,6 +92,7 @@ parking_lot = "0.12"
 dashmap = "6"
 
 # Internal crates
+kipuka-cli = { path = "crates/kipuka-cli" }
 kipuka-coap = { path = "crates/kipuka-coap" }
 kipuka-dogtag = { path = "crates/kipuka-dogtag" }
 kipuka-est = { path = "crates/kipuka-est" }

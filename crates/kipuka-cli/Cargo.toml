@@ -1,0 +1,25 @@
+[package]
+name = "kipuka-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "EST (RFC 7030) client CLI and library for kipuka"
+
+[lib]
+name = "kipuka_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "kipuka-cli"
+path = "src/main.rs"
+
+[dependencies]
+kipuka-est.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["native-tls"] }
+tokio.workspace = true
+clap.workspace = true
+base64.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

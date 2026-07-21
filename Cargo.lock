@@ -1340,6 +1340,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "kipuka-cli"
+version = "0.2.0"
+dependencies = [
+ "base64",
+ "clap",
+ "kipuka-est",
+ "reqwest",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "kipuka-coap"
 version = "0.2.0"
 dependencies = [
