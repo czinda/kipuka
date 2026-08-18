@@ -22,7 +22,7 @@ jobs:
     name: Rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: rustup component add rustfmt
       - run: cargo fmt --all -- --check
 
@@ -31,7 +31,7 @@ jobs:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Clone synta (sibling for [patch] resolution)
         run: git clone --depth 1 https://github.com/czinda/synta.git ../synta
       - name: Install system dependencies
@@ -55,7 +55,7 @@ jobs:
     name: Build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Clone synta (sibling for [patch] resolution)
         run: git clone --depth 1 https://github.com/czinda/synta.git ../synta
       - name: Install system dependencies
@@ -79,7 +79,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Clone synta (sibling for [patch] resolution)
         run: git clone --depth 1 https://github.com/czinda/synta.git ../synta
       - name: Install system dependencies
@@ -103,7 +103,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Clone synta (sibling for [patch] resolution)
         run: git clone --depth 1 https://github.com/czinda/synta.git ../synta
       - name: Install system dependencies
@@ -129,7 +129,7 @@ jobs:
     name: Security Audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: rustsec/audit-check@v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -140,7 +140,7 @@ jobs:
     name: Cargo Deny
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
