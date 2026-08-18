@@ -39,7 +39,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq libssl-dev pkg-config clang cmake \
             libclang-dev libkrb5-dev libsqlite3-dev
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -63,7 +63,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq libssl-dev pkg-config clang cmake \
             libclang-dev libkrb5-dev libsqlite3-dev
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -87,7 +87,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq libssl-dev pkg-config clang cmake \
             libclang-dev libkrb5-dev libsqlite3-dev
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -111,7 +111,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq libssl-dev pkg-config clang cmake \
             libclang-dev libkrb5-dev libsqlite3-dev
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
