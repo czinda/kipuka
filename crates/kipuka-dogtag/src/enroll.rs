@@ -119,7 +119,8 @@ impl DogtagClient {
         csr_pem: &str,
         profile_id: &str,
     ) -> DogtagResult<EnrollResult> {
-        self.enroll_certificate_with_type(csr_pem, profile_id, "pkcs10").await
+        self.enroll_certificate_with_type(csr_pem, profile_id, "pkcs10")
+            .await
     }
 
     /// Enroll a certificate with an explicit request type (`pkcs10` or `crmf`).
@@ -129,17 +130,25 @@ impl DogtagClient {
         profile_id: &str,
         request_type: &str,
     ) -> DogtagResult<EnrollResult> {
-        debug!(profile = profile_id, request_type, "Submitting enrollment request");
+        debug!(
+            profile = profile_id,
+            request_type, "Submitting enrollment request"
+        );
 
         // Login to establish a session — SessionAuthentication profiles
         // (e.g. acmeServerCert) require a valid JSESSIONID cookie.
-        let login_resp = self.post_json("/ca/rest/account/login", &serde_json::json!({})).await;
+        let login_resp = self
+            .post_json("/ca/rest/account/login", &serde_json::json!({}))
+            .await;
         match &login_resp {
             Ok(r) if r.status().is_success() => {
                 tracing::info!("Dogtag session login succeeded");
             }
             Ok(r) => {
-                tracing::warn!(status = r.status().as_u16(), "Dogtag session login returned non-200 (continuing)");
+                tracing::warn!(
+                    status = r.status().as_u16(),
+                    "Dogtag session login returned non-200 (continuing)"
+                );
             }
             Err(e) => {
                 tracing::warn!(error = %e, "Dogtag session login failed (continuing without session)");
@@ -290,14 +299,20 @@ impl DogtagClient {
                                 let poll = self.get_enrollment_status(&request_id).await?;
                                 let status = poll.status;
                                 let cert = poll.certificate_der;
-                                return Ok(EnrollResult { request_id: request_id.to_owned(), status, certificate_der: cert });
+                                return Ok(EnrollResult {
+                                    request_id: request_id.to_owned(),
+                                    status,
+                                    certificate_der: cert,
+                                });
                             }
                         };
-                        let status_str = approved.get("requestStatus")
+                        let status_str = approved
+                            .get("requestStatus")
                             .or_else(|| approved.get("RequestStatus"))
                             .and_then(|v| v.as_str())
                             .unwrap_or("unknown");
-                        let cert_id = approved.get("certId")
+                        let cert_id = approved
+                            .get("certId")
                             .or_else(|| approved.get("CertId"))
                             .and_then(|v| v.as_str())
                             .map(String::from);
@@ -317,13 +332,16 @@ impl DogtagClient {
                                 Some(self.fetch_cert_der(cid).await?)
                             } else {
                                 // Try to find cert ID in the response
-                                let alt_id = approved.get("certificateId")
+                                let alt_id = approved
+                                    .get("certificateId")
                                     .or_else(|| approved.get("CertificateID"))
                                     .and_then(|v| v.as_str());
                                 if let Some(aid) = alt_id {
                                     Some(self.fetch_cert_der(aid).await?)
                                 } else {
-                                    tracing::warn!("approve succeeded but no cert ID found in response");
+                                    tracing::warn!(
+                                        "approve succeeded but no cert ID found in response"
+                                    );
                                     None
                                 }
                             }
@@ -370,7 +388,10 @@ impl DogtagClient {
         key_type: &str,
         key_size: u32,
     ) -> DogtagResult<ServerKeygenResult> {
-        debug!(profile_id, subject_cn, key_type, key_size, "Server-side key generation via SSKG profile");
+        debug!(
+            profile_id,
+            subject_cn, key_type, key_size, "Server-side key generation via SSKG profile"
+        );
 
         // Login for session — try v2 GET first, fall back to v1 POST
         match self.get("/ca/v2/account/login").await {
@@ -378,7 +399,9 @@ impl DogtagClient {
                 tracing::info!("CA session login succeeded (v2 GET)");
             }
             _ => {
-                let _ = self.post_json("/ca/rest/account/login", &serde_json::json!({})).await;
+                let _ = self
+                    .post_json("/ca/rest/account/login", &serde_json::json!({}))
+                    .await;
             }
         }
 
@@ -440,19 +463,25 @@ impl DogtagClient {
         let resp_body: serde_json::Value = Self::json_response(resp).await?;
 
         // The server-keygen response includes the PKCS#12 in the output
-        let entries = resp_body.get("entries")
+        let entries = resp_body
+            .get("entries")
             .and_then(|v| v.as_array())
-            .ok_or_else(|| DogtagError::ParseError("No entries in server-keygen response".into()))?;
+            .ok_or_else(|| {
+                DogtagError::ParseError("No entries in server-keygen response".into())
+            })?;
 
-        let entry = entries.first()
-            .ok_or_else(|| DogtagError::ParseError("Empty entries in server-keygen response".into()))?;
+        let entry = entries.first().ok_or_else(|| {
+            DogtagError::ParseError("Empty entries in server-keygen response".into())
+        })?;
 
-        let mut status = entry.get("requestStatus")
+        let mut status = entry
+            .get("requestStatus")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")
             .to_owned();
 
-        let request_id = entry.get("requestID")
+        let request_id = entry
+            .get("requestID")
             .or_else(|| entry.get("requestId"))
             .and_then(|v| v.as_str())
             .unwrap_or("")
@@ -469,26 +498,32 @@ impl DogtagClient {
         if status == "pending" && !request_id.is_empty() {
             tracing::info!(request_id = %request_id, "SSKG: approving via agent servlet (P12 in response)");
 
-            let review_url = format!(
-                "/ca/agent/ca/profileReview?requestId={request_id}&xml=true"
-            );
+            let review_url = format!("/ca/agent/ca/profileReview?requestId={request_id}&xml=true");
             let review_resp = self.get_raw(&review_url).await?;
             let review_xml = review_resp.text().await.unwrap_or_default();
 
             if review_xml.contains("errorReason") && !review_xml.contains("<defId>") {
                 return Err(DogtagError::EnrollmentRejected {
-                    reason: format!("SSKG review failed: {}", &review_xml[..review_xml.len().min(200)]),
+                    reason: format!(
+                        "SSKG review failed: {}",
+                        &review_xml[..review_xml.len().min(200)]
+                    ),
                 });
             }
 
             let form_body = build_approval_form(&review_xml, &request_id);
-            tracing::info!(form_len = form_body.len(), "SSKG: posting approval to profileProcess");
+            tracing::info!(
+                form_len = form_body.len(),
+                "SSKG: posting approval to profileProcess"
+            );
 
-            let approve_resp = self.post_bytes(
-                "/ca/agent/ca/profileProcess",
-                form_body.into_bytes(),
-                "application/x-www-form-urlencoded",
-            ).await?;
+            let approve_resp = self
+                .post_bytes(
+                    "/ca/agent/ca/profileProcess",
+                    form_body.into_bytes(),
+                    "application/x-www-form-urlencoded",
+                )
+                .await?;
 
             let resp_status = approve_resp.status();
             let p12_bytes = approve_resp.bytes().await.unwrap_or_default();
@@ -500,7 +535,10 @@ impl DogtagClient {
                 });
             }
 
-            tracing::info!(p12_len = p12_bytes.len(), "SSKG: P12 received from profileProcess");
+            tracing::info!(
+                p12_len = p12_bytes.len(),
+                "SSKG: P12 received from profileProcess"
+            );
 
             use base64::Engine;
             return Ok(ServerKeygenResult {
@@ -511,7 +549,8 @@ impl DogtagClient {
         }
 
         if status != "complete" {
-            let error_msg = entry.get("errorMessage")
+            let error_msg = entry
+                .get("errorMessage")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown error");
             return Err(DogtagError::EnrollmentRejected {
@@ -520,11 +559,13 @@ impl DogtagClient {
         }
 
         // Auto-approved path (SessionAuthentication): cert in response, no P12.
-        let cert_id_str = entry.get("certId")
+        let cert_id_str = entry
+            .get("certId")
             .and_then(|v| v.as_str())
             .map(|s| s.to_owned())
             .or_else(|| {
-                entry.get("certURL")
+                entry
+                    .get("certURL")
                     .and_then(|u| u.as_str())
                     .and_then(|u| u.rsplit('/').next())
                     .map(|s| s.to_owned())
@@ -627,10 +668,7 @@ impl DogtagClient {
     }
 
     fn decode_pem_to_der(pem: &str) -> DogtagResult<Vec<u8>> {
-        let b64: String = pem
-            .lines()
-            .filter(|l| !l.starts_with("-----"))
-            .collect();
+        let b64: String = pem.lines().filter(|l| !l.starts_with("-----")).collect();
         use base64::Engine;
         base64::engine::general_purpose::STANDARD
             .decode(&b64)
@@ -668,7 +706,9 @@ fn build_approval_form(xml: &str, request_id: &str) -> String {
         let mut pos = 0;
         while let Some(id_start) = xml[pos..].find(&open_id) {
             let id_start = pos + id_start + open_id.len();
-            let Some(id_end) = xml[id_start..].find(&close_id) else { break };
+            let Some(id_end) = xml[id_start..].find(&close_id) else {
+                break;
+            };
             let name = xml[id_start..id_start + id_end].trim().to_owned();
 
             let search_from = id_start + id_end;
@@ -695,10 +735,9 @@ fn build_approval_form(xml: &str, request_id: &str) -> String {
     pairs.push(("submit".into(), "submit".into()));
     pairs.push(("xml".into(), "true".into()));
 
-    pairs.iter()
-        .map(|(k, v)| {
-            format!("{}={}", urlencoded(k), urlencoded(v))
-        })
+    pairs
+        .iter()
+        .map(|(k, v)| format!("{}={}", urlencoded(k), urlencoded(v)))
         .collect::<Vec<_>>()
         .join("&")
 }

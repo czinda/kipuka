@@ -109,11 +109,15 @@ pub async fn get_cacerts(
 ///     signerInfos         SET (empty)
 /// }
 /// ```
-pub(crate) fn build_certs_only_pkcs7(certs_der: &[impl AsRef<[u8]>]) -> Result<Vec<u8>, KipukaError> {
+pub(crate) fn build_certs_only_pkcs7(
+    certs_der: &[impl AsRef<[u8]>],
+) -> Result<Vec<u8>, KipukaError> {
     use synta::{Encoder, Encoding, ObjectIdentifier, Tag, tag};
 
     if certs_der.is_empty() {
-        return Err(KipukaError::Ca("No certificates provided for PKCS#7".into()));
+        return Err(KipukaError::Ca(
+            "No certificates provided for PKCS#7".into(),
+        ));
     }
 
     // OID constants from synta-certificate.

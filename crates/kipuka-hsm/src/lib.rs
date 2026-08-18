@@ -148,11 +148,11 @@ pub use error::{HsmError, HsmResult};
 pub use key::{EcdsaCurve, HsmKeyPair, KeyAlgorithm, MlDsaLevel, MlKemLevel};
 pub use pkcs11::Pkcs11Context;
 pub use providers::HsmProvider;
+pub use rustls_signer::Pkcs11SigningKey;
 pub use sign::{
     DefaultHsmSigner, HsmSigner, RsaHashAlgorithm, SoftwarePqcFallback, sign_ecdsa, sign_ml_dsa,
     sign_rsa_pkcs1, sign_rsa_pss,
 };
-pub use rustls_signer::Pkcs11SigningKey;
 pub use slot::HsmSlot;
 
 /// High-level HSM context wrapping PKCS#11 initialization and provider config.

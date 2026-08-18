@@ -333,10 +333,7 @@ impl SecretResolver {
     }
 
     /// Resolve all configured secrets and return a bundle.
-    pub fn resolve_config(
-        &self,
-        config: &super::Config,
-    ) -> Result<ResolvedSecrets, SecretError> {
+    pub fn resolve_config(&self, config: &super::Config) -> Result<ResolvedSecrets, SecretError> {
         let db_url = self.resolve("database.url", &config.database.url)?;
 
         let hsm_pin = if let Some(ref hsm) = config.hsm {
@@ -376,8 +373,10 @@ impl SecretResolver {
         let mut cmp_mac_secrets = HashMap::new();
         if let Some(ref cmp) = config.cmp {
             for secret in &cmp.mac_secrets {
-                let resolved =
-                    self.resolve(&format!("cmp.mac_secrets.{}", secret.reference), &secret.secret_hex)?;
+                let resolved = self.resolve(
+                    &format!("cmp.mac_secrets.{}", secret.reference),
+                    &secret.secret_hex,
+                )?;
                 cmp_mac_secrets.insert(secret.reference.clone(), resolved);
             }
         }
@@ -418,9 +417,18 @@ impl std::fmt::Debug for ResolvedSecrets {
         f.debug_struct("ResolvedSecrets")
             .field("db_url", &"<redacted>")
             .field("hsm_pin", &self.hsm_pin.as_ref().map(|_| "<redacted>"))
-            .field("admin_bearer_token", &self.admin_bearer_token.as_ref().map(|_| "<redacted>"))
-            .field("ldap_bind_password", &self.ldap_bind_password.as_ref().map(|_| "<redacted>"))
-            .field("cmp_mac_secrets", &format!("{} entries", self.cmp_mac_secrets.len()))
+            .field(
+                "admin_bearer_token",
+                &self.admin_bearer_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "ldap_bind_password",
+                &self.ldap_bind_password.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "cmp_mac_secrets",
+                &format!("{} entries", self.cmp_mac_secrets.len()),
+            )
             .finish()
     }
 }
@@ -438,7 +446,10 @@ mod tests {
     #[test]
     fn parse_file_prefix() {
         let r = SecretRef("file:/run/secrets/db-pass".into());
-        assert_eq!(r.backend(), SecretBackend::File("/run/secrets/db-pass".into()));
+        assert_eq!(
+            r.backend(),
+            SecretBackend::File("/run/secrets/db-pass".into())
+        );
     }
 
     #[test]
@@ -462,7 +473,10 @@ mod tests {
     #[test]
     fn parse_literal_no_prefix() {
         let r = SecretRef("plaintext-value".into());
-        assert_eq!(r.backend(), SecretBackend::Literal("plaintext-value".into()));
+        assert_eq!(
+            r.backend(),
+            SecretBackend::Literal("plaintext-value".into())
+        );
     }
 
     #[test]

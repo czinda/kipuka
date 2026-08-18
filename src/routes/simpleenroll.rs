@@ -202,7 +202,9 @@ pub async fn post_simpleenroll(
                     );
                 }
 
-                let pkcs7_der = crate::routes::cacerts::build_certs_only_pkcs7(std::slice::from_ref(&cert_der))?;
+                let pkcs7_der = crate::routes::cacerts::build_certs_only_pkcs7(
+                    std::slice::from_ref(&cert_der),
+                )?;
                 let body = encode_est_base64(&pkcs7_der);
                 let mut resp = (StatusCode::OK, body).into_response();
                 resp.headers_mut().insert(
@@ -286,7 +288,9 @@ pub async fn post_simpleenroll(
     // Build the enrollment profile (use defaults for now; a full implementation
     // would load a named profile from the label config).
     let profile = crate::ca::issue::EnrollmentProfile {
-        max_validity_days: ca.validity_days.min(crate::ca::issue::cab_forum_max_validity_days()),
+        max_validity_days: ca
+            .validity_days
+            .min(crate::ca::issue::cab_forum_max_validity_days()),
         ..crate::ca::issue::EnrollmentProfile::default()
     };
 
@@ -335,7 +339,8 @@ pub async fn post_simpleenroll(
     let cert_der = result.certificate_der;
 
     // Wrap in PKCS#7 degenerate certs-only per RFC 7030 §4.2.3.
-    let pkcs7_der = crate::routes::cacerts::build_certs_only_pkcs7(std::slice::from_ref(&cert_der))?;
+    let pkcs7_der =
+        crate::routes::cacerts::build_certs_only_pkcs7(std::slice::from_ref(&cert_der))?;
 
     let body = encode_est_base64(&pkcs7_der);
 

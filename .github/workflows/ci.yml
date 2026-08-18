@@ -17,12 +17,11 @@ env:
 
 jobs:
   # ── Format ─────────────────────────────────────────────────────────────────
-  # No system deps or synta needed — pure source check.
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: rustup component add rustfmt
       - run: cargo fmt --all -- --check
 
@@ -31,7 +30,7 @@ jobs:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Clone synta (sibling for [patch] resolution)
         run: git clone --depth 1 https://github.com/czinda/synta.git ../synta
       - name: Install system dependencies
@@ -39,7 +38,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq libssl-dev pkg-config clang cmake \
             libclang-dev libkrb5-dev libsqlite3-dev
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -55,7 +54,7 @@ jobs:
     name: Build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Clone synta (sibling for [patch] resolution)
         run: git clone --depth 1 https://github.com/czinda/synta.git ../synta
       - name: Install system dependencies
@@ -63,7 +62,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq libssl-dev pkg-config clang cmake \
             libclang-dev libkrb5-dev libsqlite3-dev
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -79,7 +78,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Clone synta (sibling for [patch] resolution)
         run: git clone --depth 1 https://github.com/czinda/synta.git ../synta
       - name: Install system dependencies
@@ -87,7 +86,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq libssl-dev pkg-config clang cmake \
             libclang-dev libkrb5-dev libsqlite3-dev
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -103,7 +102,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Clone synta (sibling for [patch] resolution)
         run: git clone --depth 1 https://github.com/czinda/synta.git ../synta
       - name: Install system dependencies
@@ -111,7 +110,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq libssl-dev pkg-config clang cmake \
             libclang-dev libkrb5-dev libsqlite3-dev
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -129,18 +128,25 @@ jobs:
     name: Security Audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: rustsec/audit-check@v2.0.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          ignore: RUSTSEC-2023-0071,RUSTSEC-2025-0134
+      - uses: actions/checkout@v7
+      - name: Clone synta (sibling for [patch] resolution)
+        run: git clone --depth 1 https://github.com/czinda/synta.git ../synta
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Run audit
+        run: |
+          cargo audit \
+            --ignore RUSTSEC-2023-0071 \
+            --ignore RUSTSEC-2025-0134
 
   # ── Dependency license check ───────────────────────────────────────────────
   deny:
     name: Cargo Deny
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+      - name: Clone synta (sibling for [patch] resolution)
+        run: git clone --depth 1 https://github.com/czinda/synta.git ../synta
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check

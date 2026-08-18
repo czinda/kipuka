@@ -57,18 +57,13 @@ impl EstClient {
                 ))
             })?;
             let cert = Certificate::from_pem(&pem).map_err(|e| {
-                CliError::Tls(format!(
-                    "Invalid CA cert {}: {e}",
-                    cacert_path.display()
-                ))
+                CliError::Tls(format!("Invalid CA cert {}: {e}", cacert_path.display()))
             })?;
             builder = builder.add_root_certificate(cert);
             debug!(path = %cacert_path.display(), "Added CA certificate for server verification");
         }
 
-        if let (Some(cert_path), Some(key_path)) =
-            (&tls.client_cert, &tls.client_key)
-        {
+        if let (Some(cert_path), Some(key_path)) = (&tls.client_cert, &tls.client_key) {
             let cert_pem = std::fs::read(cert_path).map_err(|e| {
                 CliError::Tls(format!(
                     "Failed to read client cert {}: {e}",
@@ -81,9 +76,8 @@ impl EstClient {
                     key_path.display()
                 ))
             })?;
-            let identity = Identity::from_pkcs8_pem(&cert_pem, &key_pem).map_err(|e| {
-                CliError::Tls(format!("Invalid client identity: {e}"))
-            })?;
+            let identity = Identity::from_pkcs8_pem(&cert_pem, &key_pem)
+                .map_err(|e| CliError::Tls(format!("Invalid client identity: {e}")))?;
             builder = builder.identity(identity);
             debug!(
                 cert = %cert_path.display(),
@@ -92,9 +86,9 @@ impl EstClient {
             );
         }
 
-        let http = builder.build().map_err(|e| {
-            CliError::Tls(format!("Failed to build HTTP client: {e}"))
-        })?;
+        let http = builder
+            .build()
+            .map_err(|e| CliError::Tls(format!("Failed to build HTTP client: {e}")))?;
 
         Ok(Self { http, base_url })
     }
@@ -105,10 +99,7 @@ impl EstClient {
     /// chain as a PKCS#7 certs-only structure.
     pub async fn cacerts(&self, label: Option<&str>) -> CliResult<CaCertsResult> {
         let url = match label {
-            Some(l) => format!(
-                "{}/.well-known/est/{}/cacerts",
-                self.base_url, l
-            ),
+            Some(l) => format!("{}/.well-known/est/{}/cacerts", self.base_url, l),
             None => format!("{}/.well-known/est/cacerts", self.base_url),
         };
 

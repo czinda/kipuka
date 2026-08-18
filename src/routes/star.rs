@@ -255,7 +255,9 @@ pub async fn post_star_order(
         .await;
 
     // Wrap the issued certificate in PKCS#7 certs-only (RFC 7030 §4.2.3).
-    let pkcs7_der = crate::routes::cacerts::build_certs_only_pkcs7(std::slice::from_ref(&result.certificate_der))?;
+    let pkcs7_der = crate::routes::cacerts::build_certs_only_pkcs7(std::slice::from_ref(
+        &result.certificate_der,
+    ))?;
     let response_body = encode_est_base64(&pkcs7_der);
 
     let mut resp = (StatusCode::CREATED, response_body).into_response();
@@ -312,7 +314,9 @@ pub async fn get_star_certificate(
     match star_manager.get_current_certificate(&order_id) {
         Ok(cert) => {
             // Wrap in PKCS#7 certs-only per RFC 7030 §4.2.3.
-            let pkcs7_der = crate::routes::cacerts::build_certs_only_pkcs7(std::slice::from_ref(&cert.certificate_der))?;
+            let pkcs7_der = crate::routes::cacerts::build_certs_only_pkcs7(std::slice::from_ref(
+                &cert.certificate_der,
+            ))?;
             let response_body = encode_est_base64(&pkcs7_der);
 
             let mut resp = (StatusCode::OK, response_body).into_response();

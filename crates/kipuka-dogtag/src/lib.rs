@@ -34,7 +34,7 @@ pub use client::DogtagClient;
 pub use cmc::CmcClient;
 pub use config::DogtagConfig;
 pub use enroll::{EnrollResult, EnrollStatus, ServerKeygenResult};
-pub use kra::{KraClient, KeySearchEntry};
+pub use kra::{KeySearchEntry, KraClient};
 pub use pool::DogtagPool;
 pub use profiles::{ProfileConstraints, ProfileDetail, ProfileInfo};
 

@@ -100,15 +100,11 @@ fn build_server_config(
             "TLS server key backed by PKCS#11 HSM (key never leaves HSM)"
         );
 
-        let signing_key = kipuka_hsm::Pkcs11SigningKey::new(
-            Arc::clone(hsm_ctx),
-            key_label,
-            algorithm,
-        );
+        let signing_key =
+            kipuka_hsm::Pkcs11SigningKey::new(Arc::clone(hsm_ctx), key_label, algorithm);
 
         let certified_key = CertifiedKey::new(cert_chain, Arc::new(signing_key));
-        with_client_auth
-            .with_cert_resolver(Arc::new(SingleCertResolver(Arc::new(certified_key))))
+        with_client_auth.with_cert_resolver(Arc::new(SingleCertResolver(Arc::new(certified_key))))
     } else {
         let private_key = load_private_key(&config.key_file)?;
         with_client_auth
@@ -140,10 +136,7 @@ fn parse_pkcs11_object_label(uri: &str) -> Result<String, KipukaError> {
 struct SingleCertResolver(Arc<CertifiedKey>);
 
 impl rustls::server::ResolvesServerCert for SingleCertResolver {
-    fn resolve(
-        &self,
-        _client_hello: rustls::server::ClientHello<'_>,
-    ) -> Option<Arc<CertifiedKey>> {
+    fn resolve(&self, _client_hello: rustls::server::ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
         Some(Arc::clone(&self.0))
     }
 }

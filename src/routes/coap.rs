@@ -65,8 +65,9 @@ impl kipuka_coap::EstHandler for CoapEstHandler {
 fn handle_cacerts(state: &Arc<AppState>) -> Result<EstResponse, CoapError> {
     let ca = state.default_ca();
 
-    let pkcs7_der = crate::routes::cacerts::build_certs_only_pkcs7(std::slice::from_ref(&ca.cert_der))
-        .map_err(|e| CoapError::Internal(format!("PKCS#7 build failed: {e}")))?;
+    let pkcs7_der =
+        crate::routes::cacerts::build_certs_only_pkcs7(std::slice::from_ref(&ca.cert_der))
+            .map_err(|e| CoapError::Internal(format!("PKCS#7 build failed: {e}")))?;
 
     tracing::debug!(ca_id = %ca.id, "CoAP /cacerts served");
 
@@ -110,7 +111,9 @@ fn handle_simpleenroll(csr_der: &[u8], state: &Arc<AppState>) -> Result<EstRespo
 
     // Build a default enrollment profile.
     let profile = crate::ca::issue::EnrollmentProfile {
-        max_validity_days: ca.validity_days.min(crate::ca::issue::cab_forum_max_validity_days()),
+        max_validity_days: ca
+            .validity_days
+            .min(crate::ca::issue::cab_forum_max_validity_days()),
         ..crate::ca::issue::EnrollmentProfile::default()
     };
 
@@ -134,8 +137,10 @@ fn handle_simpleenroll(csr_der: &[u8], state: &Arc<AppState>) -> Result<EstRespo
     );
 
     // Wrap the issued certificate in PKCS#7 certs-only (reuses cacerts builder).
-    let pkcs7_der = crate::routes::cacerts::build_certs_only_pkcs7(std::slice::from_ref(&result.certificate_der))
-        .map_err(|e| CoapError::Internal(format!("PKCS#7 wrap failed: {e}")))?;
+    let pkcs7_der = crate::routes::cacerts::build_certs_only_pkcs7(std::slice::from_ref(
+        &result.certificate_der,
+    ))
+    .map_err(|e| CoapError::Internal(format!("PKCS#7 wrap failed: {e}")))?;
 
     Ok(EstResponse {
         payload: pkcs7_der,

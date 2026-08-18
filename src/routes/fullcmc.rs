@@ -269,7 +269,9 @@ pub async fn post_fullcmc(
     let resolved_key = crate::ca::issue::resolve_signing_key(ca_cfg, state.hsm.as_ref()).await?;
 
     let profile = crate::ca::issue::EnrollmentProfile {
-        max_validity_days: ca.validity_days.min(crate::ca::issue::cab_forum_max_validity_days()),
+        max_validity_days: ca
+            .validity_days
+            .min(crate::ca::issue::cab_forum_max_validity_days()),
         ..crate::ca::issue::EnrollmentProfile::default()
     };
 

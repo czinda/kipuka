@@ -26,7 +26,9 @@ pub fn ml_kem_encapsulate(transport_pub_key_der: &[u8]) -> DogtagResult<KemEncap
             transport_pub_key_der.len() as std::os::raw::c_long,
         );
         if evp_pkey.is_null() {
-            return Err(DogtagError::KraError("d2i_PUBKEY failed for transport key".into()));
+            return Err(DogtagError::KraError(
+                "d2i_PUBKEY failed for transport key".into(),
+            ));
         }
 
         let ctx = openssl_sys::EVP_PKEY_CTX_new(evp_pkey, std::ptr::null_mut());
@@ -76,9 +78,7 @@ pub fn ml_kem_encapsulate(transport_pub_key_der: &[u8]) -> DogtagResult<KemEncap
         openssl_sys::EVP_PKEY_free(evp_pkey);
 
         if rc <= 0 {
-            return Err(DogtagError::KraError(
-                "EVP_PKEY_encapsulate failed".into(),
-            ));
+            return Err(DogtagError::KraError("EVP_PKEY_encapsulate failed".into()));
         }
 
         ciphertext.truncate(ct_len);
@@ -108,7 +108,7 @@ pub fn aes_kwp_wrap(kek: &[u8], plaintext: &[u8]) -> DogtagResult<Vec<u8>> {
                 return Err(DogtagError::KraError(format!(
                     "Invalid KEK length {} (expected 16, 24, or 32)",
                     kek.len()
-                )))
+                )));
             }
         };
 
@@ -118,23 +118,16 @@ pub fn aes_kwp_wrap(kek: &[u8], plaintext: &[u8]) -> DogtagResult<Vec<u8>> {
             std::ptr::null(),
         );
         if cipher.is_null() {
-            return Err(DogtagError::KraError(
-                "AES-KWP cipher not available".into(),
-            ));
+            return Err(DogtagError::KraError("AES-KWP cipher not available".into()));
         }
 
         let ctx = openssl_sys::EVP_CIPHER_CTX_new();
         if ctx.is_null() {
             openssl_sys::EVP_CIPHER_free(cipher as *mut _);
-            return Err(DogtagError::KraError(
-                "EVP_CIPHER_CTX_new failed".into(),
-            ));
+            return Err(DogtagError::KraError("EVP_CIPHER_CTX_new failed".into()));
         }
 
-        openssl_sys::EVP_CIPHER_CTX_set_flags(
-            ctx,
-            openssl_sys::EVP_CIPHER_CTX_FLAG_WRAP_ALLOW,
-        );
+        openssl_sys::EVP_CIPHER_CTX_set_flags(ctx, openssl_sys::EVP_CIPHER_CTX_FLAG_WRAP_ALLOW);
 
         let rc = openssl_sys::EVP_EncryptInit_ex(
             ctx,

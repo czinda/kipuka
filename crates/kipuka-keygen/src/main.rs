@@ -69,8 +69,7 @@ struct Cli {
 fn main() -> ExitCode {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -121,16 +120,24 @@ fn main() -> ExitCode {
     let id = hex::decode(&cli.id).unwrap_or_else(|_| vec![0x01]);
 
     match cli.algorithm.to_lowercase().as_str() {
-        "ml-dsa-87" | "mldsa87" => generate_ml_dsa(&session, MlDsaParameterSetType::ML_DSA_87, &cli.label, &id),
-        "ml-dsa-65" | "mldsa65" => generate_ml_dsa(&session, MlDsaParameterSetType::ML_DSA_65, &cli.label, &id),
-        "ml-dsa-44" | "mldsa44" => generate_ml_dsa(&session, MlDsaParameterSetType::ML_DSA_44, &cli.label, &id),
+        "ml-dsa-87" | "mldsa87" => {
+            generate_ml_dsa(&session, MlDsaParameterSetType::ML_DSA_87, &cli.label, &id)
+        }
+        "ml-dsa-65" | "mldsa65" => {
+            generate_ml_dsa(&session, MlDsaParameterSetType::ML_DSA_65, &cli.label, &id)
+        }
+        "ml-dsa-44" | "mldsa44" => {
+            generate_ml_dsa(&session, MlDsaParameterSetType::ML_DSA_44, &cli.label, &id)
+        }
         s if s.starts_with("rsa:") => {
             let bits: u32 = s[4..].parse().unwrap_or(4096);
             generate_rsa(&session, bits, &cli.label, &id)
         }
         s if s.starts_with("ec:") => {
             let curve_oid = match &s[3..] {
-                "p256" | "p-256" => vec![0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07],
+                "p256" | "p-256" => {
+                    vec![0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07]
+                }
                 "p384" | "p-384" => vec![0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x22],
                 "p521" | "p-521" => vec![0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x23],
                 other => {
@@ -204,8 +211,7 @@ fn generate_ml_dsa(
         Ok((pub_handle, priv_handle)) => {
             println!(
                 "OK: ML-DSA key pair generated — pub={:?}, priv={:?}, label='{label}'",
-                pub_handle,
-                priv_handle,
+                pub_handle, priv_handle,
             );
             ExitCode::SUCCESS
         }
@@ -249,8 +255,7 @@ fn generate_rsa(
         Ok((pub_handle, priv_handle)) => {
             println!(
                 "OK: RSA-{bits} key pair generated — pub={:?}, priv={:?}, label='{label}'",
-                pub_handle,
-                priv_handle,
+                pub_handle, priv_handle,
             );
             ExitCode::SUCCESS
         }
@@ -291,8 +296,7 @@ fn generate_ecdsa(
         Ok((pub_handle, priv_handle)) => {
             println!(
                 "OK: ECDSA key pair generated — pub={:?}, priv={:?}, label='{label}'",
-                pub_handle,
-                priv_handle,
+                pub_handle, priv_handle,
             );
             ExitCode::SUCCESS
         }
@@ -311,26 +315,52 @@ fn list_objects(session: &cryptoki::session::Session) -> ExitCode {
                 println!("No objects found.");
                 return ExitCode::SUCCESS;
             }
-            println!("{:<8} {:<15} {:<12} {}", "Handle", "Class", "KeyType", "Label");
+            println!(
+                "{:<8} {:<15} {:<12} {}",
+                "Handle", "Class", "KeyType", "Label"
+            );
             println!("{}", "-".repeat(60));
             for obj in objects {
                 let info = session.get_attributes(
                     obj,
-                    &[AttributeType::Class, AttributeType::KeyType, AttributeType::Label],
+                    &[
+                        AttributeType::Class,
+                        AttributeType::KeyType,
+                        AttributeType::Label,
+                    ],
                 );
                 let (class, key_type, label) = match info {
                     Ok(attrs) => {
-                        let class = attrs.iter().find_map(|a| {
-                            if let Attribute::Class(c) = a { Some(format!("{c:?}")) } else { None }
-                        }).unwrap_or_else(|| "?".into());
-                        let key_type = attrs.iter().find_map(|a| {
-                            if let Attribute::KeyType(k) = a { Some(format!("{k:?}")) } else { None }
-                        }).unwrap_or_else(|| "-".into());
-                        let label = attrs.iter().find_map(|a| {
-                            if let Attribute::Label(l) = a {
-                                Some(String::from_utf8_lossy(l).to_string())
-                            } else { None }
-                        }).unwrap_or_else(|| "?".into());
+                        let class = attrs
+                            .iter()
+                            .find_map(|a| {
+                                if let Attribute::Class(c) = a {
+                                    Some(format!("{c:?}"))
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or_else(|| "?".into());
+                        let key_type = attrs
+                            .iter()
+                            .find_map(|a| {
+                                if let Attribute::KeyType(k) = a {
+                                    Some(format!("{k:?}"))
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or_else(|| "-".into());
+                        let label = attrs
+                            .iter()
+                            .find_map(|a| {
+                                if let Attribute::Label(l) = a {
+                                    Some(String::from_utf8_lossy(l).to_string())
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or_else(|| "?".into());
                         (class, key_type, label)
                     }
                     Err(_) => ("?".into(), "?".into(), "?".into()),

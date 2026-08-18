@@ -114,7 +114,8 @@ impl TestServer {
 
         // Initialize in-memory database
         let resolver = kipuka::config::SecretResolver::new();
-        let secrets = resolver.resolve_config(&config)
+        let secrets = resolver
+            .resolve_config(&config)
             .expect("failed to resolve test secrets");
         let secrets = std::sync::Arc::new(secrets);
 

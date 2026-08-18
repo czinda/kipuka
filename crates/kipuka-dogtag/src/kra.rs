@@ -102,17 +102,22 @@ impl KraClient {
             .timeout(Duration::from_secs(config.timeout_secs));
 
         if config.accept_invalid_certs {
-            tracing::warn!("KRA client: TLS certificate validation disabled (accept_invalid_certs=true)");
+            tracing::warn!(
+                "KRA client: TLS certificate validation disabled (accept_invalid_certs=true)"
+            );
         }
 
         let use_mtls = !is_http && !config.skip_mtls;
         if use_mtls {
             let cert_pem = std::fs::read(&config.agent_cert_file)?;
             let key_pem = std::fs::read(&config.agent_key_file)?;
-            let identity = Identity::from_pkcs8_pem(&cert_pem, &key_pem)
-                .map_err(|e| DogtagError::TlsError(format!("Failed to load agent identity: {e}")))?;
+            let identity = Identity::from_pkcs8_pem(&cert_pem, &key_pem).map_err(|e| {
+                DogtagError::TlsError(format!("Failed to load agent identity: {e}"))
+            })?;
             builder = builder.identity(identity);
-            tracing::info!("KRA client: HTTPS with mTLS agent cert (cert-only auth, no basic auth)");
+            tracing::info!(
+                "KRA client: HTTPS with mTLS agent cert (cert-only auth, no basic auth)"
+            );
         }
 
         let ca_pem = std::fs::read(&config.ca_cert_file)?;
@@ -120,7 +125,8 @@ impl KraClient {
             .map_err(|e| DogtagError::TlsError(format!("Failed to load CA certificate: {e}")))?;
         builder = builder.add_root_certificate(ca_cert);
 
-        let http = builder.build()
+        let http = builder
+            .build()
             .map_err(|e| DogtagError::TlsError(format!("KRA client build failed: {e:?}")))?;
 
         let base_url = kra_url.as_str().trim_end_matches('/').to_owned();
@@ -139,7 +145,9 @@ impl KraClient {
             ) {
                 (Some(user), Some(pass)) => Some((user.clone(), pass.clone())),
                 _ if is_http => {
-                    tracing::error!("KRA HTTP mode requires explicit kra_username/kra_password in config");
+                    tracing::error!(
+                        "KRA HTTP mode requires explicit kra_username/kra_password in config"
+                    );
                     return Err(DogtagError::ConfigError(
                         "kra_username and kra_password are required for HTTP connections".into(),
                     ));
@@ -167,19 +175,27 @@ impl KraClient {
                 return;
             }
             Ok(r) => {
-                tracing::debug!(status = r.status().as_u16(), "KRA v2 GET login returned non-200, trying v1 POST");
+                tracing::debug!(
+                    status = r.status().as_u16(),
+                    "KRA v2 GET login returned non-200, trying v1 POST"
+                );
             }
             Err(e) => {
                 tracing::debug!(error = %e, "KRA v2 GET login failed, trying v1 POST");
             }
         }
-        let login_resp = self.post_json("/kra/rest/account/login", &serde_json::json!({})).await;
+        let login_resp = self
+            .post_json("/kra/rest/account/login", &serde_json::json!({}))
+            .await;
         match login_resp {
             Ok(r) if r.status().is_success() => {
                 tracing::info!("KRA session login succeeded (v1 POST)");
             }
             Ok(r) => {
-                tracing::warn!(status = r.status().as_u16(), "KRA session login returned non-200 (continuing)");
+                tracing::warn!(
+                    status = r.status().as_u16(),
+                    "KRA session login returned non-200 (continuing)"
+                );
             }
             Err(e) => {
                 tracing::warn!(error = %e, "KRA session login failed (continuing without session)");
@@ -191,32 +207,48 @@ impl KraClient {
         self.login().await;
         debug!(key_type, key_size, "Generating key on KRA");
 
-        let class_name = if key_type.eq_ignore_ascii_case("AES")
-            || key_type.eq_ignore_ascii_case("DESede")
-        {
-            "com.netscape.certsrv.key.SymKeyGenerationRequest"
-        } else {
-            "com.netscape.certsrv.key.AsymKeyGenerationRequest"
-        };
+        let class_name =
+            if key_type.eq_ignore_ascii_case("AES") || key_type.eq_ignore_ascii_case("DESede") {
+                "com.netscape.certsrv.key.SymKeyGenerationRequest"
+            } else {
+                "com.netscape.certsrv.key.AsymKeyGenerationRequest"
+            };
 
-        let client_key_id = format!("kipuka-{:x}", std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos());
+        let client_key_id = format!(
+            "kipuka-{:x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
 
         let request = KeyGenRequest {
             class_name: class_name.to_owned(),
             attributes: RestAttributes {
                 attribute: vec![
-                    RestAttribute { name: "clientKeyID".into(), value: client_key_id },
-                    RestAttribute { name: "keyAlgorithm".into(), value: key_type.to_owned() },
-                    RestAttribute { name: "keySize".into(), value: key_size.to_string() },
-                    RestAttribute { name: "keyUsage".into(), value: "wrap,unwrap".into() },
+                    RestAttribute {
+                        name: "clientKeyID".into(),
+                        value: client_key_id,
+                    },
+                    RestAttribute {
+                        name: "keyAlgorithm".into(),
+                        value: key_type.to_owned(),
+                    },
+                    RestAttribute {
+                        name: "keySize".into(),
+                        value: key_size.to_string(),
+                    },
+                    RestAttribute {
+                        name: "keyUsage".into(),
+                        value: "wrap,unwrap".into(),
+                    },
                 ],
             },
         };
 
-        let resp = self.post_json("/kra/v2/agent/keyrequests", &request).await?;
+        let resp = self
+            .post_json("/kra/v2/agent/keyrequests", &request)
+            .await?;
         let keygen_resp: KeyGenResponse = Self::json_response(resp).await?;
 
         let info = keygen_resp
@@ -292,11 +324,7 @@ impl KraClient {
     /// 3. Retrieve PKCS#12 (keyId + requestId + passphrase)
     ///
     /// Returns the PKCS#8 DER-encoded private key.
-    pub async fn recover_key_p12(
-        &self,
-        key_id: &str,
-        cert_der: &[u8],
-    ) -> DogtagResult<Vec<u8>> {
+    pub async fn recover_key_p12(&self, key_id: &str, cert_der: &[u8]) -> DogtagResult<Vec<u8>> {
         self.recover_key_inner(key_id, Some(cert_der)).await
     }
 
@@ -304,10 +332,7 @@ impl KraClient {
     ///
     /// Variant for freshly KRA-generated keys (SSKG flow: generate →
     /// recover → build CSR → enroll). Returns PKCS#8 DER.
-    pub async fn recover_key_no_cert(
-        &self,
-        key_id: &str,
-    ) -> DogtagResult<Vec<u8>> {
+    pub async fn recover_key_no_cert(&self, key_id: &str) -> DogtagResult<Vec<u8>> {
         self.recover_key_inner(key_id, None).await
     }
 
@@ -339,30 +364,43 @@ impl KraClient {
             class_name: "com.netscape.certsrv.key.KeyRecoveryRequest".to_owned(),
             attributes: RestAttributes {
                 attribute: vec![
-                    RestAttribute { name: "keyId".into(), value: key_id.to_owned() },
-                    RestAttribute { name: "transWrappedSessionKey".into(), value: trans_wrapped_b64 },
+                    RestAttribute {
+                        name: "keyId".into(),
+                        value: key_id.to_owned(),
+                    },
+                    RestAttribute {
+                        name: "transWrappedSessionKey".into(),
+                        value: trans_wrapped_b64,
+                    },
                 ],
             },
         };
         tracing::info!(key_id = %key_id, "retrieving key via single-call session-key wrapping");
-        let resp = self.post_json("/kra/v2/agent/keys/retrieve", &retrieve_req).await?;
+        let resp = self
+            .post_json("/kra/v2/agent/keys/retrieve", &retrieve_req)
+            .await?;
         if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
             return Err(DogtagError::KraError(
-                "Recovery retrieve returned 401 — session may have expired".into()
+                "Recovery retrieve returned 401 — session may have expired".into(),
             ));
         }
 
         let body: serde_json::Value = Self::json_response(resp).await?;
 
-        let wrapped_b64 = body.get("wrappedPrivateData")
+        let wrapped_b64 = body
+            .get("wrappedPrivateData")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| DogtagError::KraError(
-                format!("No wrappedPrivateData in retrieve response: {}", crate::truncate_str(
-                    &body.to_string(), 300))
-            ))?;
+            .ok_or_else(|| {
+                DogtagError::KraError(format!(
+                    "No wrappedPrivateData in retrieve response: {}",
+                    crate::truncate_str(&body.to_string(), 300)
+                ))
+            })?;
         let wrapped = base64::engine::general_purpose::STANDARD
             .decode(wrapped_b64)
-            .map_err(|e| DogtagError::KraError(format!("Invalid base64 in wrappedPrivateData: {e}")))?;
+            .map_err(|e| {
+                DogtagError::KraError(format!("Invalid base64 in wrappedPrivateData: {e}"))
+            })?;
 
         // Branch on wrap mode: nonceData present → AES-CBC, absent → AES-KWP
         let der = match body.get("nonceData").and_then(|v| v.as_str()) {
@@ -373,16 +411,19 @@ impl KraClient {
                 let cipher = match session_key.len() {
                     16 => openssl::symm::Cipher::aes_128_cbc(),
                     32 => openssl::symm::Cipher::aes_256_cbc(),
-                    n => return Err(DogtagError::KraError(format!("Unsupported session key length {n} for AES-CBC"))),
+                    n => {
+                        return Err(DogtagError::KraError(format!(
+                            "Unsupported session key length {n} for AES-CBC"
+                        )));
+                    }
                 };
-                Zeroizing::new(openssl::symm::decrypt(
-                    cipher,
-                    &session_key, Some(&iv), &wrapped,
-                ).map_err(|e| DogtagError::KraError(format!("AES-CBC unwrap failed: {e}")))?)
+                Zeroizing::new(
+                    openssl::symm::decrypt(cipher, &session_key, Some(&iv), &wrapped).map_err(
+                        |e| DogtagError::KraError(format!("AES-CBC unwrap failed: {e}")),
+                    )?,
+                )
             }
-            None => {
-                aes_kwp_unwrap(&session_key, &wrapped)?
-            }
+            None => aes_kwp_unwrap(&session_key, &wrapped)?,
         };
 
         tracing::info!(key_len = der.len(), "private key recovered (PKCS#8 DER)");
@@ -398,16 +439,15 @@ impl KraClient {
     pub async fn get_transport_cert(&self) -> DogtagResult<Vec<u8>> {
         let resp = self.get_json("/kra/v2/config/cert/transport").await?;
         let body: serde_json::Value = Self::json_response(resp).await?;
-        let pem = body.get("Encoded")
+        let pem = body
+            .get("Encoded")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| DogtagError::KraError(
-                "No Encoded field in transport cert response".into(),
-            ))?;
+            .ok_or_else(|| {
+                DogtagError::KraError("No Encoded field in transport cert response".into())
+            })?;
 
         // Strip PEM headers and decode
-        let b64: String = pem.lines()
-            .filter(|l| !l.starts_with("-----"))
-            .collect();
+        let b64: String = pem.lines().filter(|l| !l.starts_with("-----")).collect();
         use base64::Engine;
         base64::engine::general_purpose::STANDARD
             .decode(&b64)
@@ -419,12 +459,16 @@ impl KraClient {
     /// Returns the most recent key matching the query. The KRA stores keys
     /// with a `clientKeyID` that typically contains the cert subject DN.
     /// If no query is given, returns the most recently archived key.
-    pub async fn search_keys(&self, client_key_id: Option<&str>, max_results: u32) -> DogtagResult<Vec<KeySearchEntry>> {
+    pub async fn search_keys(
+        &self,
+        client_key_id: Option<&str>,
+        max_results: u32,
+    ) -> DogtagResult<Vec<KeySearchEntry>> {
         self.login().await;
 
         let mut path = format!("/kra/rest/agent/keys?maxResults={max_results}&status=active");
         if let Some(ckid) = client_key_id {
-            use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+            use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
             let encoded = utf8_percent_encode(ckid, NON_ALPHANUMERIC);
             path.push_str(&format!("&clientKeyID={encoded}"));
         }
@@ -432,21 +476,38 @@ impl KraClient {
         let resp = self.get_json(&path).await?;
         let body: serde_json::Value = Self::json_response(resp).await?;
 
-        let entries = body.get("entries")
+        let entries = body
+            .get("entries")
             .and_then(|v| v.as_array())
             .map(|arr| {
-                arr.iter().filter_map(|e| {
-                    let key_url = e.get("keyURL").and_then(|v| v.as_str()).unwrap_or("");
-                    let key_id = key_url.rsplit('/').next().unwrap_or("").to_owned();
-                    if key_id.is_empty() { return None; }
-                    Some(KeySearchEntry {
-                        key_id,
-                        client_key_id: e.get("clientKeyID").and_then(|v| v.as_str()).unwrap_or("").to_owned(),
-                        algorithm: e.get("algorithm").and_then(|v| v.as_str()).unwrap_or("").to_owned(),
-                        size: e.get("size").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                        status: e.get("status").and_then(|v| v.as_str()).unwrap_or("").to_owned(),
+                arr.iter()
+                    .filter_map(|e| {
+                        let key_url = e.get("keyURL").and_then(|v| v.as_str()).unwrap_or("");
+                        let key_id = key_url.rsplit('/').next().unwrap_or("").to_owned();
+                        if key_id.is_empty() {
+                            return None;
+                        }
+                        Some(KeySearchEntry {
+                            key_id,
+                            client_key_id: e
+                                .get("clientKeyID")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_owned(),
+                            algorithm: e
+                                .get("algorithm")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_owned(),
+                            size: e.get("size").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                            status: e
+                                .get("status")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_owned(),
+                        })
                     })
-                }).collect()
+                    .collect()
             })
             .unwrap_or_default();
 
@@ -461,15 +522,12 @@ impl KraClient {
         body.get("publicKey")
             .and_then(|v| v.as_str())
             .map(|s| s.to_owned())
-            .ok_or_else(|| DogtagError::KraError(
-                "No publicKey in key info response".into(),
-            ))
+            .ok_or_else(|| DogtagError::KraError("No publicKey in key info response".into()))
     }
 
     async fn get_json(&self, path: &str) -> DogtagResult<reqwest::Response> {
         let url = format!("{}{}", self.base_url, path);
-        let mut req = self.http.get(&url)
-            .header("Accept", "application/json");
+        let mut req = self.http.get(&url).header("Accept", "application/json");
         if let Some((ref user, ref pass)) = self.basic_auth {
             req = req.basic_auth(user, Some(pass));
         }
@@ -492,7 +550,9 @@ impl KraClient {
                 tokio::time::sleep(self.retry_delay).await;
             }
 
-            let mut req = self.http.post(&url)
+            let mut req = self
+                .http
+                .post(&url)
                 .header("Accept", "application/json")
                 .json(body);
             if let Some((ref user, ref pass)) = self.basic_auth {
@@ -519,7 +579,9 @@ impl KraClient {
         Err(last_error.unwrap_or(DogtagError::KraError("All retry attempts exhausted".into())))
     }
 
-    async fn json_response<T: serde::de::DeserializeOwned>(resp: reqwest::Response) -> DogtagResult<T> {
+    async fn json_response<T: serde::de::DeserializeOwned>(
+        resp: reqwest::Response,
+    ) -> DogtagResult<T> {
         let status = resp.status();
         let content_type = resp
             .headers()
@@ -565,7 +627,8 @@ fn wrap_session_key(
 
     let transport_cert = openssl::x509::X509::from_der(transport_cert_der)
         .map_err(|e| DogtagError::KraError(format!("Failed to parse transport cert: {e}")))?;
-    let rsa = transport_cert.public_key()
+    let rsa = transport_cert
+        .public_key()
         .map_err(|e| DogtagError::KraError(format!("Failed to extract transport public key: {e}")))?
         .rsa()
         .map_err(|e| DogtagError::KraError(format!("Transport cert is not RSA: {e}")))?;
@@ -577,7 +640,8 @@ fn wrap_session_key(
     };
 
     let mut out = vec![0u8; rsa.size() as usize];
-    let n = rsa.public_encrypt(session_key, &mut out, padding)
+    let n = rsa
+        .public_encrypt(session_key, &mut out, padding)
         .map_err(|e| DogtagError::KraError(format!("RSA session key wrap failed: {e}")))?;
     out.truncate(n);
 
@@ -594,11 +658,18 @@ fn aes_kwp_unwrap(key: &[u8], wrapped: &[u8]) -> DogtagResult<Zeroizing<Vec<u8>>
             16 => c"AES-128-WRAP-PAD",
             24 => c"AES-192-WRAP-PAD",
             32 => c"AES-256-WRAP-PAD",
-            _ => return Err(DogtagError::KraError(format!("Invalid KEK length {}", key.len()))),
+            _ => {
+                return Err(DogtagError::KraError(format!(
+                    "Invalid KEK length {}",
+                    key.len()
+                )));
+            }
         };
 
         let cipher = openssl_sys::EVP_CIPHER_fetch(
-            std::ptr::null_mut(), cipher_name.as_ptr(), std::ptr::null(),
+            std::ptr::null_mut(),
+            cipher_name.as_ptr(),
+            std::ptr::null(),
         );
         if cipher.is_null() {
             return Err(DogtagError::KraError("AES-KWP cipher not available".into()));
@@ -613,12 +684,18 @@ fn aes_kwp_unwrap(key: &[u8], wrapped: &[u8]) -> DogtagResult<Zeroizing<Vec<u8>>
         openssl_sys::EVP_CIPHER_CTX_set_flags(ctx, openssl_sys::EVP_CIPHER_CTX_FLAG_WRAP_ALLOW);
 
         let rc = openssl_sys::EVP_DecryptInit_ex(
-            ctx, cipher, std::ptr::null_mut(), key.as_ptr(), std::ptr::null(),
+            ctx,
+            cipher,
+            std::ptr::null_mut(),
+            key.as_ptr(),
+            std::ptr::null(),
         );
         openssl_sys::EVP_CIPHER_free(cipher as *mut _);
         if rc != 1 {
             openssl_sys::EVP_CIPHER_CTX_free(ctx);
-            return Err(DogtagError::KraError("EVP_DecryptInit_ex failed for AES-KWP".into()));
+            return Err(DogtagError::KraError(
+                "EVP_DecryptInit_ex failed for AES-KWP".into(),
+            ));
         }
 
         let max_out = wrapped.len() + 32;
@@ -626,22 +703,31 @@ fn aes_kwp_unwrap(key: &[u8], wrapped: &[u8]) -> DogtagResult<Zeroizing<Vec<u8>>
         let mut out_len: i32 = 0;
 
         let rc = openssl_sys::EVP_DecryptUpdate(
-            ctx, output.as_mut_ptr(), &mut out_len,
-            wrapped.as_ptr(), wrapped.len() as i32,
+            ctx,
+            output.as_mut_ptr(),
+            &mut out_len,
+            wrapped.as_ptr(),
+            wrapped.len() as i32,
         );
         if rc != 1 {
             openssl_sys::EVP_CIPHER_CTX_free(ctx);
-            return Err(DogtagError::KraError("AES-KWP unwrap failed (DecryptUpdate)".into()));
+            return Err(DogtagError::KraError(
+                "AES-KWP unwrap failed (DecryptUpdate)".into(),
+            ));
         }
 
         let mut final_len: i32 = 0;
         let rc = openssl_sys::EVP_DecryptFinal_ex(
-            ctx, output.as_mut_ptr().add(out_len as usize), &mut final_len,
+            ctx,
+            output.as_mut_ptr().add(out_len as usize),
+            &mut final_len,
         );
         openssl_sys::EVP_CIPHER_CTX_free(ctx);
 
         if rc != 1 {
-            return Err(DogtagError::KraError("AES-KWP unwrap failed (DecryptFinal)".into()));
+            return Err(DogtagError::KraError(
+                "AES-KWP unwrap failed (DecryptFinal)".into(),
+            ));
         }
 
         let total = (out_len + final_len) as usize;

@@ -50,7 +50,6 @@ mod tls;
 
 pub use self::admin::*;
 pub use self::audit::*;
-pub use self::secret::{ResolvedSecrets, SecretRef, SecretResolver};
 pub use self::ca::*;
 pub use self::cmp::*;
 pub use self::cms_est::*;
@@ -59,6 +58,7 @@ pub use self::db::*;
 pub use self::est::*;
 pub use self::hsm::*;
 pub use self::otp::*;
+pub use self::secret::{ResolvedSecrets, SecretRef, SecretResolver};
 pub use self::server::*;
 pub use self::star::*;
 pub use self::tls::*;

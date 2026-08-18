@@ -10,8 +10,8 @@ use rustls::sign::{Signer, SigningKey};
 use rustls::{Error, SignatureAlgorithm, SignatureScheme};
 use tracing::{debug, error};
 
-use crate::key::KeyAlgorithm;
 use crate::HsmContext;
+use crate::key::KeyAlgorithm;
 
 /// A rustls [`SigningKey`] backed by a PKCS#11 token in Kryoptic.
 #[derive(Debug)]
@@ -22,7 +22,11 @@ pub struct Pkcs11SigningKey {
 }
 
 impl Pkcs11SigningKey {
-    pub fn new(hsm: Arc<HsmContext>, key_label: impl Into<String>, algorithm: KeyAlgorithm) -> Self {
+    pub fn new(
+        hsm: Arc<HsmContext>,
+        key_label: impl Into<String>,
+        algorithm: KeyAlgorithm,
+    ) -> Self {
         Self {
             hsm,
             key_label: key_label.into(),
@@ -43,12 +47,8 @@ impl SigningKey for Pkcs11SigningKey {
                 SignatureScheme::RSA_PKCS1_SHA256,
             ][..],
             KeyAlgorithm::Ecdsa(curve) => match curve {
-                crate::key::EcdsaCurve::P256 => {
-                    &[SignatureScheme::ECDSA_NISTP256_SHA256][..]
-                }
-                crate::key::EcdsaCurve::P384 => {
-                    &[SignatureScheme::ECDSA_NISTP384_SHA384][..]
-                }
+                crate::key::EcdsaCurve::P256 => &[SignatureScheme::ECDSA_NISTP256_SHA256][..],
+                crate::key::EcdsaCurve::P384 => &[SignatureScheme::ECDSA_NISTP384_SHA384][..],
                 _ => &[SignatureScheme::ECDSA_NISTP384_SHA384][..],
             },
             _ => {
@@ -98,17 +98,17 @@ struct Pkcs11Signer {
 impl Signer for Pkcs11Signer {
     fn sign(&self, message: &[u8]) -> Result<Vec<u8>, Error> {
         let hash_alg = match self.scheme {
-            SignatureScheme::RSA_PKCS1_SHA256
-            | SignatureScheme::ECDSA_NISTP256_SHA256 => "sha256",
+            SignatureScheme::RSA_PKCS1_SHA256 | SignatureScheme::ECDSA_NISTP256_SHA256 => "sha256",
 
-            SignatureScheme::RSA_PKCS1_SHA384
-            | SignatureScheme::ECDSA_NISTP384_SHA384 => "sha384",
+            SignatureScheme::RSA_PKCS1_SHA384 | SignatureScheme::ECDSA_NISTP384_SHA384 => "sha384",
 
             SignatureScheme::RSA_PKCS1_SHA512 => "sha512",
 
             _ => {
                 error!(scheme = ?self.scheme, "unsupported signature scheme for PKCS#11");
-                return Err(Error::General("unsupported PKCS#11 signature scheme".into()));
+                return Err(Error::General(
+                    "unsupported PKCS#11 signature scheme".into(),
+                ));
             }
         };
 

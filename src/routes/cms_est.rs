@@ -148,7 +148,8 @@ pub async fn post_cms_simpleenroll(
     let cert_der = issue_certificate_from_csr(&state, ca_id, csr_der).await?;
 
     // Wrap in PKCS#7 certs-only, then optionally encrypt with CMS EnvelopedData.
-    let pkcs7_der = crate::routes::cacerts::build_certs_only_pkcs7(std::slice::from_ref(&cert_der))?;
+    let pkcs7_der =
+        crate::routes::cacerts::build_certs_only_pkcs7(std::slice::from_ref(&cert_der))?;
     let response_body = if cms_config.encrypt_responses {
         let enc_alg = cms_config
             .allowed_content_encryption
@@ -259,7 +260,8 @@ pub async fn post_cms_simplereenroll(
     // certificate being renewed (verified above via CMS SignedData).
     let cert_der = issue_certificate_from_csr(&state, ca_id, csr_der).await?;
 
-    let pkcs7_der = crate::routes::cacerts::build_certs_only_pkcs7(std::slice::from_ref(&cert_der))?;
+    let pkcs7_der =
+        crate::routes::cacerts::build_certs_only_pkcs7(std::slice::from_ref(&cert_der))?;
     let response_body = if cms_config.encrypt_responses {
         let enc_alg = cms_config
             .allowed_content_encryption
@@ -608,7 +610,9 @@ async fn issue_certificate_from_csr(
     let resolved_key = crate::ca::issue::resolve_signing_key(ca_cfg, state.hsm.as_ref()).await?;
 
     let profile = crate::ca::issue::EnrollmentProfile {
-        max_validity_days: ca.validity_days.min(crate::ca::issue::cab_forum_max_validity_days()),
+        max_validity_days: ca
+            .validity_days
+            .min(crate::ca::issue::cab_forum_max_validity_days()),
         ..crate::ca::issue::EnrollmentProfile::default()
     };
 

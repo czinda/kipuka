@@ -144,7 +144,9 @@ pub async fn post_simplereenroll(
 
     // Build the enrollment profile.
     let profile = crate::ca::issue::EnrollmentProfile {
-        max_validity_days: ca.validity_days.min(crate::ca::issue::cab_forum_max_validity_days()),
+        max_validity_days: ca
+            .validity_days
+            .min(crate::ca::issue::cab_forum_max_validity_days()),
         ..crate::ca::issue::EnrollmentProfile::default()
     };
 
@@ -191,7 +193,8 @@ pub async fn post_simplereenroll(
     }
 
     let cert_der = result.certificate_der;
-    let pkcs7_der = crate::routes::cacerts::build_certs_only_pkcs7(std::slice::from_ref(&cert_der))?;
+    let pkcs7_der =
+        crate::routes::cacerts::build_certs_only_pkcs7(std::slice::from_ref(&cert_der))?;
 
     let body = encode_est_base64(&pkcs7_der);
 

@@ -72,7 +72,9 @@ fn extract_certs_from_pkcs7_der(der: &[u8]) -> CliResult<Vec<Vec<u8>>> {
 
     // Parse [0] EXPLICIT content
     if pos >= der.len() || (der[pos] & 0xe0) != 0xa0 {
-        return Err(CliError::Cert("Missing [0] EXPLICIT content in ContentInfo".into()));
+        return Err(CliError::Cert(
+            "Missing [0] EXPLICIT content in ContentInfo".into(),
+        ));
     }
     pos = skip_tag_length(der, pos)?;
 
@@ -155,7 +157,9 @@ fn parse_tlv(der: &[u8], pos: usize) -> CliResult<(usize, usize)> {
     let (content_start, length) = if length_byte < 0x80 {
         (i, length_byte as usize)
     } else if length_byte == 0x80 {
-        return Err(CliError::Cert("Indefinite length not supported in DER".into()));
+        return Err(CliError::Cert(
+            "Indefinite length not supported in DER".into(),
+        ));
     } else {
         let num_bytes = (length_byte & 0x7f) as usize;
         if i + num_bytes > der.len() {
@@ -163,14 +167,16 @@ fn parse_tlv(der: &[u8], pos: usize) -> CliResult<(usize, usize)> {
         }
         let mut len: usize = 0;
         for &b in &der[i..i + num_bytes] {
-            len = len.checked_shl(8)
+            len = len
+                .checked_shl(8)
                 .and_then(|l| l.checked_add(b as usize))
                 .ok_or_else(|| CliError::Cert("DER length overflow".into()))?;
         }
         (i + num_bytes, len)
     };
 
-    let element_end = content_start.checked_add(length)
+    let element_end = content_start
+        .checked_add(length)
         .ok_or_else(|| CliError::Cert("DER length overflow".into()))?;
 
     if element_end > der.len() {
@@ -214,10 +220,7 @@ mod tests {
         assert!(pem.starts_with("-----BEGIN TEST-----\n"));
         assert!(pem.ends_with("-----END TEST-----\n"));
 
-        let b64_line: String = pem
-            .lines()
-            .filter(|l| !l.starts_with("-----"))
-            .collect();
+        let b64_line: String = pem.lines().filter(|l| !l.starts_with("-----")).collect();
         let decoded = base64::engine::general_purpose::STANDARD
             .decode(&b64_line)
             .unwrap();

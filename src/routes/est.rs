@@ -18,9 +18,9 @@ use axum::routing::{get, post};
 
 use crate::state::AppState;
 
-use super::{cacerts, csrattrs, serverkeygen, simpleenroll, simplereenroll};
 #[cfg(feature = "fullcmc")]
 use super::fullcmc;
+use super::{cacerts, csrattrs, serverkeygen, simpleenroll, simplereenroll};
 
 /// Build the EST sub-router with all RFC 7030 operation endpoints.
 ///

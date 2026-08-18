@@ -88,4 +88,3 @@ pub struct HsmConfig {
 fn default_max_sessions() -> usize {
     8
 }
-

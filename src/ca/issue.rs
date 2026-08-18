@@ -913,12 +913,14 @@ fn encode_certificate_policies(policy_oids: &[String]) -> Result<Vec<u8>, Issuan
             .split('.')
             .map(|s| s.parse())
             .collect::<Result<_, _>>()
-            .map_err(|e| IssuanceError::InvalidCsr(format!("invalid policy OID '{oid_str}': {e}")))?;
+            .map_err(|e| {
+                IssuanceError::InvalidCsr(format!("invalid policy OID '{oid_str}': {e}"))
+            })?;
         builder = builder.add_policy(&components);
     }
-    builder
-        .build()
-        .map_err(|e| IssuanceError::SigningError(format!("Certificate Policies encoding failed: {e}")))
+    builder.build().map_err(|e| {
+        IssuanceError::SigningError(format!("Certificate Policies encoding failed: {e}"))
+    })
 }
 
 /// Encode Authority Information Access extension (RFC 5280 §4.2.2.1).

@@ -73,9 +73,7 @@ async fn main() -> ExitCode {
         _ => "trace",
     };
     tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| filter.into()),
-        )
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| filter.into()))
         .init();
 
     let tls = TlsConfig {

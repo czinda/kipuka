@@ -26,8 +26,10 @@ impl DogtagClient {
         let is_http = config.ca_url.scheme() == "http";
 
         if config.accept_invalid_certs {
-            warn!("Dogtag client: TLS certificate verification DISABLED (accept_invalid_certs=true). \
-                   This is insecure and should only be used in development/testing environments.");
+            warn!(
+                "Dogtag client: TLS certificate verification DISABLED (accept_invalid_certs=true). \
+                   This is insecure and should only be used in development/testing environments."
+            );
         }
 
         let mut builder = Client::builder()
@@ -42,8 +44,9 @@ impl DogtagClient {
         if !is_http && !config.skip_mtls {
             let cert_pem = std::fs::read(&config.agent_cert_file)?;
             let key_pem = std::fs::read(&config.agent_key_file)?;
-            let identity = Identity::from_pkcs8_pem(&cert_pem, &key_pem)
-                .map_err(|e| DogtagError::TlsError(format!("Failed to load agent identity: {e}")))?;
+            let identity = Identity::from_pkcs8_pem(&cert_pem, &key_pem).map_err(|e| {
+                DogtagError::TlsError(format!("Failed to load agent identity: {e}"))
+            })?;
             builder = builder.identity(identity);
             info!("Dogtag client: HTTPS with mTLS agent cert");
         } else if !is_http {
@@ -124,7 +127,9 @@ impl DogtagClient {
         let url = format!("{}{}", self.base_url, path);
         let ct = content_type.to_owned();
         self.request_with_retry(|| {
-            let mut req = self.http.post(&url)
+            let mut req = self
+                .http
+                .post(&url)
                 .header("Content-Type", &ct)
                 .body(body.clone());
             if let Some((ref user, ref pass)) = self.basic_auth {
@@ -143,20 +148,29 @@ impl DogtagClient {
                 req = req.basic_auth(user, Some(pass));
             }
             req.send()
-        }).await
+        })
+        .await
     }
 
-    fn do_get(&self, url: &str) -> impl std::future::Future<Output = reqwest::Result<reqwest::Response>> + '_ {
-        let mut req = self.http.get(url)
-            .header("Accept", "application/json");
+    fn do_get(
+        &self,
+        url: &str,
+    ) -> impl std::future::Future<Output = reqwest::Result<reqwest::Response>> + '_ {
+        let mut req = self.http.get(url).header("Accept", "application/json");
         if let Some((ref user, ref pass)) = self.basic_auth {
             req = req.basic_auth(user, Some(pass));
         }
         req.send()
     }
 
-    fn do_post_json<'a, T: serde::Serialize + ?Sized>(&'a self, url: &'a str, body: &'a T) -> impl std::future::Future<Output = reqwest::Result<reqwest::Response>> + 'a {
-        let mut req = self.http.post(url)
+    fn do_post_json<'a, T: serde::Serialize + ?Sized>(
+        &'a self,
+        url: &'a str,
+        body: &'a T,
+    ) -> impl std::future::Future<Output = reqwest::Result<reqwest::Response>> + 'a {
+        let mut req = self
+            .http
+            .post(url)
             .header("Accept", "application/json")
             .json(body);
         if let Some((ref user, ref pass)) = self.basic_auth {

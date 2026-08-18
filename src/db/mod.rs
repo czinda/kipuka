@@ -161,7 +161,11 @@ pub async fn init_pool(config: &DbConfig, resolved_url: &str) -> Result<(Db, DbK
 /// never acquires the write lock, enabling concurrent reads during writes
 /// (WAL concurrency benefit).  For `:memory:` and non-SQLite backends,
 /// returns a clone of the primary pool.
-pub async fn init_ro_pool(_config: &DbConfig, kind: DbKind, resolved_url: &str) -> Result<Db, KipukaError> {
+pub async fn init_ro_pool(
+    _config: &DbConfig,
+    kind: DbKind,
+    resolved_url: &str,
+) -> Result<Db, KipukaError> {
     let url = resolved_url.to_string();
 
     // Only SQLite file-backed databases benefit from a separate RO pool
