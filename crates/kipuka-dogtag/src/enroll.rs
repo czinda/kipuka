@@ -474,7 +474,7 @@ impl DogtagClient {
             DogtagError::ParseError("Empty entries in server-keygen response".into())
         })?;
 
-        let mut status = entry
+        let status = entry
             .get("requestStatus")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")

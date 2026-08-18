@@ -14,9 +14,10 @@ all-features = true
 version = 2
 ignore = [
     # Transitive dependencies — no direct fix available, tracking upstream.
-    # "RUSTSEC-2024-0436", # paste: unmaintained — removed from dep tree
     "RUSTSEC-2023-0071", # rsa: Marvin Attack timing sidechannel (transitive via rustls)
     "RUSTSEC-2025-0134", # rustls-pemfile: unmaintained (migrating to rustls-pki-types)
+    "RUSTSEC-2026-0190", # anyhow: unsoundness in downcast_mut (no context+downcast_mut usage in kipuka)
+    "RUSTSEC-2026-0258", # h2: unbounded empty DATA frames (transitive, fix pending h2 0.4.16)
 ]
 
 # ── Licenses ────────────────────────────────────────────────────────────────
