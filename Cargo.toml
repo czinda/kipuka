@@ -167,8 +167,10 @@ default = ["backend-sqlite"]
 backend-sqlite = []
 backend-postgres = []
 backend-mariadb = []
-fullcmc = []
 gssapi = ["dep:libgssapi"]
+
+[lints.rust]
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(feature, values("fullcmc"))'] }
 
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["native-tls", "json"] }  # json feature only for tests

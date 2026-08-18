@@ -643,10 +643,10 @@ impl DogtagClient {
         }
 
         // Try JSON first (normal path).
-        if let Ok(cert_data) = serde_json::from_str::<CertDataResponse>(&body) {
-            if let Some(ref encoded) = cert_data.encoded {
-                return Self::decode_pem_to_der(encoded);
-            }
+        if let Ok(cert_data) = serde_json::from_str::<CertDataResponse>(&body)
+            && let Some(ref encoded) = cert_data.encoded
+        {
+            return Self::decode_pem_to_der(encoded);
         }
 
         // Fallback: raw PEM certificate in the response body.
