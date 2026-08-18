@@ -167,6 +167,7 @@ default = ["backend-sqlite"]
 backend-sqlite = []
 backend-postgres = []
 backend-mariadb = []
+fullcmc = []
 gssapi = ["dep:libgssapi"]
 
 [dev-dependencies]
