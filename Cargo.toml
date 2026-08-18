@@ -17,14 +17,14 @@ version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 license = "GPL-3.0-or-later"
-repository = "https://codeberg.org/czinda/kipuka"
+repository = "https://github.com/czinda/kipuka"
 
 [workspace.dependencies]
 # ASN.1 / X.509 / CMS (Synta)
-synta = { git = "https://codeberg.org/abbra/synta.git", branch = "main" }
-synta-certificate = { git = "https://codeberg.org/abbra/synta.git", branch = "main", features = ["openssl"] }
-synta-cmc = { git = "https://codeberg.org/czinda/synta.git", rev = "e1159fe" }
-synta-krb5 = { git = "https://codeberg.org/abbra/synta.git", branch = "main", features = ["std"] }
+synta = { git = "https://github.com/czinda/synta.git", branch = "main" }
+synta-certificate = { git = "https://github.com/czinda/synta.git", branch = "main", features = ["openssl"] }
+synta-cmc = { git = "https://github.com/czinda/synta.git", rev = "e1159fe" }
+synta-krb5 = { git = "https://github.com/czinda/synta.git", branch = "main", features = ["std"] }
 
 # Web framework
 axum = { version = "0.8", features = ["macros"] }
@@ -173,11 +173,9 @@ gssapi = ["dep:libgssapi"]
 reqwest = { version = "0.12", features = ["native-tls", "json"] }  # json feature only for tests
 tempfile = "3"
 
-[patch."https://codeberg.org/abbra/synta.git"]
+[patch."https://github.com/czinda/synta.git"]
 synta = { path = "../synta" }
 synta-certificate = { path = "../synta/synta-certificate" }
 synta-krb5 = { path = "../synta/synta-krb5" }
-
-[patch."https://codeberg.org/czinda/synta.git"]
 synta-cmc = { path = "../synta/synta-cmc" }
 

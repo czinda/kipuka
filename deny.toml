@@ -77,6 +77,5 @@ unknown-registry = "deny"
 unknown-git = "warn"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = [
-    "https://codeberg.org/abbra/synta.git",
-    "https://codeberg.org/czinda/synta.git",
+    "https://github.com/czinda/synta.git",
 ]

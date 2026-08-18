@@ -5,7 +5,7 @@
 # Override per-group or per-host as needed.
 
 # ── Kipuka build settings ────────────────────────────────────────────────────
-kipuka_repo: "https://codeberg.org/czinda/kipuka.git"
+kipuka_repo: "https://github.com/czinda/kipuka.git"
 kipuka_branch: "main"
 kipuka_version: "0.1.0"
 kipuka_build_dir: "/opt/kipuka-build"
@@ -108,7 +108,7 @@ dogtag_ca_subject_dn: "CN=Kipuka Dogtag CA,O=Test Lab"
 dogtag_ca_validity_months: 120
 
 # ── ahdapa settings ──────────────────────────────────────────────────────────
-ahdapa_repo: "https://codeberg.org/freeipa/ahdapa.git"
+ahdapa_repo: "https://github.com/czinda/ahdapa.git"
 ahdapa_branch: "main"
 ahdapa_build_dir: "/opt/ahdapa-build"
 ahdapa_install_dir: "/usr/local/bin"
