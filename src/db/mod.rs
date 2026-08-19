@@ -113,7 +113,7 @@ pub(crate) fn pg_sql_dynamic(s: String) -> String {
 
 /// Initialize the primary (read-write) database connection pool.
 ///
-/// The `resolved_url` is the pre-resolved database URL from [`SecretResolver`].
+/// The `resolved_url` is the pre-resolved database URL from `SecretResolver`.
 pub async fn init_pool(config: &DbConfig, resolved_url: &str) -> Result<(Db, DbKind), KipukaError> {
     let url = resolved_url.to_string();
 

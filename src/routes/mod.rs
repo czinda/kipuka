@@ -134,7 +134,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
 /// Resolved EST label configuration for the current request.
 ///
 /// Analogous to Akamu's `CaId` extractor — resolves the `{label}` path
-/// segment to the corresponding [`EstLabelConfig`] entry, falling back
+/// segment to the corresponding `EstLabelConfig` entry, falling back
 /// to the default label when no path segment is present.
 ///
 /// # Usage

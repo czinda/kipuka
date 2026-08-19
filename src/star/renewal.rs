@@ -26,7 +26,7 @@ use crate::state::CaState;
 
 /// Spawn the background STAR certificate renewal task.
 ///
-/// The returned [`JoinHandle`] can be used to abort the task during
+/// The returned [`tokio::task::JoinHandle`] can be used to abort the task during
 /// graceful shutdown.  The task runs indefinitely, ticking every 60
 /// seconds.
 ///

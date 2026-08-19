@@ -11,7 +11,7 @@
 //! |-----|-------------|----------------|
 //! | FAU_GEN.1 | Audit record generation | [`AuditEventType`] taxonomy covers all required events |
 //! | FAU_STG.1(1) | Audit trail protection | Append-only at application level |
-//! | FAU_STG.4 | Audit storage exhaustion | [`OverflowAction::Halt`] rejects EST operations |
+//! | FAU_STG.4 | Audit storage exhaustion | `OverflowAction::Halt` rejects EST operations |
 //! | FAU_ARP.1 | Security alarm | Alarm after N consecutive violations |
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
