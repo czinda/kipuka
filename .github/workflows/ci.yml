@@ -32,7 +32,7 @@ jobs:
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
       - name: Clone synta (sibling for [patch] resolution)
@@ -48,8 +48,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: check-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: check-${{ runner.os }}-
+          key: clippy-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: clippy-${{ runner.os }}-
       - run: rustup component add clippy
       - run: cargo clippy --all-features --all-targets -- -D warnings
 
@@ -58,7 +58,7 @@ jobs:
     name: Test
     needs: [clippy]
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
       - name: Clone synta (sibling for [patch] resolution)
@@ -74,8 +74,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: check-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: check-${{ runner.os }}-
+          key: clippy-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: clippy-${{ runner.os }}-
       - run: cargo test --all-features
 
   # ── Documentation ──────────────────────────────────────────────────────────
@@ -83,7 +83,7 @@ jobs:
     name: Documentation
     needs: [clippy]
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
       - name: Clone synta (sibling for [patch] resolution)
