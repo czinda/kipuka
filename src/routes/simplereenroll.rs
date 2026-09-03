@@ -73,6 +73,10 @@ pub async fn post_simplereenroll(
     State(state): State<Arc<AppState>>,
     body: Bytes,
 ) -> Result<Response, KipukaError> {
+    // FAU_STG.4 / FPT_FLS.1: refuse to issue while the audit trail is
+    // unavailable, so no certificate is minted without a durable audit record.
+    state.ensure_audit_available()?;
+
     let ca_id = label.ca_id();
 
     // Re-enrollment MUST use mTLS authentication.

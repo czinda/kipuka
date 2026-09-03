@@ -203,7 +203,7 @@ async fn renewal_cycle(
                 }
 
                 // Record the audit event.
-                crate::audit::record(
+                if let Err(e) = crate::audit::record(
                     db,
                     audit,
                     AuditEvent::new(AuditEventType::CertIssue)
@@ -214,7 +214,10 @@ async fn renewal_cycle(
                             result.serial_number,
                         )),
                 )
-                .await;
+                .await
+                {
+                    error!(order_id = %id, error = %e, "failed to record STAR renewal audit event");
+                }
 
                 info!(
                     order_id = %id,

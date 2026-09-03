@@ -248,16 +248,37 @@ async fn run() -> Result<(), String> {
     };
 
     // ── Audit state ──────────────────────────────────────────────────────────
-    let audit = Arc::new(AuditState::new());
+    // Resolve the optional HMAC integrity key for the tamper-evident audit
+    // chain (NIAP CA PP FAU_STG.1).  Required when [audit].signed = true;
+    // AuditConfig::validate() already enforces its presence.
+    let audit_integrity_key: Option<Vec<u8>> = if config.audit.signed {
+        match &config.audit.integrity_key {
+            Some(secret_ref) => {
+                let key = resolver
+                    .resolve("audit.integrity_key", secret_ref)
+                    .map_err(|e| format!("audit integrity key resolution failed: {e}"))?;
+                Some(key.into_bytes())
+            }
+            None => {
+                return Err("[audit].integrity_key is required when signed = true".into());
+            }
+        }
+    } else {
+        None
+    };
+    let audit = Arc::new(AuditState::from_config(&config.audit, audit_integrity_key));
 
     // Record server startup
-    kipuka::audit::record(
+    if let Err(e) = kipuka::audit::record(
         &db,
         &audit,
         kipuka::audit::AuditEvent::new(kipuka::audit::AuditEventType::CaStart)
             .with_detail("kipuka EST server starting"),
     )
-    .await;
+    .await
+    {
+        tracing::error!(error = %e, "failed to record CA start audit event");
+    }
 
     // ── GSSAPI credential ────────────────────────────────────────────────────
     let (gss_cred, gssapi_require_crypto): (Option<Arc<dyn std::any::Any + Send + Sync>>, bool) =
@@ -402,13 +423,16 @@ async fn run() -> Result<(), String> {
     }
 
     // Record graceful shutdown
-    kipuka::audit::record(
+    if let Err(e) = kipuka::audit::record(
         &db,
         &audit,
         kipuka::audit::AuditEvent::new(kipuka::audit::AuditEventType::CaStop)
             .with_detail("kipuka EST server stopped"),
     )
-    .await;
+    .await
+    {
+        tracing::error!(error = %e, "failed to record CA stop audit event");
+    }
 
     Ok(())
 }
@@ -801,14 +825,17 @@ async fn regenerate_crl(state: &AppState, ca: &Arc<CaState>) -> Result<(), Strin
 
     tracing::info!(ca_id = %ca.id, revoked_count = count, "CRL regenerated");
 
-    kipuka::audit::record(
+    if let Err(e) = kipuka::audit::record(
         &state.db,
         &state.audit,
         kipuka::audit::AuditEvent::new(kipuka::audit::AuditEventType::CrlGenerate)
             .with_ca_id(&ca.id)
             .with_detail(format!("CRL generated with {count} revoked entries")),
     )
-    .await;
+    .await
+    {
+        tracing::error!(error = %e, "failed to record CRL generation audit event");
+    }
 
     Ok(())
 }

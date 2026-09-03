@@ -13,6 +13,8 @@
 
 use serde::Deserialize;
 
+use super::SecretRef;
+
 /// Audit log rotation policy.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -70,12 +72,36 @@ pub struct AuditConfig {
     #[serde(default = "default_log_path")]
     pub log_path: String,
 
-    /// Enable cryptographic signing of audit log entries.
+    /// Enable keyed (HMAC) integrity protection of the audit hash chain.
     ///
-    /// When `true`, each audit entry includes an RFC 3161-style timestamp
-    /// signature chain for tamper detection.
+    /// Every audit row stores `record_hash = H(prev_hash || record_bytes)`,
+    /// forming a tamper-evident chain (NIAP CA PP FAU_STG.1).  When `signed`
+    /// is `false` (the default), `H` is plain SHA-256 — this detects edits,
+    /// deletions, and reordering as long as the chain head is anchored
+    /// out-of-band.  When `signed` is `true`, `H` is HMAC-SHA256 keyed by
+    /// [`integrity_key`](Self::integrity_key), which additionally prevents an
+    /// attacker who can write to the database from forging a valid chain.
     #[serde(default)]
     pub signed: bool,
+
+    /// Secret reference for the HMAC integrity key (required when
+    /// `signed = true`).
+    ///
+    /// Resolved at startup via the standard [`SecretRef`] backends
+    /// (`env:`, `file:`, `keyring:`, `systemd-creds:`).  Never store the
+    /// raw key inline in the config file.
+    #[serde(default)]
+    pub integrity_key: Option<SecretRef>,
+
+    /// Fail closed when an audit record cannot be durably written.
+    ///
+    /// When `true` (the default), a failed audit insert sets the halt flag so
+    /// that subsequent certificate-issuing operations are rejected until an
+    /// operator intervenes — no security-relevant action proceeds unaudited
+    /// (NIAP CA PP FAU_STG.4 / FPT_FLS.1).  When `false`, insert failures are
+    /// logged but operations continue (audit becomes best-effort).
+    #[serde(default = "bool_true")]
+    pub fail_closed: bool,
 
     /// Log rotation policy.
     #[serde(default)]
@@ -167,6 +193,8 @@ impl Default for AuditConfig {
             enabled: true,
             log_path: default_log_path(),
             signed: false,
+            integrity_key: None,
+            fail_closed: true,
             rotation_policy: RotationPolicy::default(),
             max_file_size: default_max_file_size(),
             retention_count: default_retention_count(),
@@ -199,6 +227,17 @@ impl AuditConfig {
 
         if self.alarm_threshold == 0 {
             return Err("[audit].alarm_threshold must be at least 1".into());
+        }
+
+        let integrity_key_missing = match &self.integrity_key {
+            None => true,
+            Some(k) => k.is_empty(),
+        };
+        if self.signed && integrity_key_missing {
+            return Err(
+                "[audit].integrity_key is required (and must be non-empty) when signed = true"
+                    .into(),
+            );
         }
 
         if self.rotation_policy == RotationPolicy::Size && self.max_file_size == 0 {

@@ -428,7 +428,7 @@ otp_tokens ──── enrollment_requests
 ca_health ──── [[ca]] config
                (via ca_id)
 
-audit_events   (standalone, append-only)
+audit_events   (standalone, append-only, hash-chained)
 ```
 
 ## HSM Integration Points

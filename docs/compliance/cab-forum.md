@@ -78,7 +78,7 @@ labels can disable CT via `require_ct = false`.
 |------------|-------------|----------------------|
 | S8.1 | Record CA key lifecycle events | All key operations (generation, import, destruction) logged to `audit_events`. |
 | S8.1 | Record certificate lifecycle events | Issuance, revocation, and expiration events logged with full certificate details. |
-| S8.4 | Audit log integrity | Append-only database table. Optional cryptographic chaining (planned). |
+| S8.4 | Audit log integrity | Append-only database table plus a tamper-evident per-row hash chain (`record_hash = H(prev_hash ‖ RS ‖ record_bytes)`), optionally HMAC-keyed via `[audit].integrity_key`. `verify_chain()` detects any edit, deletion, or reordering. |
 | S8.6 | Audit log retention (minimum 7 years for CA events) | Database retention is an operational concern. kipuka does not auto-delete audit records. |
 
 ## Revocation (BR S4.9)

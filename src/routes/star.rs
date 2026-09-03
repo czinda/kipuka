@@ -88,6 +88,10 @@ pub async fn post_star_order(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, KipukaError> {
+    // FAU_STG.4 / FPT_FLS.1: refuse to issue while the audit trail is
+    // unavailable, so no certificate is minted without a durable audit record.
+    state.ensure_audit_available()?;
+
     // Check that STAR is enabled.
     let star_config = state
         .config

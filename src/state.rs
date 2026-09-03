@@ -145,12 +145,32 @@ impl AppState {
             _ => crate::audit::AuditEventType::AdminAction,
         };
 
-        crate::audit::record(
+        // Best-effort funnel: `record` logs and (under fail-closed) halts on
+        // failure, so callers on this path discard the Result.  Issuance
+        // paths gate on `ensure_audit_available` before acting.
+        let _ = crate::audit::record(
             &self.db,
             &self.audit,
             crate::audit::AuditEvent::new(audit_type).with_detail(detail),
         )
         .await;
+    }
+
+    /// Fail-closed guard for security-relevant operations (NIAP CA PP
+    /// FAU_STG.4 / FPT_FLS.1).
+    ///
+    /// Returns [`KipukaError::ServiceUnavailable`] (HTTP 503) when the audit
+    /// trail is halted — because storage is exhausted or a prior audit write
+    /// failed under the fail-closed policy.  Certificate-issuing handlers
+    /// MUST call this before issuing so that no security-relevant action
+    /// proceeds while it cannot be audited.
+    pub fn ensure_audit_available(&self) -> Result<(), crate::error::KipukaError> {
+        if self.audit.is_halted() {
+            return Err(crate::error::KipukaError::ServiceUnavailable(
+                "audit trail unavailable — issuance suspended (fail-closed)".into(),
+            ));
+        }
+        Ok(())
     }
 }
 

@@ -541,6 +541,11 @@ pub async fn post_cmp(
     State(state): State<Arc<AppState>>,
     body: Bytes,
 ) -> Result<Response, KipukaError> {
+    // FAU_STG.4 / FPT_FLS.1: refuse to process CMP (enrollment/revocation)
+    // while the audit trail is unavailable — no security-relevant action
+    // proceeds without a durable audit record.
+    state.ensure_audit_available()?;
+
     // Check that CMP is enabled.
     let cmp_config = match state.config.cmp {
         Some(ref cfg) if cfg.enabled => cfg,

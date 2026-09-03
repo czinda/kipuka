@@ -14,7 +14,7 @@ use crate::db::DbKind;
 use crate::error::KipukaError;
 
 /// Current schema version.  Increment this when adding new migrations.
-pub const SCHEMA_VERSION: i32 = 3;
+pub const SCHEMA_VERSION: i32 = 4;
 
 // ---------------------------------------------------------------------------
 // SQLite migration v1
@@ -568,6 +568,35 @@ CREATE INDEX IF NOT EXISTS idx_pending_csrs_status ON pending_csrs (status);
 CREATE INDEX IF NOT EXISTS idx_pending_csrs_identity ON pending_csrs (identity);
 "#;
 
+// ---------------------------------------------------------------------------
+// Migration v4 — tamper-evident audit hash chain (NIAP CA PP FAU_STG.1)
+//
+// Adds two columns to `audit_events`:
+//   * `prev_hash`   — hex of the previous record's `record_hash` (NULL at genesis)
+//   * `record_hash` — hex of H(prev_hash || canonical record bytes), where
+//                     H is HMAC-SHA256 when an integrity key is configured
+//                     (`[audit].signed = true`) and SHA-256 otherwise.
+//
+// The chain makes any insertion, deletion, or in-place edit of a historical
+// row detectable by [`crate::audit::verify_chain`].  SQLite cannot add
+// multiple columns in one `ALTER TABLE`, so each column is a separate
+// statement; the version guard in `run_migrations` ensures this runs once.
+// ---------------------------------------------------------------------------
+const MIGRATION_V4_SQLITE: &str = r#"
+ALTER TABLE audit_events ADD COLUMN prev_hash TEXT;
+ALTER TABLE audit_events ADD COLUMN record_hash TEXT;
+"#;
+
+const MIGRATION_V4_POSTGRES: &str = r#"
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS prev_hash TEXT;
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS record_hash TEXT;
+"#;
+
+const MIGRATION_V4_MARIADB: &str = r#"
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS prev_hash TEXT;
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS record_hash TEXT;
+"#;
+
 /// Run all pending migrations.
 ///
 /// The `kind` parameter selects the dialect-specific DDL so that the
@@ -663,6 +692,39 @@ pub async fn run_migrations(pool: &sqlx::AnyPool, kind: DbKind) -> Result<(), Ki
             .map_err(|e| KipukaError::Db(format!("recording schema version: {e}")))?;
 
         tracing::info!("migration v3 applied successfully");
+    }
+
+    if current < 4 {
+        tracing::info!("applying migration v4 (audit hash chain)");
+
+        let migration_sql = match kind {
+            DbKind::Sqlite => MIGRATION_V4_SQLITE,
+            DbKind::Postgres => MIGRATION_V4_POSTGRES,
+            DbKind::MariaDb => MIGRATION_V4_MARIADB,
+        };
+
+        for statement in split_sql_statements(migration_sql) {
+            let stripped: String = statement
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("--"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let trimmed = stripped.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            sqlx::query(trimmed)
+                .execute(pool)
+                .await
+                .map_err(|e| KipukaError::Db(format!("migration v4 failed on [{trimmed}]: {e}")))?;
+        }
+
+        sqlx::query("INSERT INTO schema_version (version) VALUES (4)")
+            .execute(pool)
+            .await
+            .map_err(|e| KipukaError::Db(format!("recording schema version: {e}")))?;
+
+        tracing::info!("migration v4 applied successfully");
     }
 
     Ok(())
