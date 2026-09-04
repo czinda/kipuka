@@ -50,6 +50,13 @@ pub struct AppState {
     /// Shared audit state (overflow flag, alarm counter).
     pub audit: Arc<AuditState>,
 
+    /// Authentication failure tracker / lockout enforcer (FIA_AFL.1).
+    ///
+    /// Always present; a `max_failures = 0` policy makes every operation a
+    /// no-op so the control can be disabled without a `None` branch at call
+    /// sites.
+    pub failure_tracker: Arc<crate::auth::failure_tracker::FailureTracker>,
+
     /// HA manager for multi-CA failover (present when HA is configured).
     pub ha_manager: Option<Arc<crate::ha::HaManager>>,
 
@@ -252,6 +259,7 @@ pub struct AppStateBuilder {
     otp_store: Option<Arc<kipuka_otp::OtpStore>>,
     hsm: Option<Arc<kipuka_hsm::HsmContext>>,
     audit: Option<Arc<AuditState>>,
+    failure_tracker: Option<Arc<crate::auth::failure_tracker::FailureTracker>>,
     ha_manager: Option<Arc<crate::ha::HaManager>>,
     gss_cred: Option<Arc<dyn std::any::Any + Send + Sync>>,
     gssapi_require_crypto: bool,
@@ -273,6 +281,7 @@ impl AppStateBuilder {
             otp_store: None,
             hsm: None,
             audit: None,
+            failure_tracker: None,
             ha_manager: None,
             gss_cred: None,
             gssapi_require_crypto: true,
@@ -331,6 +340,14 @@ impl AppStateBuilder {
         self
     }
 
+    pub fn failure_tracker(
+        mut self,
+        tracker: Arc<crate::auth::failure_tracker::FailureTracker>,
+    ) -> Self {
+        self.failure_tracker = Some(tracker);
+        self
+    }
+
     pub fn ha_manager(mut self, manager: Arc<crate::ha::HaManager>) -> Self {
         self.ha_manager = Some(manager);
         self
@@ -365,9 +382,17 @@ impl AppStateBuilder {
     pub fn build(self) -> AppState {
         let db = self.db.expect("db is required");
         let db_ro = self.db_ro.unwrap_or_else(|| db.clone());
+        let config = self.config.expect("config is required");
+
+        // Derive the failure tracker from `[auth_lockout]` when not supplied.
+        let failure_tracker = self.failure_tracker.unwrap_or_else(|| {
+            Arc::new(crate::auth::failure_tracker::FailureTracker::new(
+                config.auth_lockout.to_policy(),
+            ))
+        });
 
         AppState {
-            config: self.config.expect("config is required"),
+            config,
             secrets: self.secrets.expect("secrets is required"),
             db,
             db_ro,
@@ -377,6 +402,7 @@ impl AppStateBuilder {
             otp_store: self.otp_store,
             hsm: self.hsm,
             audit: self.audit.expect("audit is required"),
+            failure_tracker,
             ha_manager: self.ha_manager,
             gss_cred: self.gss_cred,
             gssapi_require_crypto: self.gssapi_require_crypto,

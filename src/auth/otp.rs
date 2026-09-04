@@ -22,7 +22,7 @@
 
 use std::sync::Arc;
 
-use axum::http::header::{AUTHORIZATION, WWW_AUTHENTICATE};
+use axum::http::header::{AUTHORIZATION, RETRY_AFTER, WWW_AUTHENTICATE};
 use axum::http::request::Parts;
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -31,6 +31,7 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use tracing::{debug, warn};
 
+use super::failure_tracker::LockoutStatus;
 use super::{AuthMethod, AuthResult};
 use crate::state::AppState;
 
@@ -96,10 +97,21 @@ pub async fn try_extract_otp(
 
     debug!(entity_id = %entity_id, "validating OTP for entity");
 
+    // FIA_AFL.1: refuse a locked-out identity *before* validating the
+    // credential.  A locked account must be denied even if it now presents a
+    // correct OTP — the whole point of the control is to deny during the
+    // lockout window.  We key on the claimed entity-id, never on a spoofable
+    // network address.
+    if let LockoutStatus::LockedOut { retry_after } = app.failure_tracker.check(&entity_id) {
+        warn!(entity_id = %entity_id, "OTP attempt refused: identity is locked out");
+        return Some(Err(locked_out_response(retry_after)));
+    }
+
     // Validate OTP against the configured store.
     match validate_otp(app, &entity_id, &otp_value).await {
         Ok(()) => {
-            // OTP is valid and has been consumed.
+            // OTP is valid and has been consumed.  Clear any failure state.
+            app.failure_tracker.record_success(&entity_id);
             Some(Ok(AuthResult {
                 identity: entity_id,
                 method: AuthMethod::Otp,
@@ -119,9 +131,45 @@ pub async fn try_extract_otp(
             )
             .await;
 
-            Some(Err(unauthorized_response("OTP authentication failed")))
+            // FIA_AFL.1: record the failure and, if it reaches the threshold,
+            // emit the security-violation audit event and return the lockout
+            // response so the client learns it has been locked out.
+            match app.failure_tracker.record_failure(&entity_id) {
+                LockoutStatus::LockedOut { retry_after } => {
+                    warn!(entity_id = %entity_id, "OTP failure threshold reached: identity locked out");
+                    app.record_audit_event(
+                        "auth_lockout",
+                        &format!(
+                            "entity_id={entity_id}, lockout_secs={}",
+                            retry_after.as_secs()
+                        ),
+                    )
+                    .await;
+                    Some(Err(locked_out_response(retry_after)))
+                }
+                LockoutStatus::Allowed => {
+                    Some(Err(unauthorized_response("OTP authentication failed")))
+                }
+            }
         }
     }
+}
+
+/// Build a 429 Too Many Requests response with a `Retry-After` header
+/// (RFC 6585 §4 / RFC 9110 §10.2.3) for an identity that has been locked out
+/// under FIA_AFL.1.
+fn locked_out_response(retry_after: std::time::Duration) -> Response {
+    // Round up so the client never retries before the lockout truly expires.
+    let secs = retry_after.as_secs() + u64::from(retry_after.subsec_nanos() > 0);
+    let mut resp = (
+        StatusCode::TOO_MANY_REQUESTS,
+        "too many failed authentication attempts; account temporarily locked",
+    )
+        .into_response();
+    if let Ok(value) = HeaderValue::from_str(&secs.to_string()) {
+        resp.headers_mut().insert(RETRY_AFTER, value);
+    }
+    resp
 }
 
 /// Build a 401 Unauthorized response with the proper `WWW-Authenticate`

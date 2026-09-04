@@ -42,6 +42,7 @@ mod coap;
 mod db;
 mod est;
 mod hsm;
+mod lockout;
 mod otp;
 pub mod secret;
 mod server;
@@ -57,6 +58,7 @@ pub use self::coap::*;
 pub use self::db::*;
 pub use self::est::*;
 pub use self::hsm::*;
+pub use self::lockout::*;
 pub use self::otp::*;
 pub use self::secret::{ResolvedSecrets, SecretRef, SecretResolver};
 pub use self::server::*;
@@ -111,6 +113,10 @@ pub struct Config {
     /// Audit trail configuration.
     #[serde(default)]
     pub audit: AuditConfig,
+
+    /// Authentication failure-lockout configuration (FIA_AFL.1).
+    #[serde(default)]
+    pub auth_lockout: LockoutConfig,
 
     /// CoAP transport configuration (RFC 9483).  Absent → CoAP disabled.
     #[serde(default)]
@@ -243,6 +249,9 @@ impl Config {
 
         // ── Audit ────────────────────────────────────────────────────────────
         self.audit.validate()?;
+
+        // ── Auth lockout (FIA_AFL.1) ─────────────────────────────────────────
+        self.auth_lockout.validate()?;
 
         // ── CoAP ────────────────────────────────────────────────────────────
         if let Some(ref coap) = self.coap {

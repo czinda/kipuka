@@ -12,6 +12,7 @@
 
 pub mod cms_auth;
 pub mod enroll_authz;
+pub mod failure_tracker;
 pub mod gssapi;
 pub mod mtls;
 pub mod name_match;

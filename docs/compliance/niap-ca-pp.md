@@ -56,7 +56,7 @@ the corresponding kipuka implementation.
 
 | SFR | Title | Status | kipuka Implementation |
 |-----|-------|--------|----------------------|
-| FIA_AFL.1 | Authentication Failure Handling | Done | Configurable rate limiting per source IP. After `max_failures` within `failure_window`, the source is locked out for `lockout_duration`. Failed attempts produce audit events. |
+| FIA_AFL.1 | Authentication Failure Handling | Done | Per-identity lockout in `src/auth/failure_tracker.rs`, configured via `[auth_lockout]` (`max_failures`, `failure_window_secs`, `lockout_duration_secs`; `max_failures = 0` disables). Keyed on the **claimed identity** (OTP entity-id), never the client-supplied source IP, which is spoofable. After `max_failures` within the window, the identity is refused for `lockout_duration` even if it later presents a valid credential; the response is HTTP 429 with `Retry-After`. Reaching the threshold emits a `security.violation` audit event (also trips the FAU_ARP.1 alarm counter). Wired into OTP (HTTP Basic) authentication. |
 | FIA_UAU.1 | Timing of Authentication | Done | `/cacerts` and `/csrattrs` are accessible without authentication. All other EST operations require authentication (OTP, mTLS, or GSSAPI) before processing. |
 | FIA_UID.1 | Timing of Identification | Done | Identity established during TLS handshake (mTLS) or HTTP authentication (OTP/GSSAPI). Identity is bound to the audit session before any enrollment processing. |
 | FIA_X509_EXT.1 | X.509 Certificate Validation | Done | X.509 certificate parsing via synta-certificate. CRL checking via `check_crl_fallback()` in `src/auth/mtls.rs` with CRL fetching, serial number lookup, and signature verification. OCSP verification in `src/ocsp/mod.rs` with response caching. |
