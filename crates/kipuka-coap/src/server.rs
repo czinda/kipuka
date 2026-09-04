@@ -215,6 +215,11 @@ impl CoapCode {
         class: 4,
         detail: 1,
     };
+    /// 4.03 Forbidden — authenticated client not authorized for the request.
+    pub const FORBIDDEN: Self = Self {
+        class: 4,
+        detail: 3,
+    };
     /// 4.04 Not Found — unknown URI path.
     pub const NOT_FOUND: Self = Self {
         class: 4,
@@ -669,6 +674,14 @@ pub enum EstOperation {
 pub struct CoapEstRequest {
     /// The decoded EST operation.
     pub operation: EstOperation,
+    /// The optional EST label preceding the operation segment.
+    ///
+    /// RFC 9483 §5.1 / RFC 7030 §3.2.2 allow an arbitrary label between the
+    /// `/.well-known/est/` prefix and the operation (e.g.
+    /// `/.well-known/est/{label}/sen`).  `None` means the unlabeled default
+    /// endpoint.  The label selects the CA and the per-label access-control
+    /// policy applied at issuance.
+    pub label: Option<String>,
     /// The CoAP method used.
     pub method: CoapMethod,
     /// The original CoAP message.
@@ -700,24 +713,60 @@ impl CoapEstRouter {
     /// - `att` → CsrAttrs
     /// - `cacerts` or `crts` → CaCerts
     pub fn route(path: &str) -> CoapResult<EstOperation> {
-        // Extract the final path segment, stripping the well-known prefix.
-        let segment = path
+        Self::route_with_label(path).map(|(_, op)| op)
+    }
+
+    /// Maps a CoAP URI path to an optional EST label and an EST operation.
+    ///
+    /// RFC 7030 §3.2.2 / RFC 9483 §5.1 permit an operator-defined label
+    /// between the `/.well-known/est/` prefix and the operation segment:
+    ///
+    /// ```text
+    /// /.well-known/est/{label}/sen   -> (Some("{label}"), SimpleEnroll)
+    /// /.well-known/est/sen           -> (None,            SimpleEnroll)
+    /// ```
+    ///
+    /// The label selects the CA and the per-label access-control policy that
+    /// is enforced at issuance (NIAP CA PP FDP_ACF.1).  Without label support
+    /// the CoAP transport could only ever hit the unlabeled default endpoint,
+    /// which carries no policy — so any per-label authorization an operator
+    /// configured for HTTP would be silently unenforced over CoAP.
+    pub fn route_with_label(path: &str) -> CoapResult<(Option<String>, EstOperation)> {
+        // Strip the well-known prefix and surrounding slashes, then split into
+        // path segments.  What remains is either `{operation}` or
+        // `{label}/{operation}`.
+        let remainder = path
             .trim_start_matches('/')
             .trim_start_matches(".well-known/est/")
             .trim_start_matches(".well-known/est")
-            .trim_start_matches('/')
-            .trim_end_matches('/');
+            .trim_matches('/');
 
-        match segment {
-            "sen" | "simpleenroll" => Ok(EstOperation::SimpleEnroll),
-            "sren" | "simplereenroll" => Ok(EstOperation::SimpleReenroll),
-            "skg" | "serverkeygen" => Ok(EstOperation::ServerKeygen),
-            "att" | "csrattrs" => Ok(EstOperation::CsrAttrs),
-            "cacerts" | "crts" => Ok(EstOperation::CaCerts),
-            _ => Err(CoapError::ResourceNotFound(format!(
-                "Unknown EST-coaps path: {path}"
-            ))),
-        }
+        let segments: Vec<&str> = remainder.split('/').filter(|s| !s.is_empty()).collect();
+
+        let (label, op_segment) = match segments.as_slice() {
+            [op] => (None, *op),
+            [label, op] => (Some((*label).to_string()), *op),
+            _ => {
+                return Err(CoapError::ResourceNotFound(format!(
+                    "Unknown EST-coaps path: {path}"
+                )));
+            }
+        };
+
+        let operation = match op_segment {
+            "sen" | "simpleenroll" => EstOperation::SimpleEnroll,
+            "sren" | "simplereenroll" => EstOperation::SimpleReenroll,
+            "skg" | "serverkeygen" => EstOperation::ServerKeygen,
+            "att" | "csrattrs" => EstOperation::CsrAttrs,
+            "cacerts" | "crts" => EstOperation::CaCerts,
+            _ => {
+                return Err(CoapError::ResourceNotFound(format!(
+                    "Unknown EST-coaps path: {path}"
+                )));
+            }
+        };
+
+        Ok((label, operation))
     }
 
     /// Routes a full CoAP message to an EST operation.
@@ -727,7 +776,7 @@ impl CoapEstRouter {
     /// is appropriate for the operation.
     pub fn route_message(message: CoapMessage) -> CoapResult<CoapEstRequest> {
         let path = message.uri_path();
-        let operation = Self::route(&path)?;
+        let (label, operation) = Self::route_with_label(&path)?;
 
         let method = CoapMethod::from_code(&message.code).ok_or_else(|| {
             CoapError::UnsupportedMethod(format!("Code {} is not a request", message.code))
@@ -755,6 +804,7 @@ impl CoapEstRouter {
 
         Ok(CoapEstRequest {
             operation,
+            label,
             method,
             message,
         })
@@ -1017,6 +1067,50 @@ mod tests {
         assert!(matches!(err, CoapError::ResourceNotFound(_)));
     }
 
+    #[test]
+    fn test_route_with_label_unlabeled() {
+        // No label: the sole segment is the operation.
+        assert_eq!(
+            CoapEstRouter::route_with_label("/.well-known/est/sen").unwrap(),
+            (None, EstOperation::SimpleEnroll)
+        );
+        assert_eq!(
+            CoapEstRouter::route_with_label("/sen").unwrap(),
+            (None, EstOperation::SimpleEnroll)
+        );
+    }
+
+    #[test]
+    fn test_route_with_label_labeled() {
+        // A label precedes the operation and is extracted verbatim.
+        assert_eq!(
+            CoapEstRouter::route_with_label("/.well-known/est/devices/sen").unwrap(),
+            (Some("devices".to_string()), EstOperation::SimpleEnroll)
+        );
+        assert_eq!(
+            CoapEstRouter::route_with_label("/.well-known/est/mylabel/simplereenroll").unwrap(),
+            (Some("mylabel".to_string()), EstOperation::SimpleReenroll)
+        );
+        assert_eq!(
+            CoapEstRouter::route_with_label("/mylabel/cacerts").unwrap(),
+            (Some("mylabel".to_string()), EstOperation::CaCerts)
+        );
+    }
+
+    #[test]
+    fn test_route_with_label_unknown_operation() {
+        // A valid-looking label with an unknown operation is still Not Found.
+        let err = CoapEstRouter::route_with_label("/.well-known/est/mylabel/bogus").unwrap_err();
+        assert!(matches!(err, CoapError::ResourceNotFound(_)));
+    }
+
+    #[test]
+    fn test_route_with_label_too_many_segments() {
+        // More than {label}/{operation} is not a recognised EST-coaps path.
+        let err = CoapEstRouter::route_with_label("/.well-known/est/a/b/sen").unwrap_err();
+        assert!(matches!(err, CoapError::ResourceNotFound(_)));
+    }
+
     // --- Block option accessors ---
 
     #[test]
@@ -1205,6 +1299,8 @@ pub trait EstHandler: Send + Sync + 'static {
     /// # Arguments
     ///
     /// * `operation` - The EST operation being requested.
+    /// * `label` - The optional EST label from the request URI (selects the CA
+    ///   and per-label access-control policy); `None` for the default endpoint.
     /// * `payload` - The request body (e.g., PKCS#10 CSR for enrollment).
     /// * `content_format` - The CoAP content-format of the request payload.
     /// * `client_cert` - Client certificate from DTLS mTLS, if presented.
@@ -1215,6 +1311,7 @@ pub trait EstHandler: Send + Sync + 'static {
     fn handle(
         &self,
         operation: EstOperation,
+        label: Option<&str>,
         payload: &[u8],
         content_format: Option<u16>,
         client_cert: Option<&crate::dtls::ClientCertInfo>,
@@ -1578,6 +1675,7 @@ impl CoapDtlsServer {
         // Dispatch to the EST handler.
         let est_response = match handler.handle(
             est_request.operation,
+            est_request.label.as_deref(),
             &request_payload,
             content_format,
             client_cert.as_ref(),
@@ -1687,6 +1785,7 @@ impl CoapDtlsServer {
             CoapError::UnsupportedMethod(_) => CoapCode::METHOD_NOT_ALLOWED,
             CoapError::UnsupportedContentFormat(_) => CoapCode::UNSUPPORTED_CONTENT_FORMAT,
             CoapError::Unauthorized(_) => CoapCode::UNAUTHORIZED,
+            CoapError::Forbidden(_) => CoapCode::FORBIDDEN,
             CoapError::PayloadTooLarge { .. } => CoapCode {
                 class: 4,
                 detail: 13, // 4.13 Request Entity Too Large
@@ -1782,6 +1881,7 @@ mod server_tests {
         fn handle(
             &self,
             operation: EstOperation,
+            _label: Option<&str>,
             _payload: &[u8],
             _content_format: Option<u16>,
             _client_cert: Option<&crate::dtls::ClientCertInfo>,
@@ -1829,7 +1929,7 @@ mod server_tests {
     fn test_echo_handler() {
         let handler = EchoHandler;
         let resp = handler
-            .handle(EstOperation::CaCerts, &[], None, None)
+            .handle(EstOperation::CaCerts, None, &[], None, None)
             .unwrap();
         assert_eq!(resp.payload, b"cacerts");
         assert_eq!(

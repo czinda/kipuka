@@ -115,6 +115,13 @@ pub(crate) fn pg_sql_dynamic(s: String) -> String {
 ///
 /// The `resolved_url` is the pre-resolved database URL from `SecretResolver`.
 pub async fn init_pool(config: &DbConfig, resolved_url: &str) -> Result<(Db, DbKind), KipukaError> {
+    // The sqlx `Any` driver requires the backend drivers to be registered
+    // before any pool can connect.  This is idempotent (guarded internally by
+    // a `Once`), so calling it here makes `init_pool` self-sufficient for every
+    // caller — the binary, embedded users, and integration tests that never run
+    // `main` — instead of relying on a separate setup call elsewhere.
+    sqlx::any::install_default_drivers();
+
     let url = resolved_url.to_string();
 
     let kind = DbKind::from_url(&url);

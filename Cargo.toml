@@ -175,6 +175,7 @@ unexpected_cfgs = { level = "allow", check-cfg = ['cfg(feature, values("fullcmc"
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["native-tls", "json"] }  # json feature only for tests
 tempfile = "3"
+kipuka-coap.workspace = true  # direct handler tests (FDP_ACF.1 enforcement over CoAP)
 
 [patch."https://github.com/czinda/synta.git"]
 synta = { path = "../synta" }

@@ -79,6 +79,16 @@ pub enum CoapError {
     #[error("Unauthorized: {0}")]
     Unauthorized(String),
 
+    /// Authenticated client is not authorized for the request (4.03).
+    ///
+    /// The peer authenticated successfully but the request is denied by an
+    /// access-control policy — e.g. the EST enrollment-authorization check
+    /// (NIAP CA PP FDP_ACF.1): the CSR names an identity the requester is not
+    /// permitted to enroll.  Distinct from [`Unauthorized`](Self::Unauthorized),
+    /// which means authentication itself is missing.
+    #[error("Forbidden: {0}")]
+    Forbidden(String),
+
     /// Internal server error (catch-all).
     #[error("Internal error: {0}")]
     Internal(String),

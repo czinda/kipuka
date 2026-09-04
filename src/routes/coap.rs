@@ -15,6 +15,8 @@ use kipuka_coap::CoapError;
 use kipuka_coap::dtls::ClientCertInfo;
 use kipuka_coap::server::{AuditInfo, EstOperation, EstResponse};
 
+use crate::error::KipukaError;
+use crate::routes::LabelExtractor;
 use crate::state::AppState;
 
 /// EST handler implementation that bridges CoAP requests to shared
@@ -38,15 +40,18 @@ impl kipuka_coap::EstHandler for CoapEstHandler {
     fn handle(
         &self,
         operation: EstOperation,
+        label: Option<&str>,
         payload: &[u8],
         _content_format: Option<u16>,
         client_cert: Option<&ClientCertInfo>,
     ) -> Result<EstResponse, CoapError> {
         match operation {
-            EstOperation::CaCerts => handle_cacerts(&self.state),
-            EstOperation::SimpleEnroll => handle_simpleenroll(payload, &self.state),
+            EstOperation::CaCerts => handle_cacerts(label, &self.state),
+            EstOperation::SimpleEnroll => {
+                handle_simpleenroll(payload, label, client_cert, &self.state)
+            }
             EstOperation::SimpleReenroll => {
-                handle_simplereenroll(payload, client_cert, &self.state)
+                handle_simplereenroll(payload, label, client_cert, &self.state)
             }
             EstOperation::CsrAttrs => handle_csrattrs(&self.state),
             EstOperation::ServerKeygen => Err(CoapError::Internal(
@@ -56,14 +61,36 @@ impl kipuka_coap::EstHandler for CoapEstHandler {
     }
 }
 
+/// Resolve an EST label into its enrollment configuration for the CoAP
+/// transport, mapping resolution failures onto CoAP error codes.
+///
+/// Shares [`LabelExtractor::resolve`] with the HTTP/CMS-EST extractor so that
+/// the per-label CA selection and FDP_ACF.1 access-control policy are
+/// identical across transports.
+fn resolve_label(state: &Arc<AppState>, label: Option<&str>) -> Result<LabelExtractor, CoapError> {
+    LabelExtractor::resolve(state, label).map_err(|e| match e {
+        // An unknown label is a client addressing error → 4.04 Not Found.
+        KipukaError::NotFound => {
+            CoapError::ResourceNotFound(format!("unknown EST label: {label:?}"))
+        }
+        // A misconfigured label (dangling CA reference) is a server fault.
+        other => CoapError::Internal(format!("label resolution failed: {other}")),
+    })
+}
+
 /// Handle GET /cacerts — return the CA certificate chain as PKCS#7 certs-only.
 ///
 /// RFC 9483 §5.1: The response Content-Format is 281
 /// (`application/pkcs7-mime; smime-type=certs-only`).
 ///
 /// Unlike the HTTP handler, the CoAP response is raw DER (not base64).
-fn handle_cacerts(state: &Arc<AppState>) -> Result<EstResponse, CoapError> {
-    let ca = state.default_ca();
+fn handle_cacerts(label: Option<&str>, state: &Arc<AppState>) -> Result<EstResponse, CoapError> {
+    // Honour the label's CA selection so `/cacerts` returns the chain that
+    // matches the CA a subsequent enrollment on the same label would use.
+    let label_ex = resolve_label(state, label)?;
+    let ca = state
+        .get_ca(label_ex.ca_id())
+        .ok_or_else(|| CoapError::Internal(format!("CA not found for id={}", label_ex.ca_id())))?;
 
     let pkcs7_der =
         crate::routes::cacerts::build_certs_only_pkcs7(std::slice::from_ref(&ca.cert_der))
@@ -89,20 +116,56 @@ fn handle_cacerts(state: &Arc<AppState>) -> Result<EstResponse, CoapError> {
 /// Uses the synchronous key resolution path
 /// ([`crate::ca::issue::resolve_signing_key_sync`]) since the `EstHandler`
 /// trait is synchronous.
-fn handle_simpleenroll(csr_der: &[u8], state: &Arc<AppState>) -> Result<EstResponse, CoapError> {
+fn handle_simpleenroll(
+    csr_der: &[u8],
+    label: Option<&str>,
+    client_cert: Option<&ClientCertInfo>,
+    state: &Arc<AppState>,
+) -> Result<EstResponse, CoapError> {
     if csr_der.is_empty() {
         return Err(CoapError::InvalidMessage("empty CSR payload".into()));
     }
 
-    let ca = state.default_ca();
-    let ca_id = &ca.id;
+    // Resolve the label to its CA and per-label access-control policy.  Over
+    // CoAP the label is the only carrier of an FDP_ACF.1 policy, so this is
+    // where transport parity with HTTP is established.
+    let label_ex = resolve_label(state, label)?;
+    let ca_id = label_ex.ca_id().to_string();
+
+    // Enrollment authorization (NIAP CA PP FDP_ACF.1).
+    //
+    // Enforce the same identity-binding and name-allowlist policy the HTTP
+    // `/simpleenroll` path applies, keyed off the authenticated DTLS client
+    // identity (its subject DN) when one was presented.  A no-op unless the
+    // resolved label opts in, so unlabeled/default enrollment is unchanged.
+    // Without this check the CoAP transport issued certificates for any names
+    // the requester chose to put in the CSR — a silent bypass of the policy
+    // enforced on every other transport.
+    let identity = client_cert.map(|c| c.subject_dn.as_str()).unwrap_or("");
+    if let Err(reason) =
+        crate::auth::enroll_authz::authorize_csr_der(csr_der, identity, &label_ex.enroll_policy())
+    {
+        tracing::warn!(
+            ca_id = %ca_id,
+            identity = %identity,
+            %reason,
+            "coap simpleenroll rejected: CSR not authorized for requester"
+        );
+        return Err(CoapError::Forbidden(format!(
+            "enrollment not authorized: {reason}"
+        )));
+    }
+
+    let ca = state
+        .get_ca(&ca_id)
+        .ok_or_else(|| CoapError::Internal(format!("CA not found for id={ca_id}")))?;
 
     // Find the CA config entry.
     let ca_cfg = state
         .config
         .cas
         .iter()
-        .find(|c| c.id == *ca_id)
+        .find(|c| c.id == ca_id)
         .ok_or_else(|| CoapError::Internal(format!("CA config not found for id={ca_id}")))?;
 
     // Resolve the signing key synchronously (filesystem read or HSM lookup).
@@ -161,6 +224,7 @@ fn handle_simpleenroll(csr_der: &[u8], state: &Arc<AppState>) -> Result<EstRespo
 /// existing certificate via DTLS client auth, and submits a new CSR.
 fn handle_simplereenroll(
     csr_der: &[u8],
+    label: Option<&str>,
     client_cert: Option<&ClientCertInfo>,
     state: &Arc<AppState>,
 ) -> Result<EstResponse, CoapError> {
@@ -171,9 +235,10 @@ fn handle_simplereenroll(
         )
     })?;
 
-    // The certificate issuance logic is the same as simpleenroll — the auth
-    // difference is in the DTLS layer (client cert vs. PSK/OTP).
-    let mut resp = handle_simpleenroll(csr_der, state)?;
+    // The issuance logic is shared with simpleenroll, including the FDP_ACF.1
+    // authorization check — the client cert is passed through so the policy is
+    // keyed off the authenticated re-enrolling identity.
+    let mut resp = handle_simpleenroll(csr_der, label, client_cert, state)?;
 
     // Override the audit event type to distinguish re-enrollment.
     if let Some(ref mut audit) = resp.audit_event {
