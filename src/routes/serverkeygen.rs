@@ -114,6 +114,35 @@ pub async fn post_serverkeygen(
         return Err(KipukaError::BadRequest("empty CSR template".into()));
     }
 
+    // Enrollment authorization (NIAP CA PP FDP_ACF.1).
+    //
+    // The client supplies a CSR *template* naming the subject/SANs it wants the
+    // server-generated key certified for.  Bind those names to the
+    // authenticated requester and enforce the per-label allowlist — the same
+    // control /simpleenroll and CMS-EST serverkeygen apply — so a client cannot
+    // obtain a server-generated key for an identity it does not own.  A no-op
+    // unless the label opts in.
+    if let Err(reason) =
+        crate::auth::enroll_authz::authorize_csr_der(&csr_der, identity, &label.enroll_policy())
+    {
+        tracing::warn!(
+            ca_id = %ca_id,
+            identity = %identity,
+            %reason,
+            "serverkeygen rejected: CSR template not authorized for requester"
+        );
+        state
+            .record_audit_event_with_actor(
+                "serverkeygen_denied",
+                identity,
+                &format!("ca_id={ca_id}, identity={identity}, reason={reason}"),
+            )
+            .await;
+        return Err(KipukaError::Forbidden(format!(
+            "enrollment not authorized: {reason}"
+        )));
+    }
+
     // Look up the CA backend.
     let _ca = state.get_ca(ca_id).ok_or(KipukaError::NotFound)?;
 

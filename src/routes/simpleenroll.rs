@@ -74,8 +74,22 @@ pub async fn post_simpleenroll(
     let csr_der = decode_est_base64(&body)
         .map_err(|e| KipukaError::BadRequest(format!("CSR decoding failed: {e}")))?;
 
-    // Validate the CSR.
-    validate_csr(&csr_der, &auth.0, &label)?;
+    // Validate the CSR.  An authorization denial (FDP_ACF.1) is a
+    // security-relevant event: record it before returning 403 so the direct
+    // transport is audited exactly like the CMS-EST path, satisfying
+    // NIAP FAU_GEN.1 (audit every security-relevant event).
+    if let Err(e) = validate_csr(&csr_der, &auth.0, &label) {
+        if matches!(e, KipukaError::Forbidden(_)) {
+            state
+                .record_audit_event_with_actor(
+                    "simpleenroll_denied",
+                    identity,
+                    &format!("ca_id={ca_id}, identity={identity}, reason={e}"),
+                )
+                .await;
+        }
+        return Err(e);
+    }
 
     // Check if disconnected mode is active for this label.
     let disconnected = label.disconnected.unwrap_or(state.config.est.disconnected);
@@ -383,8 +397,8 @@ pub async fn post_simpleenroll(
 ///    the CSR subject CN must match the authenticated identity.
 fn validate_csr(
     csr_der: &[u8],
-    _auth: &crate::auth::AuthResult,
-    _label: &LabelExtractor,
+    auth: &crate::auth::AuthResult,
+    label: &LabelExtractor,
 ) -> Result<(), KipukaError> {
     if csr_der.is_empty() {
         return Err(KipukaError::BadRequest("empty CSR".into()));
@@ -445,6 +459,29 @@ fn validate_csr(
             })?;
 
         tracing::debug!("CSR self-signature verified");
+    }
+
+    // ── Step 2b: Enrollment authorization (NIAP CA PP FDP_ACF.1) ───────────
+    //
+    // Bind the authenticated requester to the CSR and enforce the per-label
+    // name-authorization allowlist.  Without this, any authenticated principal
+    // could request a certificate for names it does not own.  A no-op unless
+    // the label opts in (`require_cn_match`, `require_san_match`, or a
+    // `permitted_*` allowlist is configured).
+    {
+        let policy = label.enroll_policy();
+        if let Err(reason) = crate::auth::enroll_authz::authorize_csr(&csr, &auth.identity, &policy) {
+            tracing::warn!(
+                identity = %auth.identity,
+                label = %label.label,
+                reason = %reason,
+                "enrollment rejected: CSR not authorized for requester"
+            );
+            return Err(KipukaError::Forbidden(format!(
+                "enrollment not authorized: {reason}"
+            )));
+        }
+        tracing::debug!("enrollment authorization passed");
     }
 
     // ── Step 3: Validate key size ──────────────────────────────────────────

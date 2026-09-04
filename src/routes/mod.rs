@@ -151,8 +151,16 @@ pub struct LabelExtractor {
     pub label: String,
     /// The CA identifier to use for this label.
     pub ca_id: String,
-    /// Whether CN matching is required for this label.
+    /// Whether CN matching is required for this label (FDP_ACF.1).
     pub require_cn_match: bool,
+    /// Whether the authenticated identity must appear in the CSR SAN (FDP_ACF.1).
+    pub require_san_match: bool,
+    /// Name-authorization allowlist: permitted dNSName patterns (RFC 6125).
+    pub permitted_dns_names: Vec<String>,
+    /// Name-authorization allowlist: permitted iPAddress SANs (textual form).
+    pub permitted_ip_addresses: Vec<String>,
+    /// Name-authorization allowlist: permitted rfc822Name patterns.
+    pub permitted_emails: Vec<String>,
     /// Per-label CSR attribute OIDs (overrides global when non-empty).
     pub csr_attributes: Vec<String>,
     /// Per-label CSR template (RFC 9908); `None` means no template.
@@ -167,6 +175,106 @@ impl LabelExtractor {
     /// The effective CA identifier for this label.
     pub fn ca_id(&self) -> &str {
         &self.ca_id
+    }
+
+    /// Borrow this label's enrollment-authorization policy (FDP_ACF.1).
+    ///
+    /// Single source of truth for every enrollment entry point — the direct
+    /// `/simpleenroll` path and the CMS-EST wrappers all build the policy this
+    /// way, so identity binding and name authorization stay consistent across
+    /// transports.
+    pub fn enroll_policy(&self) -> crate::auth::enroll_authz::EnrollAuthzPolicy<'_> {
+        crate::auth::enroll_authz::EnrollAuthzPolicy {
+            require_cn_match: self.require_cn_match,
+            require_san_match: self.require_san_match,
+            permitted_dns_names: &self.permitted_dns_names,
+            permitted_ip_addresses: &self.permitted_ip_addresses,
+            permitted_emails: &self.permitted_emails,
+        }
+    }
+
+    /// Resolve a label name into its effective enrollment configuration.
+    ///
+    /// This is the transport-agnostic core shared by the axum
+    /// [`FromRequestParts`] extractor (HTTP/CMS-EST) and the CoAP bridge
+    /// ([`crate::routes::coap`]).  Centralising it here means the per-label
+    /// FDP_ACF.1 policy — identity binding and the name allowlist — resolves
+    /// identically no matter which transport carried the request, closing the
+    /// gap where EST-coaps issued certificates without applying any label
+    /// policy at all.
+    ///
+    /// `label_name` is `None`/`Some("")` for the default (unlabeled) endpoint,
+    /// which carries no authorization policy and issues from the default CA.
+    ///
+    /// # Errors
+    ///
+    /// - [`KipukaError::NotFound`] when a non-empty label is not configured.
+    /// - [`KipukaError::Config`] when a configured label points at a CA that
+    ///   does not exist.
+    pub fn resolve(app: &AppState, label_name: Option<&str>) -> Result<Self, KipukaError> {
+        let est_config = &app.config.est;
+
+        match label_name {
+            Some(name) if !name.is_empty() => {
+                // Look up the label in the configured labels.
+                let label_config = est_config
+                    .labels
+                    .iter()
+                    .find(|l| l.name == name)
+                    .ok_or_else(|| {
+                        tracing::debug!(label = %name, "unknown EST label");
+                        KipukaError::NotFound
+                    })?;
+
+                // Resolve the CA ID: label-specific or default.
+                let ca_id = label_config
+                    .ca_id
+                    .clone()
+                    .unwrap_or_else(|| (*app.default_ca_id).clone());
+
+                // Verify the CA exists.
+                if app.get_ca(&ca_id).is_none() {
+                    tracing::error!(
+                        label = %name,
+                        ca_id = %ca_id,
+                        "label references unknown CA"
+                    );
+                    return Err(KipukaError::Config(format!(
+                        "label {name:?} references unknown CA {ca_id:?}"
+                    )));
+                }
+
+                Ok(LabelExtractor {
+                    label: name.to_string(),
+                    ca_id,
+                    require_cn_match: label_config.require_cn_match,
+                    require_san_match: label_config.require_san_match,
+                    permitted_dns_names: label_config.permitted_dns_names.clone(),
+                    permitted_ip_addresses: label_config.permitted_ip_addresses.clone(),
+                    permitted_emails: label_config.permitted_emails.clone(),
+                    csr_attributes: label_config.csr_attributes.clone(),
+                    csr_template: label_config.csr_template.clone(),
+                    max_validity_days: label_config.max_validity_days,
+                    disconnected: label_config.disconnected,
+                })
+            }
+            _ => {
+                // Default label — use the default CA.  No per-label policy.
+                Ok(LabelExtractor {
+                    label: String::new(),
+                    ca_id: (*app.default_ca_id).clone(),
+                    require_cn_match: false,
+                    require_san_match: false,
+                    permitted_dns_names: Vec::new(),
+                    permitted_ip_addresses: Vec::new(),
+                    permitted_emails: Vec::new(),
+                    csr_attributes: est_config.csr_attributes.clone(),
+                    csr_template: est_config.csr_template.clone(),
+                    max_validity_days: None,
+                    disconnected: None,
+                })
+            }
+        }
     }
 }
 
@@ -186,63 +294,8 @@ where
             .ok()
             .map(|Path(l)| l);
 
-        let est_config = &app.config.est;
-
-        match label_name {
-            Some(ref name) if !name.is_empty() => {
-                // Look up the label in the configured labels.
-                let label_config = est_config
-                    .labels
-                    .iter()
-                    .find(|l| l.name == *name)
-                    .ok_or_else(|| {
-                        tracing::debug!(label = %name, "unknown EST label");
-                        KipukaError::NotFound.into_response()
-                    })?;
-
-                // Resolve the CA ID: label-specific or default.
-                let ca_id = label_config
-                    .ca_id
-                    .clone()
-                    .unwrap_or_else(|| (*app.default_ca_id).clone());
-
-                // Verify the CA exists.
-                if app.get_ca(&ca_id).is_none() {
-                    tracing::error!(
-                        label = %name,
-                        ca_id = %ca_id,
-                        "label references unknown CA"
-                    );
-                    return Err(KipukaError::Config(format!(
-                        "label {name:?} references unknown CA {ca_id:?}"
-                    ))
-                    .into_response());
-                }
-
-                Ok(LabelExtractor {
-                    label: name.clone(),
-                    ca_id,
-                    require_cn_match: label_config.require_cn_match,
-                    csr_attributes: label_config.csr_attributes.clone(),
-                    csr_template: label_config.csr_template.clone(),
-                    max_validity_days: label_config.max_validity_days,
-                    disconnected: label_config.disconnected,
-                })
-            }
-            _ => {
-                // Default label — use the default CA.
-                let ca_id = (*app.default_ca_id).clone();
-
-                Ok(LabelExtractor {
-                    label: String::new(),
-                    ca_id,
-                    require_cn_match: false,
-                    csr_attributes: est_config.csr_attributes.clone(),
-                    csr_template: est_config.csr_template.clone(),
-                    max_validity_days: None,
-                    disconnected: None,
-                })
-            }
-        }
+        // Delegate to the transport-agnostic resolver so HTTP and CoAP share
+        // one label-resolution path (and thus one FDP_ACF.1 policy source).
+        Self::resolve(&app, label_name.as_deref()).map_err(IntoResponse::into_response)
     }
 }

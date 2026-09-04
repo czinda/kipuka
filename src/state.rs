@@ -124,9 +124,41 @@ impl AppState {
     /// Convenience wrapper that bundles the DB pool and audit state so
     /// call sites only need to pass the event type and detail.
     pub async fn record_audit_event(&self, event_type: &str, detail: &str) {
-        // Map the string event type to the enum; default to AdminAction
-        // for unrecognised types so we never silently drop events.
-        let audit_type = match event_type {
+        crate::audit::record(
+            &self.db,
+            &self.audit,
+            crate::audit::AuditEvent::new(Self::audit_type_for(event_type)).with_detail(detail),
+        )
+        .await;
+    }
+
+    /// Record an audit event that carries a responsible actor identity.
+    ///
+    /// Populates the `actor` column (via [`AuditEvent::with_operator`]) so the
+    /// FAU_SAR.1 review endpoint can filter by actor.  Used where the
+    /// responsible principal is known — enrollment-authorization denials
+    /// (FDP_ACF.1) and audit-trail review — so those events are attributable
+    /// rather than leaving `actor` NULL and the filter inert.
+    ///
+    /// [`AuditEvent::with_operator`]: crate::audit::AuditEvent::with_operator
+    pub async fn record_audit_event_with_actor(&self, event_type: &str, actor: &str, detail: &str) {
+        crate::audit::record(
+            &self.db,
+            &self.audit,
+            crate::audit::AuditEvent::new(Self::audit_type_for(event_type))
+                .with_operator(actor)
+                .with_detail(detail),
+        )
+        .await;
+    }
+
+    /// Map a string event type to its [`crate::audit::AuditEventType`].
+    ///
+    /// Unrecognised types default to
+    /// [`AdminAction`](crate::audit::AuditEventType::AdminAction) so an event is
+    /// never silently dropped.
+    fn audit_type_for(event_type: &str) -> crate::audit::AuditEventType {
+        match event_type {
             "cacerts" => crate::audit::AuditEventType::EnrollRequest,
             "simpleenroll_success" | "simpleenroll_deferred" => {
                 crate::audit::AuditEventType::CertIssue
@@ -134,23 +166,32 @@ impl AppState {
             "simplereenroll_success" => crate::audit::AuditEventType::CertReenroll,
             "fullcmc_success" => crate::audit::AuditEventType::CertIssue,
             "serverkeygen_success" => crate::audit::AuditEventType::CertIssue,
+            // Enrollment-authorization denials (FDP_ACF.1) across every
+            // transport map to the enroll.reject taxonomy so they are
+            // filterable as a class and not lumped under the admin.action
+            // default.  They are not SecurityViolation: a denial is an access
+            // decision, not an alarm condition, and must not trip FAU_ARP.1.
+            "simpleenroll_denied"
+            | "simplereenroll_denied"
+            | "serverkeygen_denied"
+            | "cms_simpleenroll_denied"
+            | "cms_simplereenroll_denied"
+            | "cms_serverkeygen_denied" => crate::audit::AuditEventType::EnrollReject,
             "otp_generated" => crate::audit::AuditEventType::OtpCreate,
             "otp_revoked" => crate::audit::AuditEventType::OtpRevoke,
             "otp_auth_failure" => crate::audit::AuditEventType::AuthFailure,
+            // FIA_AFL.1 threshold reached — a security-relevant event that also
+            // trips the NIAP alarm counter (FAU_ARP.1) via SecurityViolation.
+            "auth_lockout" => crate::audit::AuditEventType::SecurityViolation,
             "cert_revoked" => crate::audit::AuditEventType::CertRevoke,
             "star_order_created" | "star_renewal_success" => {
                 crate::audit::AuditEventType::CertIssue
             }
-            "star_order_cancelled" => crate::audit::AuditEventType::AdminAction,
+            "star_order_cancelled" | "admin_audit_review" => {
+                crate::audit::AuditEventType::AdminAction
+            }
             _ => crate::audit::AuditEventType::AdminAction,
-        };
-
-        crate::audit::record(
-            &self.db,
-            &self.audit,
-            crate::audit::AuditEvent::new(audit_type).with_detail(detail),
-        )
-        .await;
+        }
     }
 }
 

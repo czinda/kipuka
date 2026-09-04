@@ -240,9 +240,36 @@ pub struct EstLabelConfig {
     /// Require that the CSR Common Name matches the authenticated identity.
     ///
     /// When `true`, the server rejects CSRs where the CN does not match
-    /// the client's authenticated principal name.
+    /// the client's authenticated principal name.  NIAP CA PP FDP_ACF.1
+    /// identity binding — enforced in `crate::auth::enroll_authz`.
     #[serde(default)]
     pub require_cn_match: bool,
+
+    /// Require the authenticated identity to appear as a Subject Alternative
+    /// Name entry (dNSName, rfc822Name, or iPAddress, matched by type).
+    ///
+    /// NIAP CA PP FDP_ACF.1 identity binding.  Complements
+    /// `require_cn_match`; both may be set.  Default: `false`.
+    #[serde(default)]
+    pub require_san_match: bool,
+
+    /// Name-authorization allowlist of permitted dNSName patterns (RFC 6125,
+    /// wildcards allowed).  When non-empty, every dNSName SAN in the CSR must
+    /// match one entry, bounding this label to a fixed namespace.
+    #[serde(default)]
+    pub permitted_dns_names: Vec<String>,
+
+    /// Name-authorization allowlist of permitted iPAddress SANs (textual
+    /// form, e.g. `"10.0.0.1"` or `"2001:db8::1"`).  When non-empty, every
+    /// iPAddress SAN in the CSR must equal one entry.
+    #[serde(default)]
+    pub permitted_ip_addresses: Vec<String>,
+
+    /// Name-authorization allowlist of permitted rfc822Name patterns (full
+    /// address or bare domain).  When non-empty, every rfc822Name SAN in the
+    /// CSR must match one entry.
+    #[serde(default)]
+    pub permitted_emails: Vec<String>,
 
     /// Maximum validity period (days) for certificates issued under this label.
     ///

@@ -144,6 +144,27 @@ pub async fn post_cms_simpleenroll(
         ));
     }
 
+    // Enrollment authorization (FDP_ACF.1): bind the CMS signer identity to the
+    // requested names and enforce the label allowlist — the same policy the
+    // direct /simpleenroll path applies, so the CMS transport is not a bypass.
+    if let Err(reason) = crate::auth::enroll_authz::authorize_csr_der(
+        csr_der,
+        identity,
+        &label.enroll_policy(),
+    ) {
+        tracing::warn!(ca_id = %ca_id, identity = %identity, %reason, "CMS simpleenroll authorization denied");
+        state
+            .record_audit_event_with_actor(
+                "cms_simpleenroll_denied",
+                identity,
+                &format!("ca_id={ca_id}, identity={identity}, reason={reason}"),
+            )
+            .await;
+        return Err(KipukaError::Forbidden(format!(
+            "enrollment not authorized: {reason}"
+        )));
+    }
+
     // Delegate to the standard direct-signing enrollment pipeline.
     let cert_der = issue_certificate_from_csr(&state, ca_id, csr_der).await?;
 
@@ -254,6 +275,27 @@ pub async fn post_cms_simplereenroll(
         tracing::info!("CMS simplereenroll POP linking: CSR subject matches signer");
     }
 
+    // Enrollment authorization (FDP_ACF.1): POP linking above proves the CSR
+    // subject equals the signer, but the per-label SAN binding and name
+    // allowlist are independent controls — apply them here too.
+    if let Err(reason) = crate::auth::enroll_authz::authorize_csr_der(
+        csr_der,
+        identity,
+        &label.enroll_policy(),
+    ) {
+        tracing::warn!(ca_id = %ca_id, identity = %identity, %reason, "CMS simplereenroll authorization denied");
+        state
+            .record_audit_event_with_actor(
+                "cms_simplereenroll_denied",
+                identity,
+                &format!("ca_id={ca_id}, identity={identity}, reason={reason}"),
+            )
+            .await;
+        return Err(KipukaError::Forbidden(format!(
+            "enrollment not authorized: {reason}"
+        )));
+    }
+
     // Delegate to the standard direct-signing enrollment pipeline.
     // Re-enrollment uses the same certificate issuance path as simple enrollment;
     // the authentication difference is that the CMS signer cert IS the existing
@@ -331,6 +373,27 @@ pub async fn post_cms_serverkeygen(
 
     // The payload is the CSR template with the desired subject/extensions.
     let csr_template = &cms_result.payload;
+
+    // Enrollment authorization (FDP_ACF.1): the requested subject/SANs in the
+    // template must be authorized for this signer identity and label, exactly
+    // as for a client-supplied CSR.
+    if let Err(reason) = crate::auth::enroll_authz::authorize_csr_der(
+        csr_template,
+        identity,
+        &label.enroll_policy(),
+    ) {
+        tracing::warn!(ca_id = %ca_id, identity = %identity, %reason, "CMS serverkeygen authorization denied");
+        state
+            .record_audit_event_with_actor(
+                "cms_serverkeygen_denied",
+                identity,
+                &format!("ca_id={ca_id}, identity={identity}, reason={reason}"),
+            )
+            .await;
+        return Err(KipukaError::Forbidden(format!(
+            "enrollment not authorized: {reason}"
+        )));
+    }
 
     // Issue the certificate using the CSR template as the enrollment request.
     let cert_der = issue_certificate_from_csr(&state, ca_id, csr_template).await?;
