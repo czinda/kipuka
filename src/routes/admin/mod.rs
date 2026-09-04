@@ -9,6 +9,7 @@
 //! - Certificate listing and revocation
 //! - System health checks
 
+pub mod audit;
 pub mod cas;
 pub mod certs;
 pub mod health;
@@ -49,6 +50,7 @@ use crate::state::AppState;
 ///     certs            GET   — list issued certificates
 ///     certs/{serial}   GET   — certificate details
 ///     certs/{serial}/revoke POST — revoke certificate
+///     audit            GET   — review audit trail (operator or auditor)
 /// ```
 pub fn admin_router() -> Router<Arc<AppState>> {
     Router::new()
@@ -69,6 +71,23 @@ pub fn admin_router() -> Router<Arc<AppState>> {
         .route("/certs", get(certs::list_certs))
         .route("/certs/{serial}", get(certs::get_cert))
         .route("/certs/{serial}/revoke", post(certs::revoke_cert))
+        // Audit trail review (read-only; operators and auditors)
+        .route("/audit", get(audit::list_audit_events))
+}
+
+/// Administrative role governing which management functions are permitted.
+///
+/// NIAP CA PP FMT_SMR.1 / FMT_SMF.1: the TSF must distinguish an operator
+/// (full management authority) from an auditor (read-only observer of the
+/// audit trail and system state).  An `Auditor` may call read endpoints but
+/// is refused any mutating operation (OTP issuance/revocation, certificate
+/// revocation) with HTTP 403.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdminRole {
+    /// Full administrative authority (all read and mutating endpoints).
+    Operator,
+    /// Read-only observer — audit and status endpoints only.
+    Auditor,
 }
 
 /// Authenticated admin context extracted from request headers.
@@ -76,12 +95,45 @@ pub fn admin_router() -> Router<Arc<AppState>> {
 /// Verifies admin credentials (Bearer token or admin mTLS) before
 /// the handler runs.  On failure, returns 401 or 403.
 ///
-/// This is intentionally simpler than Akamu's `OperatorContext` since
-/// Kipuka's admin model is less complex (no RBAC roles yet).
+/// Carries the caller's [`AdminRole`]; mutating handlers must call
+/// [`AdminAuth::require_operator`] before performing any change.
 #[derive(Debug, Clone)]
 pub struct AdminAuth {
     /// The authenticated admin identity (username or cert subject).
     pub identity: String,
+    /// The role granted to this identity.
+    pub role: AdminRole,
+}
+
+impl AdminAuth {
+    /// Enforce that the caller holds the [`AdminRole::Operator`] role.
+    ///
+    /// Returns `Some(403)` for an auditor (or any non-operator) and `None`
+    /// when the caller is an operator.  Call this at the top of every mutating
+    /// admin handler so read-only roles cannot alter state (FMT_SMR.1):
+    ///
+    /// ```ignore
+    /// if let Some(resp) = admin.require_operator() {
+    ///     return resp;
+    /// }
+    /// ```
+    pub fn require_operator(&self) -> Option<Response> {
+        if self.role == AdminRole::Operator {
+            None
+        } else {
+            tracing::warn!(
+                identity = %self.identity,
+                "admin operation denied: operator role required"
+            );
+            Some(
+                (
+                    StatusCode::FORBIDDEN,
+                    "operator role required for this operation",
+                )
+                    .into_response(),
+            )
+        }
+    }
 }
 
 impl<S> FromRequestParts<S> for AdminAuth
@@ -102,22 +154,37 @@ where
             && let Some(token) = auth_header.strip_prefix("Bearer ")
             && !token.is_empty()
         {
-            // Validate against the resolved admin bearer token.
-            if let Some(ref configured_token) = _app.secrets.admin_bearer_token {
-                // Constant-time comparison to prevent timing attacks.
-                // Do not pre-check lengths — ct_eq safely returns 0 for
-                // mismatched lengths, and a length guard would leak the
-                // configured token length via timing.
-                let token_bytes = token.as_bytes();
-                let configured_bytes = configured_token.as_bytes();
-                if token_bytes.ct_eq(configured_bytes).into() {
-                    return Ok(AdminAuth {
-                        identity: "admin".to_string(),
-                    });
-                }
-                // Token did not match — fall through to 401.
+            // Validate against the resolved admin bearer token (Operator).
+            //
+            // Constant-time comparison to prevent timing attacks.  Do not
+            // pre-check lengths — ct_eq safely returns 0 for mismatched
+            // lengths, and a length guard would leak the configured token
+            // length via timing.  We evaluate *both* tokens so a caller
+            // cannot infer from response timing which token slot matched.
+            let token_bytes = token.as_bytes();
+            let mut matched: Option<AdminRole> = None;
+            if let Some(ref operator_token) = _app.secrets.admin_bearer_token
+                && token_bytes.ct_eq(operator_token.as_bytes()).into()
+            {
+                matched = Some(AdminRole::Operator);
             }
-            // No admin config or no bearer_token configured — reject Bearer auth.
+            if let Some(ref auditor_token) = _app.secrets.auditor_bearer_token
+                && token_bytes.ct_eq(auditor_token.as_bytes()).into()
+            {
+                // Operator precedence: never downgrade an operator match.
+                matched.get_or_insert(AdminRole::Auditor);
+            }
+            if let Some(role) = matched {
+                let identity = match role {
+                    AdminRole::Operator => "admin",
+                    AdminRole::Auditor => "auditor",
+                };
+                return Ok(AdminAuth {
+                    identity: identity.to_string(),
+                    role,
+                });
+            }
+            // Token did not match either slot — fall through to 401.
         }
 
         // Check for admin mTLS client certificate.
@@ -128,8 +195,8 @@ where
             // (separate from the EST truststore per RHELBU-3536 R18).
             if let Some(ref admin_cfg) = _app.config.admin {
                 match validate_admin_cert(&cert.0, admin_cfg) {
-                    Ok(identity) => {
-                        return Ok(AdminAuth { identity });
+                    Ok((identity, role)) => {
+                        return Ok(AdminAuth { identity, role });
                     }
                     Err(reason) => {
                         tracing::warn!(
@@ -170,14 +237,15 @@ static ADMIN_TRUST_ANCHORS: std::sync::OnceLock<Vec<Vec<u8>>> = std::sync::OnceL
 /// 2. Verifies the client certificate signature chains to a trust anchor
 ///    using `synta_certificate::default_signature_verifier()`.
 /// 3. Validates certificate temporal validity (notBefore/notAfter).
-/// 4. Checks the client subject DN against `allowed_operators` patterns
-///    using case-insensitive exact matching.
+/// 4. Checks the client subject DN against `allowed_operators` and
+///    `allowed_auditors` patterns using case-insensitive exact matching,
+///    resolving the caller's [`AdminRole`].
 ///
-/// Returns the authenticated operator identity (subject DN) on success.
+/// Returns the authenticated identity (subject DN) and role on success.
 fn validate_admin_cert(
     client_cert_der: &[u8],
     admin_cfg: &crate::config::AdminConfig,
-) -> Result<String, String> {
+) -> Result<(String, AdminRole), String> {
     use std::io::BufReader;
     use synta_certificate::SignatureVerifier;
 
@@ -307,25 +375,112 @@ fn validate_admin_cert(
         );
     }
 
-    // 5. Check `allowed_operators` — client subject DN must exactly match a pattern.
-    if !admin_cfg.allowed_operators.is_empty() {
-        let dn_lower = client_dn.to_lowercase();
-        let matches = admin_cfg.allowed_operators.iter().any(|pattern| {
-            let pat_lower = pattern.to_lowercase();
-            dn_lower == pat_lower
-        });
+    // 5. Resolve the role from `allowed_operators` / `allowed_auditors`.
+    let role = resolve_admin_role(
+        &client_dn,
+        &admin_cfg.allowed_operators,
+        &admin_cfg.allowed_auditors,
+    )
+    .ok_or_else(|| {
+        format!("admin client DN '{client_dn}' does not match any allowed operator or auditor pattern")
+    })?;
 
-        if !matches {
-            return Err(format!(
-                "admin client DN '{client_dn}' does not match any allowed operator pattern"
-            ));
+    tracing::debug!(
+        subject = %client_dn,
+        ?role,
+        "admin identity matched allow-list"
+    );
+
+    Ok((client_dn, role))
+}
+
+/// Resolve an [`AdminRole`] for a subject DN against the operator/auditor
+/// allow-lists.
+///
+/// Matching is case-insensitive exact.  The rules, in order:
+/// 1. A DN in `operators` is an [`AdminRole::Operator`] (operator precedence —
+///    a DN listed in both lists is still an operator).
+/// 2. Otherwise a DN in `auditors` is an [`AdminRole::Auditor`].
+/// 3. Otherwise, when *both* lists are empty, the DN is an operator — this
+///    preserves the pre-RBAC behavior where any admin-truststore cert had full
+///    authority.
+/// 4. Otherwise `None` — the DN is not authorised for any role.
+fn resolve_admin_role(dn: &str, operators: &[String], auditors: &[String]) -> Option<AdminRole> {
+    let dn_lower = dn.to_lowercase();
+    if operators.iter().any(|p| p.to_lowercase() == dn_lower) {
+        Some(AdminRole::Operator)
+    } else if auditors.iter().any(|p| p.to_lowercase() == dn_lower) {
+        Some(AdminRole::Auditor)
+    } else if operators.is_empty() && auditors.is_empty() {
+        // Backward compat: no allow-lists configured → operator.
+        Some(AdminRole::Operator)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn auth(role: AdminRole) -> AdminAuth {
+        AdminAuth {
+            identity: "test".to_string(),
+            role,
         }
+    }
 
-        tracing::debug!(
-            subject = %client_dn,
-            "admin operator identity matched allowed_operators"
+    #[test]
+    fn require_operator_allows_operator() {
+        assert!(auth(AdminRole::Operator).require_operator().is_none());
+    }
+
+    #[test]
+    fn require_operator_denies_auditor() {
+        // An auditor is refused (Some(403 response) returned).
+        assert!(auth(AdminRole::Auditor).require_operator().is_some());
+    }
+
+    #[test]
+    fn role_operator_precedence_over_auditor() {
+        let ops = vec!["CN=admin".to_string()];
+        let auds = vec!["CN=admin".to_string()];
+        assert_eq!(
+            resolve_admin_role("CN=admin", &ops, &auds),
+            Some(AdminRole::Operator)
         );
     }
 
-    Ok(client_dn)
+    #[test]
+    fn role_auditor_match() {
+        let ops = vec!["CN=boss".to_string()];
+        let auds = vec!["CN=watcher".to_string()];
+        assert_eq!(
+            resolve_admin_role("CN=watcher", &ops, &auds),
+            Some(AdminRole::Auditor)
+        );
+    }
+
+    #[test]
+    fn role_match_is_case_insensitive() {
+        let ops = vec!["CN=Admin".to_string()];
+        assert_eq!(
+            resolve_admin_role("cn=admin", &ops, &[]),
+            Some(AdminRole::Operator)
+        );
+    }
+
+    #[test]
+    fn role_backward_compat_empty_lists_is_operator() {
+        assert_eq!(
+            resolve_admin_role("CN=anyone", &[], &[]),
+            Some(AdminRole::Operator)
+        );
+    }
+
+    #[test]
+    fn role_unlisted_dn_is_denied_when_lists_present() {
+        let ops = vec!["CN=admin".to_string()];
+        assert_eq!(resolve_admin_role("CN=stranger", &ops, &[]), None);
+    }
 }

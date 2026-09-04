@@ -23,6 +23,7 @@ the corresponding kipuka implementation.
 | FAU_GEN.2 | User Identity Association | Done | Every audit event includes the authenticated identity (client cert subject DN, OTP entity ID, or admin principal). Unauthenticated events record the source IP. |
 | FAU_STG.1 | Protected Audit Trail Storage | Done | Audit events are stored in the database with INSERT-only access for the application. File-based audit log uses append-only mode. Database table has no DELETE permission for the application role. |
 | FAU_STG.4 | Prevention of Audit Data Loss | Partial | Fail-closed behavior for security violations (security.violation events cause operation rejection). Severity-based event routing. Still needs: configurable overflow behavior. |
+| FAU_SAR.1 | Audit Review | Done | Read-only audit-trail review via `GET /admin/audit` (`src/routes/admin/audit.rs`), available to both operator and auditor roles. Supports filtering by `event_type` and `actor` with offset/limit pagination, newest-first. Each review is itself audited (`admin_audit_review`). Cryptographic integrity verification of the trail (hash chain) is tracked separately. |
 
 ### FCS -- Cryptographic Support
 
@@ -65,8 +66,8 @@ the corresponding kipuka implementation.
 
 | SFR | Title | Status | kipuka Implementation |
 |-----|-------|--------|----------------------|
-| FMT_SMR.1 | Security Management Roles | Done | Two roles: operator (admin API access for OTP provisioning, CA management) and user (EST enrollment client). Role determined by authentication method and endpoint. |
-| FMT_SMF.1 | Specification of Management Functions | Partial | Admin API provides: OTP token provisioning/revocation, CA status monitoring, audit log review. CA key management delegated to HSM administration tools. |
+| FMT_SMR.1 | Security Management Roles | Done | Three roles: **operator** (full admin API: OTP provisioning, certificate/OTP revocation, CA management), **auditor** (read-only — audit trail and status endpoints only), and **user** (EST enrollment client). Admin role is resolved in `src/routes/admin/mod.rs` from the bearer token slot (`admin.bearer_token` → operator, `admin.auditor_bearer_token` → auditor) or mTLS DN allow-lists (`allowed_operators` / `allowed_auditors`, operator precedence; empty lists → operator for backward compatibility). Mutating handlers gate on `AdminAuth::require_operator()` (HTTP 403 for auditors). |
+| FMT_SMF.1 | Specification of Management Functions | Partial | Admin API provides: OTP token provisioning/revocation (operator), certificate revocation (operator), CA status monitoring, and read-only audit-trail review via `GET /admin/audit` (operator or auditor). CA key management delegated to HSM administration tools. |
 | FMT_MOF.1 | Management of Security Functions | Planned | Runtime configuration changes via admin API with audit trail. Restart required for TLS and CA certificate changes. |
 
 ### FPT -- Protection of the TSF

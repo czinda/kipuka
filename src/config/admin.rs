@@ -58,6 +58,16 @@ pub struct AdminConfig {
     #[serde(default)]
     pub allowed_operators: Vec<String>,
 
+    /// List of allowed auditor identities (read-only role).
+    ///
+    /// NIAP CA PP FMT_SMR.1: an auditor may query audit and status endpoints
+    /// but is refused all mutating operations.  Format matches
+    /// `allowed_operators` (per `auth_method`).  An identity listed in both
+    /// `allowed_operators` and here is treated as an operator (operator
+    /// precedence).
+    #[serde(default)]
+    pub allowed_auditors: Vec<String>,
+
     /// Path to the CA certificate bundle (PEM) for admin mTLS.
     ///
     /// RHELBU-3536 R18: separate truststore from the EST client truststore.
@@ -83,6 +93,13 @@ pub struct AdminConfig {
     /// operators authenticate via Bearer tokens (e.g., CI pipelines,
     /// monitoring systems).
     pub bearer_token: Option<super::SecretRef>,
+
+    /// Bearer token for read-only auditor API access.
+    ///
+    /// When set, `Authorization: Bearer <token>` requests matching this value
+    /// (constant-time) are granted the [`crate::routes::admin::AdminRole::Auditor`]
+    /// role.  A token matching `bearer_token` takes precedence (operator).
+    pub auditor_bearer_token: Option<super::SecretRef>,
 
     /// GSSAPI configuration (required when `auth_method = "gssapi"`).
     pub gssapi: Option<AdminGssapiConfig>,
@@ -144,10 +161,12 @@ impl Default for AdminConfig {
             listen_addr: None,
             auth_method: AdminAuthMethod::default(),
             allowed_operators: Vec::new(),
+            allowed_auditors: Vec::new(),
             admin_ca_file: None,
             session_ttl_secs: default_session_ttl_secs(),
             max_sessions: default_max_sessions(),
             bearer_token: None,
+            auditor_bearer_token: None,
             gssapi: None,
         }
     }
