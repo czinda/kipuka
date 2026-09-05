@@ -1,89 +1,35 @@
-# =============================================================================
-# Stage: security
-# =============================================================================
-
-.security-base:
-  stage: security
-  before_script:
-    - apt-get update -qq && apt-get install -y -qq libssl-dev pkg-config clang cmake libclang-dev libc6-dev >/dev/null 2>&1 || true
-
 cargo-audit:
-  extends: .security-base
-  before_script:
-    - cargo install --locked cargo-audit 2>/dev/null || true
+  extends: .rust-base
+  stage: security
   script:
+    - cargo install --locked cargo-audit --version 0.22.1
+    - python3 -m unittest discover -s contrib/security -p "test_*.py"
     - python3 contrib/security/audit.py
-  cache:
-    key: audit-${CI_COMMIT_REF_SLUG}
-    paths:
-      - ${CARGO_HOME}/registry/
-      - ${CARGO_HOME}/bin/cargo-audit
-    policy: pull-push
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-    - if: $CI_PIPELINE_SOURCE == "schedule"
 
-cargo-deny-licenses:
-  extends: .security-base
-  before_script:
-    - cargo install --locked cargo-deny 2>/dev/null || true
+cargo-deny:
+  extends: .rust-base
+  stage: security
   script:
-    - cargo deny check licenses
-    - cargo deny check bans
-    - cargo deny check sources
-  cache:
-    key: deny-licenses-${CI_COMMIT_REF_SLUG}
-    paths:
-      - ${CARGO_HOME}/registry/
-      - ${CARGO_HOME}/bin/cargo-deny
-    policy: pull-push
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - cargo install --locked cargo-deny --version 0.19.0
+    # Advisory exceptions are evaluated by audit.py; these checks own licenses,
+    # duplicate/version policy, and source provenance.
+    - cargo deny --locked check licenses bans sources
 
-fips-compliance:
-  extends: .security-base
-  script:
-    - echo "--- FIPS algorithm validation ---"
-    - cargo test --locked --all-features -- fips --nocapture 2>&1 || true
-    - cargo build --locked --release --all-features
-    - ldd target/release/kipuka 2>/dev/null | grep -i ssl || echo "Static link or no OpenSSL dependency detected"
-  allow_failure: true
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-
+# Optional internal scanner: absent unless explicitly enabled and configured.
+# SARIF is retained as an artifact, not mislabeled as GitLab's different SAST JSON schema.
 mantis-scan:
   stage: security
   image: python:3.12-slim
-  variables:
-    PIP_ROOT_USER_ACTION: "ignore"
+  cache: []
   before_script:
-    - apt-get update -qq && apt-get install -y -qq git >/dev/null 2>&1
-    - pip install --quiet git+https://gitlab.cee.redhat.com/afarley/mantis.git@v0.1.0
+    - apt-get update -qq
+    - apt-get install -y --no-install-recommends git
+    - pip install git+https://gitlab.cee.redhat.com/afarley/mantis.git@v0.1.0
   script:
-    - mantis scan
-      --deep
-      --files '**/*.rs'
-      --no-tools
-      --config .mantis.yml
-      --ci
-      --sarif-output mantis-report.sarif
+    - mantis scan --deep --files '**/*.rs' --no-tools --config .mantis.yml --ci --sarif-output mantis-report.sarif
   artifacts:
-    reports:
-      sast: mantis-report.sarif
-    paths:
-      - mantis-report.sarif
+    paths: [mantis-report.sarif]
     when: always
     expire_in: 30 days
-  allow_failure: true
-  cache:
-    key: mantis-${CI_COMMIT_REF_SLUG}
-    paths:
-      - /usr/local/lib/python3.12/site-packages/
-    policy: pull-push
   rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: '$ENABLE_MANTIS == "true"'

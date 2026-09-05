@@ -6,35 +6,38 @@ Release:        1%{?dist}
 Summary:        EST/CMP/CMC enrollment server with Multi-CA HA and HSM support
 
 License:        GPL-3.0-or-later
-URL:            https://codeberg.org/czinda/kipuka
+URL:            https://github.com/czinda/kipuka
 Source0:        %{crate}-%{version}.tar.gz
 # cargo vendor output — all dependencies bundled
 Source1:        %{crate}-%{version}-vendor.tar.gz
+Source2:        vendor-config.toml
 
 ExclusiveArch:  %{rust_arches}
 
-BuildRequires:  rust >= 1.88
+BuildRequires:  rust >= 1.97.1
 BuildRequires:  cargo
 BuildRequires:  openssl-devel
 BuildRequires:  pkg-config
 BuildRequires:  clang-devel
 BuildRequires:  cmake
 BuildRequires:  gcc
+BuildRequires:  krb5-devel
+BuildRequires:  systemd-rpm-macros
 
 Requires:       openssl-libs
 
 %description
 kipuka is a Registration Authority (RA) and enrollment protocol server
-implementing EST (RFC 7030), CMP (RFC 4210), CMC (RFC 5272), CMS-EST
-(RFC 8295), STAR (RFC 8739), and CoAP/DTLS (RFC 9148). It authenticates
+providing EST, CMP, CMC, custom CMS/renewal extensions and CoAP/DTLS
+enrollment. See the shipped support boundaries for implementation scope. It authenticates
 clients via mTLS, OTP, or GSSAPI/Kerberos, validates CSRs against CA/B
 Forum Baseline Requirements, and routes approved requests to a Certificate
 Authority (standalone signing or Dogtag PKI backend).
 
 Features include post-quantum readiness (ML-DSA/ML-KEM per FIPS 204/203),
 HSM support (Entrust, Utimaco, Thales, Kryoptic via PKCS#11), multi-CA
-high availability with failover strategies, NIAP CA Protection Profile
-v2.0 compliance, and FIPS 140-3 capability through HSM integration.
+high availability with failover strategies and PKCS#11 integration.
+No NIAP or FIPS certification is established by this package.
 
 %prep
 %autosetup -n %{crate}-%{version}
@@ -42,24 +45,12 @@ v2.0 compliance, and FIPS 140-3 capability through HSM integration.
 # Unpack vendored dependencies
 tar xf %{SOURCE1}
 
-# Configure cargo to use vendored deps
+# Use Cargo's generated source replacement, including pinned Git dependencies.
 mkdir -p .cargo
-cat > .cargo/config.toml << 'EOF'
-[source.crates-io]
-replace-with = "vendored-sources"
-
-[source."git+https://codeberg.org/abbra/synta.git"]
-replace-with = "vendored-sources"
-
-[source."git+https://codeberg.org/czinda/synta.git"]
-replace-with = "vendored-sources"
-
-[source.vendored-sources]
-directory = "vendor"
-EOF
+cp %{SOURCE2} .cargo/config.toml
 
 %build
-cargo build --release --features default
+cargo build --frozen --release --all-features
 
 %install
 install -D -m 0755 target/release/%{crate} %{buildroot}%{_bindir}/%{crate}

@@ -1,103 +1,14 @@
-# =============================================================================
-# Stage: package + deploy — RPM, container, Beaker, GitLab Pages
-# =============================================================================
-
-# ── Package ─────────────────────────────────────────────────────────────────
-
-rpm-build:
-  stage: package
-  image: registry.access.redhat.com/ubi9/ubi:latest
-  script:
-    - echo "--- RPM build placeholder ---"
-    - echo "TODO -- create kipuka.spec and build SRPM/RPM via mock or rpmbuild"
-    - echo "Blocked on upstream packaging review"
-  needs:
-    - job: build-release
-  rules:
-    - if: $CI_COMMIT_TAG
-      when: manual
-      allow_failure: true
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-      when: manual
-      allow_failure: true
-
-container:
-  stage: package
-  allow_failure: true
-  image:
-    name: gcr.io/kaniko-project/executor:v1.23.2-debug
-    entrypoint: [""]
-  variables:
-    CONTAINER_IMAGE: ${CI_REGISTRY_IMAGE}
-  script:
-    - mkdir -p /kaniko/.docker
-    - |
-      if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ] || [ -n "$CI_COMMIT_TAG" ]; then
-        GITLAB_AUTH=$(printf '%s:%s' "${CI_REGISTRY_USER}" "${CI_REGISTRY_PASSWORD}" | base64)
-        QUAY_AUTH=$(printf '%s:%s' "${QUAY_USER}" "${QUAY_TOKEN}" | base64)
-        echo "{\"auths\":{\"${CI_REGISTRY}\":{\"auth\":\"${GITLAB_AUTH}\"},\"quay.io\":{\"auth\":\"${QUAY_AUTH}\"}}}" > /kaniko/.docker/config.json
-        /kaniko/executor \
-          --context "${CI_PROJECT_DIR}" \
-          --dockerfile "${CI_PROJECT_DIR}/Containerfile" \
-          --destination "${CONTAINER_IMAGE}:${CI_COMMIT_SHORT_SHA}" \
-          --destination "${CONTAINER_IMAGE}:latest" \
-          --destination "quay.io/czinda/kipuka:${CI_COMMIT_SHORT_SHA}" \
-          --destination "quay.io/czinda/kipuka:latest" \
-          --skip-tls-verify \
-          --cache=true
-      else
-        /kaniko/executor --context "${CI_PROJECT_DIR}" --dockerfile "${CI_PROJECT_DIR}/Containerfile" --no-push --cache=true
-      fi
-  needs:
-    - job: unit-tests
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-      changes:
-        - Containerfile
-        - Cargo.toml
-        - Cargo.lock
-        - "src/**/*"
-        - "crates/**/*"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-    - if: $CI_COMMIT_TAG
-
-# ── Deploy ──────────────────────────────────────────────────────────────────
-
-beaker-submit:
-  stage: deploy
-  image: registry.access.redhat.com/ubi9/ubi:latest
-  before_script:
-    - dnf install -y beaker-client 2>/dev/null || true
-  script:
-    - echo "--- Beaker hardware test submission ---"
-    - echo "Submitting contrib/beaker/kipuka-beaker.xml to Beaker"
-    # The Beaker XML references setup.sh and smoke-test.sh from the repo
-    - |
-      if command -v bkr &>/dev/null; then
-        bkr job-submit contrib/beaker/kipuka-beaker.xml
-      else
-        echo "SKIP -- beaker-client not available in this environment"
-        echo "Install with: dnf install beaker-client"
-      fi
-  needs:
-    - job: build-release
-    - job: unit-tests
-  rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-      when: manual
-      allow_failure: true
-
 pages:
   stage: deploy
-  image: alpine:latest
+  image: alpine:3.22
+  cache: []
   script:
-    - mv target/doc/ public/
+    - mkdir -p public
+    - cp -a target/doc/. public/
     - echo '<html><head><meta http-equiv="refresh" content="0;url=kipuka/"></head></html>' > public/index.html
   artifacts:
-    paths:
-      - public
+    paths: [public]
     expire_in: 30 days
-  needs:
-    - job: build-docs
+  dependencies: [build-docs]
   rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_COMMIT_REF_PROTECTED == "true"'

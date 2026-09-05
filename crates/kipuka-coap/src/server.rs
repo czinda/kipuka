@@ -1297,7 +1297,7 @@ pub struct EstResponse {
 /// Callback trait for processing EST operations.
 ///
 /// Implementors handle the actual EST logic (certificate issuance, CSR
-/// attribute retrieval, etc.) while the [`CoapServer`] handles CoAP/DTLS
+/// attribute retrieval, etc.) while the [`CoapDtlsServer`] handles CoAP/DTLS
 /// transport concerns.
 ///
 /// The callback receives the EST operation, request payload, and optional

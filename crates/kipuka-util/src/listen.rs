@@ -46,7 +46,7 @@ pub enum ListenError {
 pub enum ListenConfig {
     /// Listen on a TCP address with optional TLS.
     Tcp {
-        /// Bind address (e.g., "0.0.0.0:443" or "[::]:8443").
+        /// Bind address (e.g., "0.0.0.0:443" or `[::]:8443`).
         address: String,
         /// Whether to wrap the connection in TLS.
         tls: bool,

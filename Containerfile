@@ -15,22 +15,15 @@ RUN CARGO_NET_GIT_FETCH_WITH_CLI=true \
     cargo build --locked --release --all-features \
     && strip target/release/kipuka
 
-# Collect runtime shared libraries for the slim runtime stage.
-RUN mkdir -p /runtime-libs && \
-    cp -L /usr/lib64/libssl.so*         /runtime-libs/ && \
-    cp -L /usr/lib64/libcrypto.so*      /runtime-libs/ && \
-    cp -L /usr/lib64/libgssapi_krb5.so* /runtime-libs/ && \
-    cp -L /usr/lib64/libkrb5.so*        /runtime-libs/ && \
-    cp -L /usr/lib64/libk5crypto.so*    /runtime-libs/ && \
-    cp -L /usr/lib64/libcom_err.so*     /runtime-libs/ && \
-    cp -L /usr/lib64/libkrb5support.so* /runtime-libs/ && \
-    cp -L /usr/lib64/libkeyutils.so*    /runtime-libs/ && \
-    cp -L /usr/lib64/libresolv.so*      /runtime-libs/ && \
-    cp -L /usr/lib64/libsasl2.so*       /runtime-libs/ && \
-    cp -L /usr/lib64/libsqlite3.so*     /runtime-libs/ 2>/dev/null || true && \
-    cp -L /usr/lib64/libp11-kit.so*     /runtime-libs/ 2>/dev/null || true && \
-    cp -L /usr/lib64/p11-kit-client.so  /runtime-libs/ 2>/dev/null || true && \
-    cp -L /usr/lib64/libffi.so*         /runtime-libs/ 2>/dev/null || true
+# Required runtime dependencies must be present; never hide a failed copy.
+RUN set -eu; mkdir -p /runtime-libs; \
+    for lib in libssl libcrypto libgssapi_krb5 libkrb5 libk5crypto \
+               libcom_err libkrb5support libkeyutils libresolv libsasl2 libsqlite3; do \
+        cp -L /usr/lib64/${lib}.so* /runtime-libs/; \
+    done; \
+    for lib in /usr/lib64/libp11-kit.so* /usr/lib64/p11-kit-client.so /usr/lib64/libffi.so*; do \
+        if [ -f "$lib" ]; then cp -L "$lib" /runtime-libs/; fi; \
+    done
 
 # Build passwd/group for the runtime stage.
 RUN cp /etc/passwd /runtime-libs/passwd && \
@@ -48,7 +41,7 @@ COPY --from=builder /runtime-libs/*.so* /usr/lib64/
 COPY --from=builder /runtime-libs/passwd /etc/passwd
 COPY --from=builder /runtime-libs/group /etc/group
 
-RUN find / -xdev -perm /6000 -type f -exec chmod a-s {} + 2>/dev/null || true
+RUN find / -xdev -perm /6000 -type f -exec chmod a-s {} +
 RUN mkdir -p /var/lib/kipuka /etc/kipuka /var/www/kipuka \
              /etc/pkcs11/modules /var/lib/softhsm/tokens && \
     chown -R 1001:1001 /var/lib/kipuka /etc/kipuka /var/www/kipuka \
