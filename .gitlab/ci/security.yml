@@ -2,7 +2,7 @@ cargo-audit:
   extends: .rust-base
   stage: security
   script:
-    - cargo install --locked cargo-audit --version 0.22.1
+    - CARGO_PROFILE_DEV_DEBUG=0 cargo install --locked --debug --jobs 2 cargo-audit --version 0.22.1
     - python3 -B -m unittest discover -s contrib/security -p test_audit.py
     - python3 contrib/security/audit.py
 
@@ -10,7 +10,7 @@ cargo-deny:
   extends: .rust-base
   stage: security
   script:
-    - cargo install --locked cargo-deny --version 0.19.0
+    - CARGO_PROFILE_DEV_DEBUG=0 cargo install --locked --debug --jobs 2 cargo-deny --version 0.19.0
     # Advisory exceptions are evaluated by audit.py; these checks own licenses,
     # duplicate/version policy, and source provenance.
     - cargo deny --locked check licenses bans sources
