@@ -188,6 +188,34 @@ impl AuditConfig {
             return Ok(());
         }
 
+        if self.log_path != default_log_path()
+            || self.rotation_policy != RotationPolicy::Daily
+            || self.max_file_size != default_max_file_size()
+            || self.retention_count != default_retention_count()
+            || self.rotation_check_interval_secs.is_some()
+        {
+            return Err("file audit output/rotation settings are unsupported; configure the external logging sink instead".into());
+        }
+        if !self.auditable_events.is_empty() {
+            return Err(
+                "audit event filtering is unsupported; all security events must be recorded".into(),
+            );
+        }
+        if self.max_rows.is_some_and(|n| n > i64::MAX as u64) {
+            return Err("[audit].max_rows exceeds the database integer range".into());
+        }
+        if self.signed {
+            return Err(
+                "[audit].signed is unsupported: no audit signing implementation is available"
+                    .into(),
+            );
+        }
+        if self.max_rows == Some(0) {
+            return Err("[audit].max_rows must be positive".into());
+        }
+        if !self.log_to_db {
+            return Err("[audit].log_to_db must be true: file-only audit is unsupported".into());
+        }
         match self.alarm_action.as_str() {
             "syslog" | "halt" => {}
             other => {

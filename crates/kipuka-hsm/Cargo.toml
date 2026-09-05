@@ -15,3 +15,6 @@ serde.workspace = true
 url.workspace = true
 hex.workspace = true
 rustls.workspace = true
+
+openssl = "0.10"
+percent-encoding = "2"

@@ -115,6 +115,17 @@ impl HsmSlot {
         })
     }
 
+    /// Select exactly the configured slot, requiring a present token.
+    pub fn find_by_id(context: &Pkcs11Context, id: u64) -> HsmResult<Self> {
+        let slot = Slot::try_from(id).map_err(|e| HsmError::SlotAccess(e.to_string()))?;
+        if !Self::enumerate_slots_with_tokens(context)?.contains(&slot) {
+            return Err(HsmError::SlotAccess(format!(
+                "configured slot {id} has no token"
+            )));
+        }
+        Ok(Self::new(context.clone(), slot))
+    }
+
     /// Find the first slot with a token.
     ///
     /// # Arguments
@@ -157,7 +168,6 @@ impl HsmSlot {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     #[ignore = "requires HSM hardware"]

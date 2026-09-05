@@ -34,6 +34,25 @@ use crate::state::AppState;
 #[derive(Clone)]
 pub struct NegotiateOutToken(pub HeaderValue);
 
+/// Response slot shared across extraction and outer HTTP response middleware.
+#[derive(Clone, Default)]
+pub(crate) struct NegotiateResponse(pub Arc<parking_lot::Mutex<Option<HeaderValue>>>);
+
+pub(crate) async fn response_token(
+    mut request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let slot = NegotiateResponse::default();
+    request.extensions_mut().insert(slot.clone());
+    let mut response = next.run(request).await;
+    if let Some(token) = slot.0.lock().take() {
+        response
+            .headers_mut()
+            .insert(axum::http::header::WWW_AUTHENTICATE, token);
+    }
+    response
+}
+
 /// TLS channel binding data (tls-server-end-point, RFC 5929).
 ///
 /// Injected into request extensions by the TLS accept loop.  Used to
@@ -117,6 +136,14 @@ pub async fn try_extract_gssapi(
         .get::<TlsChannelBinding>()
         .map(|b| b.0.clone());
 
+    if app.gssapi_require_crypto && channel_binding.is_none() {
+        return Some(Err((
+            StatusCode::FORBIDDEN,
+            "GSSAPI requires TLS channel binding",
+        )
+            .into_response()));
+    }
+
     // Use spawn_blocking for the synchronous GSSAPI FFI call so we do not
     // block a tokio worker thread.
     let binding_owned = channel_binding;
@@ -151,6 +178,9 @@ pub async fn try_extract_gssapi(
             if !out_token.is_empty() {
                 let b64 = base64::engine::general_purpose::STANDARD.encode(&out_token);
                 if let Ok(hv) = HeaderValue::from_str(&format!("Negotiate {b64}")) {
+                    if let Some(slot) = parts.extensions.get::<NegotiateResponse>() {
+                        *slot.0.lock() = Some(hv.clone());
+                    }
                     parts.extensions.insert(NegotiateOutToken(hv));
                 }
             }
@@ -295,6 +325,11 @@ fn verify_gssapi_token(
         .map_err(|e| NegotiateError::Failed(format!("gss_accept_sec_context failed: {e}")))?;
 
     if ctx.is_complete() {
+        let flags = ctx.flags().map_err(|e| {
+            NegotiateError::Failed(format!("failed to retrieve GSS context flags: {e}"))
+        })?;
+        require_negotiated_channel_binding(channel_binding, flags.bits())
+            .map_err(NegotiateError::Failed)?;
         // Context established — extract the authenticated client principal.
         let client_name = ctx.source_name().map_err(|e| {
             NegotiateError::Failed(format!("failed to retrieve client principal: {e}"))
@@ -569,5 +604,56 @@ fn read_der_length(bytes: &[u8], offset: usize) -> Option<(usize, usize)> {
             val = (val << 8) | bytes[offset + 1 + i] as usize;
         }
         Some((val, 1 + n))
+    }
+}
+
+/// RFC5929 tls-server-end-point: hash the serving certificate using its
+/// signature hash, upgrading legacy MD5/SHA1 to SHA256.
+pub fn server_end_point(der: &[u8]) -> Result<Vec<u8>, String> {
+    use synta_certificate::DataHasher;
+    let cert = synta_certificate::Certificate::from_der(der).map_err(|e| e.to_string())?;
+    let oid = cert.signature_algorithm.algorithm.to_string();
+    let hash = match oid.as_str() {
+        "1.2.840.113549.1.1.12" | "1.2.840.10045.4.3.3" => "sha384",
+        "1.2.840.113549.1.1.13" | "1.2.840.10045.4.3.4" => "sha512",
+        "1.2.840.113549.1.1.4"
+        | "1.2.840.113549.1.1.5"
+        | "1.2.840.113549.1.1.11"
+        | "1.2.840.10045.4.1"
+        | "1.2.840.10045.4.3.2" => "sha256",
+        _ => {
+            return Err(format!(
+                "tls-server-end-point unsupported certificate signature algorithm {oid}"
+            ));
+        }
+    };
+    synta_certificate::default_data_hasher()
+        .hash_data(hash, der)
+        .map_err(|e| e.to_string())
+}
+
+/// libgssapi retains unknown flag bits but does not name CHANNEL_BOUND yet.
+/// GSS_C_CHANNEL_BOUND_FLAG is 2048 (MIT Kerberos GSS extension).
+#[cfg(any(feature = "gssapi", test))]
+fn require_negotiated_channel_binding(binding: Option<&[u8]>, flags: u32) -> Result<(), String> {
+    const CHANNEL_BOUND: u32 = 0x800;
+    if binding.is_none_or(|b| b.is_empty()) || flags & CHANNEL_BOUND == 0 {
+        return Err("GSSAPI context did not negotiate TLS channel binding".into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod channel_binding_tests {
+    use super::require_negotiated_channel_binding;
+
+    #[test]
+    fn server_binding_alone_does_not_authenticate_unbound_context() {
+        assert!(require_negotiated_channel_binding(Some(&[1; 32]), 0).is_err());
+        // Other flags (mutual authentication, integrity, confidentiality) do not suffice.
+        assert!(require_negotiated_channel_binding(Some(&[1; 32]), 0x3e).is_err());
+        assert!(require_negotiated_channel_binding(None, 0x800).is_err());
+        assert!(require_negotiated_channel_binding(Some(&[]), 0x800).is_err());
+        assert!(require_negotiated_channel_binding(Some(&[1; 32]), 0x83e).is_ok());
     }
 }

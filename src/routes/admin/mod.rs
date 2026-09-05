@@ -145,12 +145,16 @@ where
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Response> {
         let _app = Arc::<AppState>::from_ref(state);
+        let Some(admin_cfg) = _app.config.admin.as_ref().filter(|c| c.enabled) else {
+            return Err(StatusCode::NOT_FOUND.into_response());
+        };
 
         // Check for Bearer token in the Authorization header.
-        if let Some(auth_header) = parts
-            .headers
-            .get(axum::http::header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
+        if admin_cfg.auth_method == crate::config::AdminAuthMethod::Bearer
+            && let Some(auth_header) = parts
+                .headers
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
             && let Some(token) = auth_header.strip_prefix("Bearer ")
             && !token.is_empty()
         {
@@ -188,7 +192,8 @@ where
         }
 
         // Check for admin mTLS client certificate.
-        if let Some(cert) = parts.extensions.get::<crate::auth::mtls::PeerCertificate>()
+        if admin_cfg.auth_method == crate::config::AdminAuthMethod::Mtls
+            && let Some(cert) = parts.extensions.get::<crate::auth::mtls::PeerCertificate>()
             && !cert.0.is_empty()
         {
             // Validate the cert against the admin truststore
@@ -196,6 +201,9 @@ where
             if let Some(ref admin_cfg) = _app.config.admin {
                 match validate_admin_cert(&cert.0, admin_cfg) {
                     Ok((identity, role)) => {
+                        crate::auth::mtls::check_revocation(&cert.0, &_app)
+                            .await
+                            .map_err(|e| crate::error::KipukaError::Auth(e).into_response())?;
                         return Ok(AdminAuth { identity, role });
                     }
                     Err(reason) => {
@@ -382,7 +390,9 @@ fn validate_admin_cert(
         &admin_cfg.allowed_auditors,
     )
     .ok_or_else(|| {
-        format!("admin client DN '{client_dn}' does not match any allowed operator or auditor pattern")
+        format!(
+            "admin client DN '{client_dn}' does not match any allowed operator or auditor pattern"
+        )
     })?;
 
     tracing::debug!(

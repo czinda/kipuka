@@ -88,6 +88,12 @@ impl ProbeMetrics {
     }
 }
 
+pub struct LocalProbeContext {
+    pub config: Arc<crate::config::Config>,
+    pub cas: Arc<indexmap::IndexMap<String, Arc<crate::state::CaState>>>,
+    pub hsm: Option<Arc<kipuka_hsm::HsmContext>>,
+}
+
 /// Runs periodic health probes against each CA backend.
 ///
 /// The checker is cloneable (behind `Arc`) and designed to run in a
@@ -96,6 +102,7 @@ impl ProbeMetrics {
 pub struct HealthChecker {
     pool: Arc<CaPool>,
     config: HealthConfig,
+    local: Option<Arc<LocalProbeContext>>,
     /// Per-CA probe metrics, keyed by CaId.
     metrics: Arc<parking_lot::RwLock<std::collections::HashMap<CaId, ProbeMetrics>>>,
 }
@@ -111,8 +118,14 @@ impl HealthChecker {
         Self {
             pool,
             config,
+            local: None,
             metrics: Arc::new(parking_lot::RwLock::new(metrics)),
         }
+    }
+
+    pub fn with_local(mut self, local: Arc<LocalProbeContext>) -> Self {
+        self.local = Some(local);
+        self
     }
 
     /// Configured probe interval.
@@ -178,6 +191,38 @@ impl HealthChecker {
             .map(|c| c.endpoint.clone())
             .ok_or_else(|| format!("CA {id} not found in pool"))?;
 
+        if endpoint.starts_with("local:") {
+            let context = self.local.as_ref().ok_or("local probe context missing")?;
+            let ca = context.cas.get(&id.0).ok_or("local CA state missing")?;
+            let config = context
+                .config
+                .cas
+                .iter()
+                .find(|ca| ca.id == id.0)
+                .ok_or("local CA configuration missing")?;
+            let key = crate::ca::issue::resolve_signing_key_sync(config, context.hsm.as_ref())
+                .map_err(|e| e.to_string())?;
+            let cert = openssl::x509::X509::from_der(&ca.cert_der).map_err(|e| e.to_string())?;
+            match key {
+                crate::ca::issue::ResolvedSigningKey::Pem(pem) => {
+                    let key = openssl::pkey::PKey::private_key_from_pem(&pem)
+                        .map_err(|e| e.to_string())?;
+                    let public_key = cert.public_key().map_err(|e| e.to_string())?;
+                    if !key.public_eq(&public_key) {
+                        return Err("CA key does not match its certificate".into());
+                    }
+                }
+                crate::ca::issue::ResolvedSigningKey::Hsm { context, .. } => {
+                    context.health_check().map_err(|e| e.to_string())?
+                }
+            }
+            let now = openssl::asn1::Asn1Time::days_from_now(0).map_err(|e| e.to_string())?;
+            if cert.not_before() > now || cert.not_after() <= now {
+                return Err("CA certificate is outside its validity period".into());
+            }
+            return Ok(());
+        }
+
         // Build the health check URL.
         // For Dogtag CAs (endpoint contains /ca), use the Dogtag status API.
         // For generic CAs, try a simple GET against the endpoint root.
@@ -193,8 +238,7 @@ impl HealthChecker {
 
         let client = reqwest::Client::builder()
             .timeout(self.config.probe_timeout)
-            // Accept self-signed certs for internal CA health checks
-            .danger_accept_invalid_certs(true)
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| format!("HTTP client build failed: {e}"))?;
 
@@ -212,7 +256,7 @@ impl HealthChecker {
         })?;
 
         let status = response.status();
-        if status.is_server_error() {
+        if !status.is_success() {
             return Err(format!("CA returned server error: HTTP {status}"));
         }
 
@@ -220,8 +264,16 @@ impl HealthChecker {
         // running.  A 200 OK from /admin/ca/getStatus with a body
         // containing "running" confirms the CA is operational.
         if health_url.contains("getStatus") {
-            let body = response.text().await.unwrap_or_default();
-            if body.to_lowercase().contains("error") && !body.to_lowercase().contains("running") {
+            let mut response = response;
+            let mut bytes = Vec::new();
+            while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
+                if bytes.len() + chunk.len() > 65536 {
+                    return Err("health response exceeds 64 KiB".into());
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            let body = String::from_utf8_lossy(&bytes);
+            if !body.to_lowercase().contains("running") {
                 return Err(format!(
                     "Dogtag CA reports unhealthy status: {}",
                     body.chars().take(200).collect::<String>()

@@ -52,6 +52,19 @@ pub fn build_tls_acceptor(
     Ok(TlsAcceptor::from(Arc::new(server_config)))
 }
 
+/// Derive the dedicated admin listener's authentication independently of EST.
+pub fn admin_listener_config(est: &TlsConfig, admin: &crate::config::AdminConfig) -> TlsConfig {
+    let mut tls = est.clone();
+    tls.client_auth = match admin.auth_method {
+        crate::config::AdminAuthMethod::Mtls => ClientAuthMode::Required,
+        _ => ClientAuthMode::None,
+    };
+    if let Some(path) = &admin.admin_ca_file {
+        tls.ca_file = path.clone();
+    }
+    tls
+}
+
 /// Build a `rustls::ServerConfig` from the Kipuka TLS configuration.
 fn build_server_config(
     config: &TlsConfig,
@@ -84,21 +97,26 @@ fn build_server_config(
             KipukaError::Tls("tls.key_file is a pkcs11: URI but [hsm] is not configured".into())
         })?;
 
-        let key_label = parse_pkcs11_object_label(&config.key_file)?;
+        let key_label = hsm_ctx
+            .tls_key_label(&config.key_file)
+            .map_err(|e| KipukaError::Tls(format!("HSM TLS key URI: {e}")))?;
 
-        // Detect key algorithm from the URI or default to RSA-4096.
-        // TODO: query the HSM for CKA_KEY_TYPE to auto-detect.
-        let algorithm = if config.key_file.contains("ec") || config.key_file.contains("ecdsa") {
-            kipuka_hsm::key::KeyAlgorithm::Ecdsa(kipuka_hsm::key::EcdsaCurve::P384)
-        } else {
-            kipuka_hsm::key::KeyAlgorithm::Rsa(4096)
-        };
+        let algorithm = kipuka_hsm::rustls_signer::certificate_algorithm(
+            cert_chain
+                .first()
+                .ok_or_else(|| KipukaError::Tls("empty TLS certificate chain".into()))?
+                .as_ref(),
+        )
+        .map_err(|e| KipukaError::Tls(format!("HSM TLS certificate: {e}")))?;
 
         info!(
             key_label = %key_label,
             algorithm = ?algorithm,
             "TLS server key backed by PKCS#11 HSM (key never leaves HSM)"
         );
+
+        kipuka_hsm::rustls_signer::verify_tls_key(hsm_ctx, &key_label, cert_chain[0].as_ref())
+            .map_err(|e| KipukaError::Tls(format!("HSM TLS key validation: {e}")))?;
 
         let signing_key =
             kipuka_hsm::Pkcs11SigningKey::new(Arc::clone(hsm_ctx), key_label, algorithm);
@@ -113,19 +131,6 @@ fn build_server_config(
     };
 
     Ok(server_config)
-}
-
-/// Parse the `object=` label from a PKCS#11 URI.
-fn parse_pkcs11_object_label(uri: &str) -> Result<String, KipukaError> {
-    for part in uri.split(';') {
-        let part = part.trim_start_matches("pkcs11:");
-        if let Some(value) = part.strip_prefix("object=") {
-            return Ok(value.to_string());
-        }
-    }
-    Err(KipukaError::Tls(format!(
-        "pkcs11: URI missing 'object=' attribute: {uri}"
-    )))
 }
 
 /// Resolver that always returns the same `CertifiedKey`.

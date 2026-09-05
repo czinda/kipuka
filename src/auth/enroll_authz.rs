@@ -131,14 +131,10 @@ fn check_names(
                     .iter()
                     .any(|pat| matches_domain(pat, name))
                 {
-                    return Err(format!(
-                        "dNSName {name:?} is not permitted for this label"
-                    ));
+                    return Err(format!("dNSName {name:?} is not permitted for this label"));
                 }
             }
-            synta_certificate::general_name::RFC822_NAME
-                if !policy.permitted_emails.is_empty() =>
-            {
+            synta_certificate::general_name::RFC822_NAME if !policy.permitted_emails.is_empty() => {
                 let email = std::str::from_utf8(content)
                     .map_err(|_| "CSR contains a non-UTF-8 rfc822Name SAN".to_string())?;
                 if !policy
@@ -307,9 +303,25 @@ mod tests {
             require_cn_match: true,
             ..empty_policy()
         };
-        assert!(check_names(Some("device-a.example.com"), &[], "device-a.example.com", &policy).is_ok());
+        assert!(
+            check_names(
+                Some("device-a.example.com"),
+                &[],
+                "device-a.example.com",
+                &policy
+            )
+            .is_ok()
+        );
         // Case-insensitive.
-        assert!(check_names(Some("device-a.example.com"), &[], "DEVICE-A.EXAMPLE.COM", &policy).is_ok());
+        assert!(
+            check_names(
+                Some("device-a.example.com"),
+                &[],
+                "DEVICE-A.EXAMPLE.COM",
+                &policy
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -318,7 +330,15 @@ mod tests {
             require_cn_match: true,
             ..empty_policy()
         };
-        assert!(check_names(Some("device-b.example.com"), &[], "device-a.example.com", &policy).is_err());
+        assert!(
+            check_names(
+                Some("device-b.example.com"),
+                &[],
+                "device-a.example.com",
+                &policy
+            )
+            .is_err()
+        );
         // No CN present at all is a rejection, not a bypass.
         assert!(check_names(None, &[], "device-a.example.com", &policy).is_err());
     }

@@ -12,7 +12,7 @@ RUN dnf install -y \
 WORKDIR /build
 COPY . .
 RUN CARGO_NET_GIT_FETCH_WITH_CLI=true \
-    cargo build --release --all-features \
+    cargo build --locked --release --all-features \
     && strip target/release/kipuka
 
 # Collect runtime shared libraries for the slim runtime stage.

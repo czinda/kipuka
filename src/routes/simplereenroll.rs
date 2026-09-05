@@ -88,6 +88,7 @@ pub async fn post_simplereenroll(
     }
 
     let identity = &auth.0.identity;
+    state.admit_enrollment(identity, "simplereenroll").await?;
 
     tracing::info!(
         ca_id = %ca_id,

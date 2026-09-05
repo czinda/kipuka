@@ -1,4 +1,4 @@
-//! CMS-wrapped EST configuration (RFC 8295).
+//! CMS-wrapped EST configuration (experimental CMS EST extension).
 //!
 //! The `[cms_est]` section enables EST endpoints that use CMS
 //! message-level security instead of TLS for authentication and
@@ -31,7 +31,8 @@ pub struct CmsEstConfig {
     #[serde(default = "default_true")]
     pub encrypt_responses: bool,
 
-    /// Allowed content-encryption algorithms for CMS EnvelopedData.
+    /// Allowed response encryption algorithms. AES-GCM returns CMS
+    /// AuthEnvelopedData; explicitly configured AES-CBC returns EnvelopedData.
     #[serde(default = "default_allowed_content_encryption")]
     pub allowed_content_encryption: Vec<String>,
 }

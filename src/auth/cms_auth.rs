@@ -368,6 +368,8 @@ pub fn verify_cms_signed_data(
         format_dn(subject_raw)
     };
 
+    super::certificate::valid_now(signer_cert_der).map_err(KipukaError::Auth)?;
+
     // 7. Verify the signer's certificate chains to a trust anchor.
     //    We do a simple direct-issuer check: the signer cert must be signed
     //    by one of the truststore certificates.
@@ -441,25 +443,53 @@ pub fn verify_cms_signed_data(
         let payload_hash = compute_digest(&digest_alg_oid, &payload)?;
         verify_message_digest_attribute(signed_attrs_bytes, &payload_hash)?;
 
-        // RFC 5652 §5.4: Re-tag the signedAttrs from IMPLICIT [0] (0xa0) to
-        // SET OF (0x31) for signature verification.
-        let mut retagged = signed_attrs_bytes.to_vec();
-        if retagged.first() == Some(&0xa0) {
-            retagged[0] = 0x31;
-        }
-        retagged
+        // Synta exposes the CONTENT of IMPLICIT [0], without its tag/length.
+        // RFC 5652 section 5.4 signs the complete DER SET OF encoding.
+        let mut encoder = synta::Encoder::new(Encoding::Der);
+        encoder
+            .start_constructed_no_guard(Tag::universal_constructed(17))
+            .map_err(|e| KipukaError::BadRequest(format!("CMS signedAttrs SET error: {e}")))?;
+        encoder
+            .encode(&synta::RawDer(signed_attrs_bytes))
+            .map_err(|e| KipukaError::BadRequest(format!("CMS signedAttrs encoding error: {e}")))?;
+        encoder
+            .end_constructed()
+            .map_err(|e| KipukaError::BadRequest(format!("CMS signedAttrs encoding error: {e}")))?;
+        encoder
+            .finish()
+            .map_err(|e| KipukaError::BadRequest(format!("CMS signedAttrs encoding error: {e}")))?
     } else {
         // No signedAttrs — signature is over the payload directly.
         payload.clone()
     };
 
+    // CMS permits rsaEncryption in signatureAlgorithm with the digest supplied
+    // separately in digestAlgorithm (RFC 3370). The verifier takes a combined
+    // signature algorithm, so bind the two explicitly without changing padding.
+    let verification_algorithm = if sig_alg_oid_str == "1.2.840.113549.1.1.1" {
+        let mut decoder = Decoder::new(signer_info.digest_algorithm.as_bytes(), Encoding::Der);
+        let mut algorithm = decoder
+            .enter_constructed(seq_tag)
+            .map_err(|e| KipukaError::BadRequest(format!("CMS digest algorithm: {e}")))?;
+        let oid: synta::ObjectIdentifier = algorithm
+            .decode()
+            .map_err(|e| KipukaError::BadRequest(format!("CMS digest OID: {e}")))?;
+        let hash = match oid.components() {
+            [2, 16, 840, 1, 101, 3, 4, 2, 1] => "sha256",
+            [2, 16, 840, 1, 101, 3, 4, 2, 2] => "sha384",
+            [2, 16, 840, 1, 101, 3, 4, 2, 3] => "sha512",
+            _ => return Err(KipukaError::Auth("unsupported CMS RSA digest".into())),
+        };
+        let rsa = synta::ObjectIdentifier::new(&[1, 2, 840, 113549, 1, 1, 1])
+            .map_err(|e| KipukaError::Internal(e.to_string()))?;
+        synta_certificate::signing_algorithm_der(&rsa, hash)
+            .ok_or_else(|| KipukaError::Auth("unsupported CMS RSA signature algorithm".into()))?
+    } else {
+        signer_info.signature_algorithm.as_bytes().to_vec()
+    };
     let pub_key = BackendPublicKey::from_spki_der(signer_spki_der.to_vec());
     pub_key
-        .verify_signature(
-            &verification_data,
-            signer_info.signature_algorithm.as_bytes(),
-            &sig_bytes,
-        )
+        .verify_signature(&verification_data, &verification_algorithm, &sig_bytes)
         .map_err(|e| {
             KipukaError::Auth(format!("CMS SignedData signature verification failed: {e}"))
         })?;
@@ -472,7 +502,7 @@ pub fn verify_cms_signed_data(
     })
 }
 
-/// Build a CMS EnvelopedData message to encrypt a response payload.
+/// Encrypt a response as CMS AuthEnvelopedData (AES-GCM) or EnvelopedData (AES-CBC).
 ///
 /// RFC 8295 §3.2: The EST server encrypts the response (issued
 /// certificate) to the client's public key so that only the client
@@ -533,33 +563,36 @@ pub fn build_cms_enveloped_data(
     // Validate the requested content encryption algorithm.
     let _alg = validate_content_encryption(content_encryption_alg)?;
 
-    // Map the validated algorithm to the AES-CBC OID used by
-    // synta_certificate's EnvelopedData builder.  The builder currently
-    // supports AES-CBC modes; GCM requests are fulfilled with the
-    // corresponding CBC mode (AES-256-CBC for GCM-256, AES-128-CBC for
-    // GCM-128) since the synta EnvelopedData infrastructure uses CBC
-    // for content encryption.
+    // OpenSSL emits AuthEnvelopedData for AES-GCM, preserving authenticated
+    // encryption instead of silently substituting CBC.
+    if matches!(
+        _alg,
+        SupportedContentEncryption::Aes256Gcm | SupportedContentEncryption::Aes128Gcm
+    ) {
+        let cipher = if matches!(_alg, SupportedContentEncryption::Aes256Gcm) {
+            openssl::symm::Cipher::aes_256_gcm()
+        } else {
+            openssl::symm::Cipher::aes_128_gcm()
+        };
+        let build = || -> Result<Vec<u8>, openssl::error::ErrorStack> {
+            let mut recipients = openssl::stack::Stack::new()?;
+            recipients.push(openssl::x509::X509::from_der(recipient_cert_der)?)?;
+            openssl::cms::CmsContentInfo::encrypt(
+                &recipients,
+                payload,
+                cipher,
+                openssl::cms::CMSOptions::BINARY,
+            )?
+            .to_der()
+        };
+        return build().map_err(|e| {
+            KipukaError::Internal(format!("CMS authenticated encryption failed: {e}"))
+        });
+    }
     let content_enc_oid: &[u32] = match _alg {
-        SupportedContentEncryption::Aes256Gcm => {
-            warn!(
-                requested = %content_encryption_alg,
-                actual = "AES-256-CBC",
-                "CMS EnvelopedData: GCM downgraded to CBC — authenticated encryption \
-                 is being replaced with unauthenticated encryption"
-            );
-            synta_certificate::pkcs12_types::ID_AES256_CBC
-        }
-        SupportedContentEncryption::Aes128Gcm => {
-            warn!(
-                requested = %content_encryption_alg,
-                actual = "AES-128-CBC",
-                "CMS EnvelopedData: GCM downgraded to CBC — authenticated encryption \
-                 is being replaced with unauthenticated encryption"
-            );
-            synta_certificate::pkcs12_types::ID_AES128_CBC
-        }
         SupportedContentEncryption::Aes256Cbc => synta_certificate::pkcs12_types::ID_AES256_CBC,
         SupportedContentEncryption::Aes128Cbc => synta_certificate::pkcs12_types::ID_AES128_CBC,
+        _ => unreachable!("GCM handled above"),
     };
 
     // Use RSA-OAEP with SHA-256 for key transport (recommended by RFC 8295).
@@ -731,74 +764,55 @@ fn verify_message_digest_attribute(
     signed_attrs_bytes: &[u8],
     expected_digest: &[u8],
 ) -> Result<(), KipukaError> {
-    // The signedAttrs RawDer includes the IMPLICIT [0] tag. Parse the attributes
-    // by entering the constructed tag (either 0xa0 or 0x31).
-    let tag = Tag::new(TagClass::ContextSpecific, true, 0);
-    let mut dec = Decoder::new(signed_attrs_bytes, Encoding::Ber);
-    let mut attrs = dec
-        .enter_constructed(tag)
-        .map_err(|e| KipukaError::BadRequest(format!("CMS signedAttrs enter error: {e:?}")))?;
-
-    let seq_tag = Tag::universal_constructed(16);
-
-    // Walk through the attributes looking for id-messageDigest (1.2.840.113549.1.9.4).
+    // IMPLICIT field decoding has already removed the [0] tag and length.
+    let mut attrs = Decoder::new(signed_attrs_bytes, Encoding::Der);
+    let mut found = false;
     while !attrs.is_empty() {
-        let mut attr_seq = attrs
-            .enter_constructed(seq_tag)
-            .map_err(|e| KipukaError::BadRequest(format!("CMS attr SEQUENCE error: {e:?}")))?;
-
-        let attr_oid: synta::ObjectIdentifier = attr_seq
+        let mut attr = attrs
+            .enter_constructed(Tag::universal_constructed(16))
+            .map_err(|e| KipukaError::BadRequest(format!("CMS attr SEQUENCE error: {e}")))?;
+        let oid: synta::ObjectIdentifier = attr
             .decode()
-            .map_err(|e| KipukaError::BadRequest(format!("CMS attr OID error: {e:?}")))?;
-
-        if attr_oid.components() == oids::PKCS9_MESSAGE_DIGEST {
-            // Found the message-digest attribute. The value is a SET containing
-            // an OCTET STRING with the digest.
-            let set_tag = Tag::universal_constructed(17);
-            let mut val_set = attr_seq.enter_constructed(set_tag).map_err(|e| {
-                KipukaError::BadRequest(format!("CMS messageDigest SET error: {e:?}"))
+            .map_err(|e| KipukaError::BadRequest(format!("CMS attr OID error: {e}")))?;
+        if oid.components() == oids::PKCS9_MESSAGE_DIGEST {
+            if found {
+                return Err(KipukaError::BadRequest(
+                    "duplicate CMS message-digest attribute".into(),
+                ));
+            }
+            let mut values = attr
+                .enter_constructed(Tag::universal_constructed(17))
+                .map_err(|e| {
+                    KipukaError::BadRequest(format!("CMS messageDigest SET error: {e}"))
+                })?;
+            let digest: synta::OctetStringRef = values.decode().map_err(|e| {
+                KipukaError::BadRequest(format!("CMS messageDigest OCTET STRING error: {e}"))
             })?;
-
-            let digest_raw: synta::RawDer = val_set.decode().map_err(|e| {
-                KipukaError::BadRequest(format!("CMS messageDigest value error: {e:?}"))
-            })?;
-
-            // Parse the OCTET STRING value.
-            let digest_bytes = digest_raw.as_bytes();
-            let mut d_dec = Decoder::new(digest_bytes, Encoding::Der);
-            d_dec
-                .read_tag()
-                .map_err(|e| KipukaError::BadRequest(format!("CMS md tag error: {e:?}")))?;
-            let d_len = d_dec
-                .read_length()
-                .map_err(|e| KipukaError::BadRequest(format!("CMS md length error: {e:?}")))?
-                .definite()
-                .map_err(|e| KipukaError::BadRequest(format!("CMS md indef error: {e:?}")))?;
-            let digest_value = d_dec
-                .read_bytes(d_len)
-                .map_err(|e| KipukaError::BadRequest(format!("CMS md value error: {e:?}")))?;
-
-            if digest_value != expected_digest {
+            if !values.is_empty() || !attr.is_empty() {
+                return Err(KipukaError::BadRequest(
+                    "CMS message-digest requires exactly one value".into(),
+                ));
+            }
+            if digest.as_bytes() != expected_digest {
                 return Err(KipukaError::Auth(
                     "CMS message-digest attribute does not match eContent hash".into(),
                 ));
             }
-            return Ok(());
-        }
-
-        // Not the attribute we want — skip remaining fields.
-        while !attr_seq.is_empty() {
-            let _: synta::RawDer = attr_seq.decode().map_err(|e| {
-                KipukaError::BadRequest(format!("CMS attr value skip error: {e:?}"))
-            })?;
+            found = true;
+        } else {
+            while !attr.is_empty() {
+                let _: synta::RawDer = attr
+                    .decode()
+                    .map_err(|e| KipukaError::BadRequest(format!("CMS attr value error: {e}")))?;
+            }
         }
     }
-
-    // RFC 5652 §11.2: The message-digest attribute MUST be present when
-    // signedAttrs is present.
-    Err(KipukaError::BadRequest(
-        "CMS signedAttrs is missing the required message-digest attribute".into(),
-    ))
+    if !found {
+        return Err(KipukaError::BadRequest(
+            "CMS signedAttrs is missing the required message-digest attribute".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

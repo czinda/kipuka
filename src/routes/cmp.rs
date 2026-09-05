@@ -512,6 +512,64 @@ pub fn build_cmp_response(
         .map_err(|e| KipukaError::Internal(format!("failed to DER-encode CMP response: {e}")))
 }
 
+fn protected_part(message: &PKIMessage<'_>) -> Result<Vec<u8>, KipukaError> {
+    let encode = || -> Result<Vec<u8>, synta::Error> {
+        let mut encoder = synta::Encoder::new(synta::Encoding::Der);
+        encoder.start_constructed_no_guard(synta::Tag::universal_constructed(16))?;
+        encoder.encode(&message.header)?;
+        encoder.encode(&message.body)?;
+        encoder.end_constructed()?;
+        encoder.finish()
+    };
+    encode().map_err(|e| KipukaError::BadRequest(format!("CMP ProtectedPart: {e}")))
+}
+
+async fn validate_cmp_signer(cert_der: &[u8], state: &Arc<AppState>) -> Result<(), KipukaError> {
+    use crate::auth::certificate::{issued_by, valid_now};
+    valid_now(cert_der).map_err(KipukaError::Auth)?;
+    let cert = synta_certificate::Certificate::from_der(cert_der)
+        .map_err(|e| KipukaError::Auth(e.to_string()))?;
+    if let Some(extensions) = &cert.tbs_certificate.extensions
+        && let Some(usage) = synta_certificate::find_extension_value(
+            extensions.as_bytes(),
+            synta_certificate::oids::KEY_USAGE,
+        )
+    {
+        let bits: synta::BitStringRef<'_> = synta::Decoder::new(usage, synta::Encoding::Der)
+            .decode()
+            .map_err(|e| KipukaError::Auth(format!("invalid CMP signer key usage: {e}")))?;
+        if bits.as_bytes().first().is_none_or(|byte| byte & 0x80 == 0) {
+            return Err(KipukaError::Auth(
+                "CMP signer key usage forbids digital signatures".into(),
+            ));
+        }
+    }
+    let trusted = state.cas.values().any(|ca| {
+        valid_now(&ca.cert_der).is_ok()
+            && (ca.cert_der == cert_der || issued_by(cert_der, &ca.cert_der))
+    });
+    if !trusted {
+        return Err(KipukaError::Auth(
+            "CMP signer does not chain to a valid configured CA".into(),
+        ));
+    }
+    let revoked: Option<(String,)> = sqlx::query_as(crate::db::pg_sql(
+        "SELECT status FROM certificates WHERE der_encoded = ? AND status = 'revoked'",
+    ))
+    .bind(cert_der)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| KipukaError::Db(format!("CMP signer revocation lookup failed: {e}")))?;
+    if revoked.is_some() {
+        return Err(KipukaError::Auth(
+            "CMP signer certificate is revoked".into(),
+        ));
+    }
+    crate::auth::mtls::check_revocation(cert_der, state)
+        .await
+        .map_err(KipukaError::Auth)
+}
+
 /// `POST /.well-known/cmp` — process a CMP PKIMessage.
 ///
 /// RFC 9810 §6.2: CMP messages are transported over HTTP using
@@ -571,29 +629,10 @@ pub async fn post_cmp(
         )));
     }
 
-    // Verify message protection (RFC 4210 §5.1.3 / RFC 9810 §5.1.3).
-    //
-    // The protection value is a signature or MAC computed over the
-    // DER-encoded PKIHeader || PKIBody (concatenated, no outer wrapper).
-    // We re-parse the original PKIMessage to extract the protection bits,
-    // algorithm DER, and header||body bytes needed for verification.
-    let pki_msg_for_verify = PKIMessage::from_der(&body).map_err(|e| {
-        KipukaError::BadRequest(format!(
-            "failed to re-parse PKIMessage for verification: {e}"
-        ))
-    })?;
-
-    // Compute DER(header) || DER(body) — the data that was signed/MACed.
-    let protected_bytes = {
-        let header_der = synta::ToDer::to_der(&pki_msg_for_verify.header)
-            .map_err(|e| KipukaError::Internal(format!("failed to re-encode PKIHeader: {e}")))?;
-        let body_der_raw = synta::ToDer::to_der(&pki_msg_for_verify.body)
-            .map_err(|e| KipukaError::Internal(format!("failed to re-encode PKIBody: {e}")))?;
-        let mut buf = Vec::with_capacity(header_der.len() + body_der_raw.len());
-        buf.extend_from_slice(&header_der);
-        buf.extend_from_slice(&body_der_raw);
-        buf
-    };
+    // RFC 4210 ProtectedPart is a SEQUENCE containing the header and body.
+    let pki_msg_for_verify = PKIMessage::from_der(&body)
+        .map_err(|e| KipukaError::BadRequest(format!("invalid CMP message: {e}")))?;
+    let protected_bytes = protected_part(&pki_msg_for_verify)?;
 
     // Extract protection bits (signature or MAC value).
     let protection_bits = pki_msg_for_verify
@@ -648,55 +687,7 @@ pub async fn post_cmp(
 
             tracing::info!("CMP signature protection verified successfully");
 
-            // 3. Validate the signer certificate chains to a CA trust anchor.
-            //    Use the same direct-issuer check pattern as CMS SignedData
-            //    verification (cms_auth.rs).
-            let signer_cert_parsed =
-                synta_certificate::Certificate::from_der(cert_der).map_err(|e| {
-                    KipukaError::Auth(format!("failed to parse CMP signer certificate: {e:?}"))
-                })?;
-            let cert_sig_bits = signer_cert_parsed.signature_value.as_bytes();
-            let verifier = synta_certificate::default_signature_verifier();
-
-            let mut signer_trusted = false;
-            for ca_cfg in &state.config.cas {
-                let ca = match state.get_ca(&ca_cfg.id) {
-                    Some(ca) => ca,
-                    None => continue,
-                };
-                let ta_der = &ca.cert_der;
-                let ta_ranges = match synta_certificate::cert_byte_ranges(ta_der) {
-                    Some(r) => r,
-                    None => continue,
-                };
-                let ta_spki = &ta_der[ta_ranges.subject_public_key_info.clone()];
-
-                // Verify signer cert's signature against this CA's SPKI.
-                if verifier
-                    .verify_certificate_signature_erased(
-                        &cert_der[signer_ranges.tbs.clone()],
-                        &cert_der[signer_ranges.signature_algorithm.clone()],
-                        cert_sig_bits,
-                        ta_spki,
-                    )
-                    .is_ok()
-                {
-                    signer_trusted = true;
-                    break;
-                }
-
-                // Also accept self-signed: trust anchor == signer cert.
-                if ta_der.as_slice() == cert_der.as_slice() {
-                    signer_trusted = true;
-                    break;
-                }
-            }
-
-            if !signer_trusted {
-                return Err(KipukaError::Auth(
-                    "CMP signer certificate does not chain to a configured CA trust anchor".into(),
-                ));
-            }
+            validate_cmp_signer(cert_der, &state).await?;
 
             tracing::info!("CMP signer certificate chain verified against CA truststore");
         }
@@ -811,6 +802,8 @@ pub async fn post_cmp(
         ))
     })?;
 
+    state.admit_enrollment(&cmp_req.sender, "cmp").await?;
+
     // Dispatch based on message type.
     let response_body_der = match cmp_req.message_type {
         CmpMessageType::Ir => {
@@ -894,6 +887,26 @@ pub async fn post_cmp(
         ca_subject_der.as_deref(),
     )?;
 
+    // Preserve the request's GeneralName choice and encoding in the response.
+    let request_message =
+        PKIMessage::from_der(&body).map_err(|e| KipukaError::BadRequest(e.to_string()))?;
+    let mut response_message =
+        PKIMessage::from_der(&response_der).map_err(|e| KipukaError::Internal(e.to_string()))?;
+    response_message.header.recipient = request_message.header.sender;
+    let response_der = response_message
+        .to_der()
+        .map_err(|e| KipukaError::Internal(e.to_string()))?;
+
+    let ca_cfg = state.config.cas.first().ok_or(KipukaError::NotFound)?;
+    let ca = state.get_ca(&ca_cfg.id).ok_or(KipukaError::NotFound)?;
+    let key = crate::ca::issue::resolve_signing_key(ca_cfg, state.hsm.as_ref()).await?;
+    let response_der = crate::ca::protocol::protect_cmp(
+        &response_der,
+        &ca.cert_der,
+        key.as_signing_key(),
+        &ca.hash_algorithm,
+    )?;
+
     state
         .record_audit_event(
             "cmp_success",
@@ -959,9 +972,9 @@ async fn process_enrollment_request(
                 ))
             })?;
 
-    if cert_req_msgs.is_empty() {
+    if cert_req_msgs.len() != 1 {
         return Err(KipukaError::BadRequest(
-            "CMP CertReqMessages contains no requests".into(),
+            "CMP endpoint requires exactly one request per message".into(),
         ));
     }
 
@@ -1004,36 +1017,6 @@ async fn process_enrollment_request(
         .get_ca(ca_id)
         .ok_or_else(|| KipukaError::Ca(format!("CA '{ca_id}' not found")))?;
 
-    // Build a synthetic PKCS#10 CSR from the CRMF template fields so we
-    // can reuse the existing `issue_certificate` path.  The CSR signature
-    // is a dummy zero-length value — CMP message-level protection
-    // (verified above) provides the trust anchor, not the CSR self-signature.
-    //
-    // Use the CA certificate's actual signature algorithm instead of a
-    // hardcoded placeholder — extract it via cert_byte_ranges().
-    let sig_alg_der = synta_certificate::cert_byte_ranges(&ca.cert_der)
-        .map(|ranges| ca.cert_der[ranges.signature_algorithm.clone()].to_vec())
-        .unwrap_or_else(|| {
-            // Fallback: hand-encode sha256WithRSAEncryption AlgorithmIdentifier
-            // SEQUENCE { OID 1.2.840.113549.1.1.11, NULL }
-            vec![
-                0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b, 0x05,
-                0x00,
-            ]
-        });
-
-    let csr_builder = synta_certificate::CsrBuilder::new()
-        .subject_name(&subject_der)
-        .public_key_der(&spki_der);
-
-    let cri_der = csr_builder
-        .build_cri(&sig_alg_der)
-        .map_err(|e| KipukaError::Ca(format!("failed to build CRI from CRMF template: {e}")))?;
-
-    // Assemble with a zero-length dummy signature.
-    let csr_der = synta_certificate::CsrBuilder::assemble(&cri_der, &sig_alg_der, &[0u8])
-        .map_err(|e| KipukaError::Ca(format!("failed to assemble CSR from CRMF template: {e}")))?;
-
     let ca_cfg = state
         .config
         .cas
@@ -1052,8 +1035,8 @@ async fn process_enrollment_request(
     };
 
     // Issue the certificate.
-    let result = crate::ca::issue::issue_certificate(
-        &csr_der,
+    let result = crate::ca::issue::issue_crmf_certificate(
+        cert_req_msg,
         &profile,
         &ca.cert_der,
         resolved_key.as_signing_key(),
@@ -1068,6 +1051,8 @@ async fn process_enrollment_request(
         subject = %result.subject_dn,
         "CMP {}: certificate issued successfully", req_type,
     );
+
+    crate::ca::issue::persist_certificate(state, ca_id, &profile.name, &result).await?;
 
     // Build CertRepMessage with a single successful CertResponse.
     //
@@ -1108,6 +1093,12 @@ async fn process_revocation_request(
     state: &Arc<AppState>,
     cmp_req: &CmpRequest,
 ) -> Result<Vec<u8>, KipukaError> {
+    // Enrollment MAC credentials carry no certificate ownership or RA privilege.
+    if !matches!(cmp_req.protection, CmpProtectionType::Signature { .. }) {
+        return Err(KipukaError::Forbidden(
+            "CMP revocation requires certificate signature protection".into(),
+        ));
+    }
     use synta_certificate::cmp_types::RevDetails;
     use synta_certificate::crmf_types::CertTemplate;
 
@@ -1186,7 +1177,7 @@ async fn process_revocation_request(
 
                     // Query the database for the certificate's subject DN.
                     let row: Option<(String,)> = sqlx::query_as(crate::db::pg_sql(
-                        "SELECT subject FROM certificates WHERE serial = ?",
+                        "SELECT subject_dn FROM certificates WHERE serial = ?",
                     ))
                     .bind(&serial_hex_check)
                     .fetch_optional(&state.db)

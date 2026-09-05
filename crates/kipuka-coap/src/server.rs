@@ -1,7 +1,7 @@
 //! CoAP message parsing, encoding, and EST-coaps URI routing.
 //!
 //! This module implements the CoAP message format (RFC 7252 §3) and maps
-//! CoAP URI paths to EST operations per RFC 9483 §5.1.
+//! CoAP URI paths to EST operations per RFC 9148 §5.1.
 //!
 //! # CoAP Message Format
 //!
@@ -21,7 +21,7 @@
 //!
 //! # EST-coaps URI Mapping
 //!
-//! RFC 9483 §5.1 defines abbreviated URI paths for EST operations:
+//! RFC 9148 §5.1 defines abbreviated URI paths for EST operations:
 //!
 //! | CoAP Path | EST Operation | HTTP Method |
 //! |-----------|---------------|-------------|
@@ -33,7 +33,7 @@
 //! | `/crts`   | cacerts       | GET (alias) |
 
 use crate::block::{BlockAssembler, BlockDisassembler, szx_from_block_size};
-use crate::dtls::{DtlsConnection, DtlsContext, DtlsSessionCache, DtlsVersion};
+use crate::dtls::{DtlsConnection, DtlsContext, DtlsSessionCache};
 use crate::{CoapError, CoapResult};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -200,6 +200,11 @@ pub struct CoapCode {
 }
 
 impl CoapCode {
+    /// 4.00 Bad Request.
+    pub const BAD_REQUEST: Self = Self {
+        class: 4,
+        detail: 0,
+    };
     /// 2.01 Created — enrollment succeeded.
     pub const CREATED: Self = Self {
         class: 2,
@@ -456,7 +461,9 @@ impl CoapMessage {
                             "Truncated option delta (14)".to_string(),
                         ));
                     }
-                    delta = u16::from_be_bytes([data[pos], data[pos + 1]]) + 269;
+                    delta = u16::from_be_bytes([data[pos], data[pos + 1]])
+                        .checked_add(269)
+                        .ok_or_else(|| CoapError::InvalidMessage("option value overflow".into()))?;
                     pos += 2;
                 }
                 15 => {
@@ -484,7 +491,9 @@ impl CoapMessage {
                             "Truncated option length (14)".to_string(),
                         ));
                     }
-                    length = u16::from_be_bytes([data[pos], data[pos + 1]]) + 269;
+                    length = u16::from_be_bytes([data[pos], data[pos + 1]])
+                        .checked_add(269)
+                        .ok_or_else(|| CoapError::InvalidMessage("option value overflow".into()))?;
                     pos += 2;
                 }
                 15 => {
@@ -495,7 +504,9 @@ impl CoapMessage {
                 _ => {}
             }
 
-            current_option_number += delta;
+            current_option_number = current_option_number
+                .checked_add(delta)
+                .ok_or_else(|| CoapError::InvalidMessage("option number overflow".into()))?;
             let length = length as usize;
 
             if pos + length > data.len() {
@@ -661,9 +672,9 @@ pub enum EstOperation {
 
 /// CoAP request representing an EST-coaps operation.
 ///
-/// RFC 9483 §5.1: EST-coaps URIs follow the pattern:
+/// RFC 9148 §5.1: EST-coaps URIs follow the pattern:
 ///   coaps://host/.well-known/est/{operation}
-/// where {operation} uses the abbreviated names from RFC 9483 §5.1:
+/// where {operation} uses the abbreviated names from RFC 9148 §5.1:
 ///   - /cacerts   -> /cacerts (GET)
 ///   - /sen       -> /simpleenroll (POST)
 ///   - /sren      -> /simplereenroll (POST)
@@ -676,7 +687,7 @@ pub struct CoapEstRequest {
     pub operation: EstOperation,
     /// The optional EST label preceding the operation segment.
     ///
-    /// RFC 9483 §5.1 / RFC 7030 §3.2.2 allow an arbitrary label between the
+    /// RFC 9148 §5.1 / RFC 7030 §3.2.2 allow an arbitrary label between the
     /// `/.well-known/est/` prefix and the operation (e.g.
     /// `/.well-known/est/{label}/sen`).  `None` means the unlabeled default
     /// endpoint.  The label selects the CA and the per-label access-control
@@ -690,7 +701,7 @@ pub struct CoapEstRequest {
 
 /// Routes CoAP URI paths to EST operations.
 ///
-/// RFC 9483 §5.1: EST-coaps uses abbreviated path names under
+/// RFC 9148 §5.1: EST-coaps uses abbreviated path names under
 /// `/.well-known/est/` to reduce URI size for constrained devices.
 ///
 /// The router strips the well-known prefix and maps the final path
@@ -700,7 +711,7 @@ pub struct CoapEstRouter;
 impl CoapEstRouter {
     /// Maps a CoAP URI path to an EST operation.
     ///
-    /// Recognizes both the abbreviated RFC 9483 paths and the full-length
+    /// Recognizes both the abbreviated RFC 9148 paths and the full-length
     /// path segments from the well-known prefix.
     ///
     /// # Path Recognition
@@ -718,7 +729,7 @@ impl CoapEstRouter {
 
     /// Maps a CoAP URI path to an optional EST label and an EST operation.
     ///
-    /// RFC 7030 §3.2.2 / RFC 9483 §5.1 permit an operator-defined label
+    /// RFC 7030 §3.2.2 / RFC 9148 §5.1 permit an operator-defined label
     /// between the `/.well-known/est/` prefix and the operation segment:
     ///
     /// ```text
@@ -1319,9 +1330,11 @@ pub trait EstHandler: Send + Sync + 'static {
 }
 
 /// Cached response entry: (disassembler, content-format, response code, timestamp).
+type TransferKey = (SocketAddr, Vec<u8>, String, u8);
+type ExchangeEntry = (Vec<u8>, Option<Vec<u8>>, Instant);
 type ResponseCacheEntry = (BlockDisassembler, u16, CoapCode, Instant);
 
-/// CoAP/DTLS server for EST-coaps (RFC 9483).
+/// CoAP/DTLS server for EST-coaps (RFC 9148).
 ///
 /// Binds a UDP socket, accepts DTLS connections, parses CoAP messages,
 /// routes EST operations, and handles block-wise transfer for large payloads.
@@ -1358,15 +1371,16 @@ pub struct CoapDtlsServer {
     ///
     /// Bounded to `max_block_assemblers` entries to prevent resource
     /// exhaustion from peers that start but never complete block transfers.
-    block_assemblers: Mutex<HashMap<(SocketAddr, u16), (BlockAssembler, Instant)>>,
+    block_assemblers: Mutex<HashMap<TransferKey, (BlockAssembler, Instant)>>,
     /// Cached multi-block responses awaiting subsequent Block2 GETs.
     ///
     /// Keyed by `(peer_addr, token_hash)`.  Entries older than `block_ttl`
     /// are reaped alongside stale block assemblers.  Capped at
     /// `max_block_assemblers` entries.
-    response_cache: Mutex<HashMap<(SocketAddr, u16), ResponseCacheEntry>>,
+    response_cache: Mutex<HashMap<TransferKey, ResponseCacheEntry>>,
     /// Configured block size exponent for response fragmentation.
     block_szx: u8,
+    exchanges: Mutex<HashMap<(SocketAddr, u16), ExchangeEntry>>,
     /// Maximum reassembled payload size.
     max_payload: usize,
     /// Maximum number of concurrent block-wise assemblers (DoS guard).
@@ -1423,6 +1437,7 @@ impl CoapDtlsServer {
             block_assemblers: Mutex::new(HashMap::new()),
             response_cache: Mutex::new(HashMap::new()),
             block_szx,
+            exchanges: Mutex::new(HashMap::new()),
             max_payload,
             // Cap assemblers at 2x session limit — each peer should have at
             // most one active block transfer, but allow headroom for token
@@ -1454,8 +1469,38 @@ impl CoapDtlsServer {
 
         info!("CoAP/DTLS server main loop started");
 
+        let mut maintenance = tokio::time::interval(Duration::from_millis(100));
+        maintenance.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
-            let (len, peer_addr) = match self.socket.recv_from(&mut buf).await {
+            let received = tokio::select! {
+                // A ready timer takes precedence even under continuous UDP traffic.
+                biased;
+                _ = maintenance.tick() => {
+                let packets = {
+                    let mut conns = self.connections.lock().await;
+                    let mut packets = Vec::new();
+                    conns.retain(|peer, conn| {
+                        if !conn.is_handshake_complete()
+                            && conn.created_at.elapsed() > Duration::from_secs(10)
+                        {
+                            return false;
+                        }
+                        if conn.handle_timeout().is_err() {
+                            return false;
+                        }
+                        packets.extend(conn.outgoing().into_iter().map(|packet| (*peer, packet)));
+                        true
+                    });
+                    packets
+                };
+                for (peer, packet) in packets {
+                    let _ = self.socket.send_to(&packet, peer).await;
+                }
+                    continue;
+                }
+                result = self.socket.recv_from(&mut buf) => result,
+            };
+            let (len, peer_addr) = match received {
                 Ok(result) => result,
                 Err(e) => {
                     warn!(error = %e, "UDP recv_from failed, continuing");
@@ -1470,28 +1515,60 @@ impl CoapDtlsServer {
                 "Received UDP datagram"
             );
 
-            // For now, process the datagram as plaintext CoAP.
-            // Full DTLS integration requires memory BIO plumbing which is
-            // handled per-connection. When DTLS is enabled, the flow is:
-            //
-            //   1. Look up or create DtlsConnection for peer_addr
-            //   2. Feed datagram into the connection's read BIO
-            //   3. SSL_read to get decrypted CoAP data
-            //   4. Process the CoAP message
-            //   5. SSL_write the CoAP response
-            //   6. Read from write BIO and send via UDP
-            //
-            // The connection tracking ensures DTLS session state is maintained
-            // across multiple datagrams from the same peer.
-            if let Err(e) = self
-                .process_datagram(datagram, peer_addr, handler.as_ref())
-                .await
-            {
-                warn!(
-                    peer = %peer_addr,
-                    error = %e,
-                    "Failed to process datagram"
-                );
+            let incoming = {
+                let mut conns = self.connections.lock().await;
+                let cache = self.session_cache.lock().await;
+                conns.retain(|_, c| {
+                    c.created_at.elapsed()
+                        < if c.is_handshake_complete() {
+                            cache.ttl()
+                        } else {
+                            Duration::from_secs(10)
+                        }
+                });
+                if !conns.contains_key(&peer_addr) {
+                    if conns.len() >= cache.max_sessions() {
+                        continue;
+                    }
+                    self.block_assemblers
+                        .lock()
+                        .await
+                        .retain(|key, _| key.0 != peer_addr);
+                    self.response_cache
+                        .lock()
+                        .await
+                        .retain(|key, _| key.0 != peer_addr);
+                    self.exchanges
+                        .lock()
+                        .await
+                        .retain(|key, _| key.0 != peer_addr);
+                    conns.insert(peer_addr, DtlsConnection::new(&self.dtls_ctx, peer_addr)?);
+                }
+                let conn = conns.get_mut(&peer_addr).unwrap();
+                match conn.receive(datagram) {
+                    Ok(messages) => Some((messages, conn.outgoing())),
+                    Err(e) => {
+                        debug!(error = %e, "DTLS datagram rejected");
+                        conns.remove(&peer_addr);
+                        None
+                    }
+                }
+            };
+            if let Some((messages, outgoing)) = incoming {
+                for packet in outgoing {
+                    self.socket
+                        .send_to(&packet, peer_addr)
+                        .await
+                        .map_err(|e| CoapError::Internal(e.to_string()))?;
+                }
+                for message in messages {
+                    if let Err(e) = self
+                        .process_datagram(&message, peer_addr, handler.clone())
+                        .await
+                    {
+                        warn!(error = %e, "CoAP request failed");
+                    }
+                }
             }
         }
     }
@@ -1529,12 +1606,57 @@ impl CoapDtlsServer {
         &self,
         data: &[u8],
         peer_addr: SocketAddr,
-        handler: &dyn EstHandler,
+        handler: Arc<dyn EstHandler>,
     ) -> Result<(), CoapError> {
         // Reap stale block assembler and response cache entries.
         self.reap_stale_entries().await;
 
         let message = CoapMessage::parse(data)?;
+
+        if message.msg_type != CoapMessageType::Confirmable
+            && message.msg_type != CoapMessageType::NonConfirmable
+        {
+            return Ok(());
+        }
+        if message.payload.len() > self.max_payload {
+            return self
+                .send_response(
+                    peer_addr,
+                    &self.build_error_response(
+                        &message.token,
+                        message.message_id,
+                        &CoapError::PayloadTooLarge {
+                            size: message.payload.len(),
+                            max: self.max_payload,
+                        },
+                    ),
+                )
+                .await;
+        }
+        {
+            let mut exchanges = self.exchanges.lock().await;
+            exchanges.retain(|_, (_, _, time)| time.elapsed() < Duration::from_secs(247));
+            if let Some((request, response, _)) = exchanges.get(&(peer_addr, message.message_id)) {
+                if request != data {
+                    return Err(CoapError::InvalidMessage(
+                        "message ID reused during exchange lifetime".into(),
+                    ));
+                }
+                let response = response.clone();
+                drop(exchanges);
+                if let Some(response) = response {
+                    self.send_encoded(peer_addr, &response).await?;
+                }
+                return Ok(());
+            }
+            if exchanges.len() >= self.max_block_assemblers.saturating_mul(16) {
+                return Err(CoapError::Internal("exchange capacity exhausted".into()));
+            }
+            exchanges.insert(
+                (peer_addr, message.message_id),
+                (data.to_vec(), None, Instant::now()),
+            );
+        }
 
         debug!(
             peer = %peer_addr,
@@ -1558,7 +1680,12 @@ impl CoapDtlsServer {
         if let Some(block2) = message.block2()
             && block2.num > 0
         {
-            let cache_key = (peer_addr, token_hash(&message.token));
+            let cache_key = (
+                peer_addr,
+                message.token.clone(),
+                message.uri_path(),
+                message.code.to_byte(),
+            );
             let mut cache = self.response_cache.lock().await;
             if let Some((disasm, cf, code, ts)) = cache.get_mut(&cache_key) {
                 // Refresh TTL on each access.
@@ -1591,7 +1718,16 @@ impl CoapDtlsServer {
                 }
             }
             drop(cache);
-            // Fall through to re-process the request if cache miss.
+            return self
+                .send_response(
+                    peer_addr,
+                    &self.build_error_response(
+                        &message.token,
+                        message.message_id,
+                        &CoapError::InvalidMessage("unknown Block2 exchange".into()),
+                    ),
+                )
+                .await;
         }
 
         // Check for block-wise request (Block1).
@@ -1612,7 +1748,12 @@ impl CoapDtlsServer {
 
         // Handle block-wise assembly for multi-block requests.
         let request_payload = if let Some(block) = block1 {
-            let assembler_key = (peer_addr, token_hash(&msg_token));
+            let assembler_key = (
+                peer_addr,
+                msg_token.clone(),
+                est_request.message.uri_path(),
+                est_request.message.code.to_byte(),
+            );
             let mut assemblers = self.block_assemblers.lock().await;
 
             // Reject new block transfers when the assembler table is full.
@@ -1633,7 +1774,7 @@ impl CoapDtlsServer {
             }
 
             let (assembler, ts) = assemblers
-                .entry(assembler_key)
+                .entry(assembler_key.clone())
                 .or_insert_with(|| (BlockAssembler::new(self.max_payload), Instant::now()));
 
             // Refresh the timestamp on each block received.
@@ -1666,6 +1807,19 @@ impl CoapDtlsServer {
             est_request.message.payload.clone()
         };
 
+        if request_payload.len() > self.max_payload {
+            let e = CoapError::PayloadTooLarge {
+                size: request_payload.len(),
+                max: self.max_payload,
+            };
+            self.send_response(
+                peer_addr,
+                &self.build_error_response(&msg_token, msg_id, &e),
+            )
+            .await?;
+            return Ok(());
+        }
+
         // Retrieve client cert info from the DTLS connection (if any).
         let client_cert = {
             let conns = self.connections.lock().await;
@@ -1673,13 +1827,20 @@ impl CoapDtlsServer {
         };
 
         // Dispatch to the EST handler.
-        let est_response = match handler.handle(
-            est_request.operation,
-            est_request.label.as_deref(),
-            &request_payload,
-            content_format,
-            client_cert.as_ref(),
-        ) {
+        let operation = est_request.operation;
+        let label = est_request.label.clone();
+        let est_response = match tokio::task::spawn_blocking(move || {
+            handler.handle(
+                operation,
+                label.as_deref(),
+                &request_payload,
+                content_format,
+                client_cert.as_ref(),
+            )
+        })
+        .await
+        .map_err(|e| CoapError::Internal(e.to_string()))?
+        {
             Ok(result) => result,
             Err(e) => {
                 let response = self.build_error_response(&msg_token, msg_id, &e);
@@ -1691,6 +1852,12 @@ impl CoapDtlsServer {
         // Extract audit info before consuming the response fields.
         let audit_event = est_response.audit_event.clone();
         let response_payload = est_response.payload;
+        if response_payload.len() > self.max_payload {
+            return Err(CoapError::PayloadTooLarge {
+                size: response_payload.len(),
+                max: self.max_payload,
+            });
+        }
         let response_cf = est_response.content_format;
 
         // Determine response code based on operation.
@@ -1724,7 +1891,12 @@ impl CoapDtlsServer {
             }
 
             // Cache the disassembler for subsequent Block2 requests.
-            let cache_key = (peer_addr, token_hash(&msg_token));
+            let cache_key = (
+                peer_addr,
+                msg_token.clone(),
+                est_request.message.uri_path(),
+                est_request.message.code.to_byte(),
+            );
             let mut cache = self.response_cache.lock().await;
             // Enforce the same size cap as block assemblers.
             if cache.len() < self.max_block_assemblers {
@@ -1781,6 +1953,7 @@ impl CoapDtlsServer {
         error: &CoapError,
     ) -> CoapMessage {
         let code = match error {
+            CoapError::InvalidMessage(_) => CoapCode::BAD_REQUEST,
             CoapError::ResourceNotFound(_) => CoapCode::NOT_FOUND,
             CoapError::UnsupportedMethod(_) => CoapCode::METHOD_NOT_ALLOWED,
             CoapError::UnsupportedContentFormat(_) => CoapCode::UNSUPPORTED_CONTENT_FORMAT,
@@ -1806,9 +1979,7 @@ impl CoapDtlsServer {
 
     /// Sends a CoAP response to the given peer.
     ///
-    /// In the full DTLS flow, this would encrypt via the peer's DTLS
-    /// connection before sending. Currently sends plaintext for the
-    /// transport skeleton.
+    /// Encrypts the response using the authenticated peer DTLS connection.
     async fn send_response(
         &self,
         peer_addr: SocketAddr,
@@ -1822,52 +1993,35 @@ impl CoapDtlsServer {
             "Sending CoAP response"
         );
 
-        self.socket
-            .send_to(&encoded, peer_addr)
+        if let Some((_, response, _)) = self
+            .exchanges
+            .lock()
             .await
-            .map_err(|e| CoapError::Internal(format!("UDP send failed: {e}")))?;
-
-        Ok(())
+            .get_mut(&(peer_addr, message.message_id))
+        {
+            *response = Some(encoded.clone());
+        }
+        self.send_encoded(peer_addr, &encoded).await
     }
 
-    /// Gets or creates a DTLS connection for a peer.
-    ///
-    /// If the peer already has an active connection, returns it. Otherwise
-    /// creates a new `DtlsConnection` from the server's `DtlsContext`.
-    #[allow(dead_code)]
-    async fn get_or_create_connection(&self, peer_addr: SocketAddr) -> Result<(), CoapError> {
-        let mut conns = self.connections.lock().await;
-        if conns.contains_key(&peer_addr) {
-            return Ok(());
+    async fn send_encoded(&self, peer_addr: SocketAddr, encoded: &[u8]) -> Result<(), CoapError> {
+        let outgoing = {
+            let mut connections = self.connections.lock().await;
+            let connection = connections
+                .get_mut(&peer_addr)
+                .ok_or_else(|| CoapError::Unauthorized("DTLS session required".into()))?;
+            connection.encrypt(encoded)?;
+            connection.outgoing()
+        };
+        for packet in outgoing {
+            self.socket
+                .send_to(&packet, peer_addr)
+                .await
+                .map_err(|e| CoapError::Internal(e.to_string()))?;
         }
 
-        let conn = DtlsConnection::new(&self.dtls_ctx, peer_addr)?;
-        conns.insert(peer_addr, conn);
-
-        // Also register in the session cache.
-        let mut cache = self.session_cache.lock().await;
-        let session = crate::dtls::DtlsSession::new(
-            Vec::new(), // session ID filled after handshake
-            peer_addr,
-            DtlsVersion::V1_2, // negotiated during handshake
-        );
-        cache.insert(session);
-
-        debug!(peer = %peer_addr, "Created new DTLS connection");
         Ok(())
     }
-}
-
-/// Computes a simple hash of a CoAP token for use as a block-assembler key.
-///
-/// This is not cryptographic — just a fast discriminator to distinguish
-/// concurrent block transfers.
-fn token_hash(token: &[u8]) -> u16 {
-    let mut h: u16 = 0;
-    for &b in token {
-        h = h.wrapping_mul(31).wrapping_add(u16::from(b));
-    }
-    h
 }
 
 #[cfg(test)]
@@ -1905,27 +2059,6 @@ mod server_tests {
     }
 
     #[test]
-    fn test_token_hash_deterministic() {
-        let token = vec![0x01, 0x02, 0x03];
-        let h1 = token_hash(&token);
-        let h2 = token_hash(&token);
-        assert_eq!(h1, h2);
-    }
-
-    #[test]
-    fn test_token_hash_empty() {
-        let h = token_hash(&[]);
-        assert_eq!(h, 0);
-    }
-
-    #[test]
-    fn test_token_hash_different_tokens() {
-        let h1 = token_hash(&[0x01]);
-        let h2 = token_hash(&[0x02]);
-        assert_ne!(h1, h2);
-    }
-
-    #[test]
     fn test_echo_handler() {
         let handler = EchoHandler;
         let resp = handler
@@ -1946,6 +2079,7 @@ mod server_tests {
         // error-to-code mapping logic directly.
         let err = CoapError::ResourceNotFound("test".to_string());
         let code = match &err {
+            CoapError::InvalidMessage(_) => CoapCode::BAD_REQUEST,
             CoapError::ResourceNotFound(_) => CoapCode::NOT_FOUND,
             _ => CoapCode::INTERNAL_SERVER_ERROR,
         };
@@ -1963,90 +2097,168 @@ mod server_tests {
     }
 
     #[tokio::test]
-    async fn test_coap_server_process_cacerts() {
-        // Bind to a random port.
-        let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let _server_addr = socket.local_addr().unwrap();
-
-        let server = CoapDtlsServer {
-            socket: Arc::new(socket),
-            dtls_ctx: {
-                // Create a minimal self-signed cert for the context.
-                // For testing, we skip actual DTLS and test the CoAP layer.
-                // Use a dummy context — process_datagram doesn't use DTLS yet.
-                let (cert_pem, key_pem) = generate_test_cert();
-                DtlsContext::new(&cert_pem, &key_pem, &cert_pem).unwrap()
-            },
-            session_cache: Mutex::new(DtlsSessionCache::new(10, Duration::from_secs(300))),
-            connections: Mutex::new(HashMap::new()),
-            block_assemblers: Mutex::new(HashMap::new()),
-            response_cache: Mutex::new(HashMap::new()),
-            block_szx: crate::block::DEFAULT_SZX,
-            max_payload: 65536,
-            max_block_assemblers: 20,
-            block_ttl: Duration::from_secs(60),
+    async fn authenticated_dtls_dispatch_and_duplicate_replay() {
+        let (cert, key) = generate_test_cert();
+        let server = Arc::new(
+            CoapDtlsServer::bind(
+                "127.0.0.1:0",
+                &cert,
+                &key,
+                &cert,
+                64,
+                1024,
+                4,
+                Duration::from_secs(60),
+            )
+            .await
+            .unwrap(),
+        );
+        let address = server.local_addr().unwrap();
+        struct Counting(std::sync::atomic::AtomicUsize);
+        impl EstHandler for Counting {
+            fn handle(
+                &self,
+                _: EstOperation,
+                _: Option<&str>,
+                payload: &[u8],
+                _: Option<u16>,
+                cert: Option<&crate::dtls::ClientCertInfo>,
+            ) -> Result<EstResponse, CoapError> {
+                assert!(cert.is_some());
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(EstResponse {
+                    payload: if payload == b"fragment" {
+                        vec![42; 128]
+                    } else {
+                        b"issued".to_vec()
+                    },
+                    content_format: 281,
+                    audit_event: None,
+                })
+            }
+        }
+        let handler = Arc::new(Counting(std::sync::atomic::AtomicUsize::new(0)));
+        let running = {
+            let server = server.clone();
+            let handler = handler.clone();
+            tokio::spawn(async move { server.run(handler).await })
         };
-
-        let handler = EchoHandler;
-
-        // Build a CoAP GET /cacerts request.
         let request = CoapMessage {
-            version: COAP_VERSION,
+            version: 1,
             msg_type: CoapMessageType::Confirmable,
-            code: CoapMethod::Get.to_code(),
-            message_id: 1,
-            token: vec![0xAA],
-            options: vec![CoapOption::new(OPTION_URI_PATH, b"cacerts".to_vec())],
-            payload: Vec::new(),
-        };
-
-        let peer_addr: SocketAddr = "127.0.0.1:9999".parse().unwrap();
-        let result = server
-            .process_datagram(&request.encode(), peer_addr, &handler)
-            .await;
-        assert!(result.is_ok());
-
-        // The response was sent via UDP — in a full test we'd receive it
-        // on another socket. Here we just verify no error occurred.
-    }
-
-    #[tokio::test]
-    async fn test_coap_server_process_unknown_path() {
-        let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-
-        let (cert_pem, key_pem) = generate_test_cert();
-        let server = CoapDtlsServer {
-            socket: Arc::new(socket),
-            dtls_ctx: DtlsContext::new(&cert_pem, &key_pem, &cert_pem).unwrap(),
-            session_cache: Mutex::new(DtlsSessionCache::new(10, Duration::from_secs(300))),
-            connections: Mutex::new(HashMap::new()),
-            block_assemblers: Mutex::new(HashMap::new()),
-            response_cache: Mutex::new(HashMap::new()),
-            block_szx: crate::block::DEFAULT_SZX,
-            max_payload: 65536,
-            max_block_assemblers: 20,
-            block_ttl: Duration::from_secs(60),
-        };
-
-        let handler = EchoHandler;
-
-        // Build a CoAP GET /unknown request.
-        let request = CoapMessage {
-            version: COAP_VERSION,
-            msg_type: CoapMessageType::Confirmable,
-            code: CoapMethod::Get.to_code(),
-            message_id: 2,
-            token: vec![0xBB],
-            options: vec![CoapOption::new(OPTION_URI_PATH, b"unknown".to_vec())],
-            payload: Vec::new(),
-        };
-
-        let peer_addr: SocketAddr = "127.0.0.1:9998".parse().unwrap();
-        // Should succeed (error response sent, not returned as Err).
-        let result = server
-            .process_datagram(&request.encode(), peer_addr, &handler)
-            .await;
-        assert!(result.is_ok());
+            code: CoapMethod::Post.to_code(),
+            message_id: 4,
+            token: vec![1],
+            options: vec![CoapOption::new(OPTION_URI_PATH, b"sen".to_vec())],
+            payload: vec![1],
+        }
+        .encode();
+        let raw = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        raw.send_to(&request, address).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(handler.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+        // Keep UDP continuously readable while the first handshake flight is
+        // deliberately dropped below. Retransmission must not depend on idleness.
+        let noise = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(5));
+            loop {
+                interval.tick().await;
+                raw.send_to(b"unrelated invalid datagram", address)
+                    .await
+                    .unwrap();
+            }
+        });
+        tokio::task::spawn_blocking(move || {
+            struct Datagram(std::net::UdpSocket, bool);
+            impl std::io::Read for Datagram {
+                fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                    if self.1 {
+                        let _ = self.0.recv(buf)?;
+                        self.1 = false;
+                    }
+                    self.0.recv(buf)
+                }
+            }
+            impl std::io::Write for Datagram {
+                fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                    self.0.send(buf)
+                }
+                fn flush(&mut self) -> std::io::Result<()> {
+                    Ok(())
+                }
+            }
+            let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            socket.connect(address).unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut ctx =
+                openssl::ssl::SslContext::builder(openssl::ssl::SslMethod::dtls_client()).unwrap();
+            let certificate = openssl::x509::X509::from_pem(&cert).unwrap();
+            ctx.set_certificate(&certificate).unwrap();
+            ctx.set_private_key(&openssl::pkey::PKey::private_key_from_pem(&key).unwrap())
+                .unwrap();
+            ctx.cert_store_mut().add_cert(certificate).unwrap();
+            ctx.set_verify(openssl::ssl::SslVerifyMode::PEER);
+            let mut ssl = openssl::ssl::Ssl::new(&ctx.build()).unwrap();
+            ssl.set_mtu(1200).unwrap();
+            let mut stream = openssl::ssl::SslStream::new(ssl, Datagram(socket, true)).unwrap();
+            stream.connect().unwrap();
+            let mut buf = [0; 1024];
+            stream.ssl_write(&request).unwrap();
+            let first = stream.ssl_read(&mut buf).unwrap();
+            let response = buf[..first].to_vec();
+            assert_eq!(CoapMessage::parse(&response).unwrap().payload, b"issued");
+            stream.ssl_write(&request).unwrap();
+            let second = stream.ssl_read(&mut buf).unwrap();
+            assert_eq!(&buf[..second], &response);
+            let mut message = CoapMessage::parse(&request).unwrap();
+            message.message_id = 5;
+            message.payload = vec![1; 1025];
+            stream.ssl_write(&message.encode()).unwrap();
+            let n = stream.ssl_read(&mut buf).unwrap();
+            assert_eq!(
+                CoapMessage::parse(&buf[..n]).unwrap().code,
+                CoapCode {
+                    class: 4,
+                    detail: 13
+                }
+            );
+            message.message_id = 6;
+            message.token = vec![1, 0];
+            message.payload = b"fragment".to_vec();
+            stream.ssl_write(&message.encode()).unwrap();
+            let n = stream.ssl_read(&mut buf).unwrap();
+            assert_eq!(CoapMessage::parse(&buf[..n]).unwrap().payload, vec![42; 64]);
+            message.message_id = 7;
+            message.token = vec![0, 31];
+            message.payload.clear();
+            message.options.push(CoapOption::from_uint(
+                OPTION_BLOCK2,
+                crate::block::BlockOption {
+                    num: 1,
+                    more: false,
+                    szx: 2,
+                }
+                .encode(),
+            ));
+            stream.ssl_write(&message.encode()).unwrap();
+            let n = stream.ssl_read(&mut buf).unwrap();
+            assert_eq!(
+                CoapMessage::parse(&buf[..n]).unwrap().code,
+                CoapCode::BAD_REQUEST
+            );
+            message.message_id = 8;
+            message.token = vec![1, 0];
+            stream.ssl_write(&message.encode()).unwrap();
+            let n = stream.ssl_read(&mut buf).unwrap();
+            assert_eq!(CoapMessage::parse(&buf[..n]).unwrap().payload, vec![42; 64]);
+        })
+        .await
+        .unwrap();
+        assert_eq!(handler.0.load(std::sync::atomic::Ordering::SeqCst), 2);
+        noise.abort();
+        running.abort();
     }
 
     /// Generates a self-signed test certificate and key in PEM format.

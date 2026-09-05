@@ -240,13 +240,28 @@ impl OcspClient {
         let responder_url = self.resolve_responder_url(cert_der)?;
 
         // Build OCSP request DER.
-        let request_der = self.build_ocsp_request(&cert_id)?;
+        let nonce = if self.config.require_nonce {
+            use rand::RngCore;
+            let mut n = vec![0; 32];
+            rand::thread_rng().fill_bytes(&mut n);
+            Some(n)
+        } else {
+            None
+        };
+        let request_der = self.build_ocsp_request_with_nonce(&cert_id, nonce.as_deref())?;
 
         // Send request via HTTP POST.
         let response_der = self.send_ocsp_request(&responder_url, &request_der).await?;
 
         // Parse response and extract status.
-        let status = self.parse_ocsp_response(&response_der, &cert_id)?;
+        let mut valid_for = Duration::ZERO;
+        let status = self.parse_ocsp_response(
+            &response_der,
+            &cert_id,
+            issuer_der,
+            nonce.as_deref(),
+            &mut valid_for,
+        )?;
 
         // Cache the result.
         self.cache.insert(
@@ -254,7 +269,7 @@ impl OcspClient {
             CachedOcspResponse {
                 status: status.clone(),
                 cached_at: Instant::now(),
-                ttl: Duration::from_secs(self.config.cache_ttl_secs),
+                ttl: valid_for.min(Duration::from_secs(self.config.cache_ttl_secs)),
             },
         );
 
@@ -289,7 +304,10 @@ impl OcspClient {
         let responder_url = self.resolve_responder_url(server_cert_der)?;
         let request_der = self.build_ocsp_request(&cert_id)?;
 
-        self.send_ocsp_request(&responder_url, &request_der).await
+        let response = self.send_ocsp_request(&responder_url, &request_der).await?;
+        let mut valid_for = Duration::ZERO;
+        self.parse_ocsp_response(&response, &cert_id, issuer_der, None, &mut valid_for)?;
+        Ok(response)
     }
 
     /// Evict expired entries from the response cache.
@@ -423,6 +441,31 @@ impl OcspClient {
         Ok(request_der)
     }
 
+    fn build_ocsp_request_with_nonce(
+        &self,
+        cert_id: &CertId,
+        nonce: Option<&[u8]>,
+    ) -> OcspResult<Vec<u8>> {
+        let raw = self.build_ocsp_request(cert_id)?;
+        let Some(nonce) = nonce else {
+            return Ok(raw);
+        };
+        let mut request = synta_certificate::ocsp_2024_88_types::OCSPRequest::from_der(&raw)
+            .map_err(|e| OcspError::RequestBuild(e.to_string()))?;
+        let encoded = synta::OctetStringRef::new(nonce)
+            .to_der()
+            .map_err(|e| OcspError::RequestBuild(e.to_string()))?;
+        request.tbs_request.request_extensions = Some(vec![synta_certificate::Extension {
+            extn_id: synta::ObjectIdentifier::new(&[1, 3, 6, 1, 5, 5, 7, 48, 1, 2])
+                .map_err(|e| OcspError::RequestBuild(e.to_string()))?,
+            critical: None,
+            extn_value: synta::OctetStringRef::new(&encoded),
+        }]);
+        request
+            .to_der()
+            .map_err(|e| OcspError::RequestBuild(e.to_string()))
+    }
+
     /// Send an OCSP request via HTTP POST.
     ///
     /// Per RFC 6960 §A.1, the request is sent as:
@@ -448,7 +491,7 @@ impl OcspClient {
             "sending OCSP request"
         );
 
-        let response = client
+        let mut response = client
             .post(responder_url)
             .header("Content-Type", "application/ocsp-request")
             .header("Accept", "application/ocsp-response")
@@ -470,10 +513,17 @@ impl OcspClient {
             )));
         }
 
-        let response_bytes = response
-            .bytes()
+        let mut response_bytes = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
             .await
-            .map_err(|e| OcspError::Transport(format!("reading response body: {e}")))?;
+            .map_err(|e| OcspError::Transport(e.to_string()))?
+        {
+            if chunk.len() > 1_048_576usize.saturating_sub(response_bytes.len()) {
+                return Err(OcspError::Transport("OCSP body exceeds 1 MiB".into()));
+            }
+            response_bytes.extend_from_slice(&chunk);
+        }
 
         debug!(
             response_len = response_bytes.len(),
@@ -492,7 +542,14 @@ impl OcspClient {
     ///     responseBytes [0] EXPLICIT ResponseBytes OPTIONAL
     /// }
     /// ```
-    fn parse_ocsp_response(&self, response_der: &[u8], cert_id: &CertId) -> OcspResult<OcspStatus> {
+    fn parse_ocsp_response(
+        &self,
+        response_der: &[u8],
+        cert_id: &CertId,
+        issuer_der: &[u8],
+        nonce: Option<&[u8]>,
+        valid_for: &mut Duration,
+    ) -> OcspResult<OcspStatus> {
         // Parse the outer OCSPResponse envelope.
         let ocsp_response: synta_certificate::ocsp::OCSPResponse<'_> =
             Decoder::new(response_der, Encoding::Der)
@@ -530,72 +587,112 @@ impl OcspClient {
                 .decode()
                 .map_err(|e| OcspError::Parse(format!("BasicOCSPResponse decode: {e}")))?;
 
-        // Verify the responder signature (RFC 6960 §4.2.2.2).
-        // The responder certificate is typically included in the `certs`
-        // field of the BasicOCSPResponse.  When it is absent the responder
-        // cert is assumed to be pre-trusted by the relying party — we log a
-        // warning and skip verification in that case.
-        //
-        // IMPORTANT: We extract the TBS ResponseData bytes directly from the
-        // original DER rather than re-encoding via `to_der()`.  Re-encoding
-        // can produce different bytes when the original used BER (indefinite
-        // length, non-minimal length octets, etc.), which would invalidate
-        // the signature.  This mirrors the `cert_byte_ranges` approach used
-        // for certificate signature verification.
-        let basic_response_der = response_bytes.response.as_bytes();
-        if let Some(ref certs) = basic_response.certs {
-            if let Some(first_cert_raw) = certs.first() {
-                let responder_cert_der = first_cert_raw.as_bytes();
-
-                // Extract the TBS ResponseData bytes from the original
-                // BasicOCSPResponse DER (first field of the outer SEQUENCE).
-                let tbs_der =
-                    extract_basic_ocsp_tbs_bytes(basic_response_der).ok_or_else(|| {
-                        OcspError::SignatureVerification(
-                            "failed to extract TBS ResponseData byte range from BasicOCSPResponse"
-                                .into(),
-                        )
-                    })?;
-
-                // Encode the signature algorithm to DER.
-                let sig_alg_der = basic_response.signature_algorithm.to_der().map_err(|e| {
-                    OcspError::SignatureVerification(format!(
-                        "failed to encode signature algorithm: {e}"
-                    ))
-                })?;
-
-                // Extract the raw signature bytes.
-                let signature_bits = basic_response.signature.as_bytes();
-
-                // Extract the responder certificate's SubjectPublicKeyInfo DER
-                // using cert_byte_ranges (avoids re-parsing the full cert).
-                let cert_ranges = synta_certificate::cert_byte_ranges(responder_cert_der)
-                    .ok_or_else(|| {
-                        OcspError::SignatureVerification(
-                            "malformed responder certificate: cannot extract byte ranges".into(),
-                        )
-                    })?;
-                let spki_der = &responder_cert_der[cert_ranges.subject_public_key_info.clone()];
-
-                // Verify the signature using the default crypto backend.
-                let verifier = synta_certificate::default_signature_verifier();
+        // Trust is anchored in the actual issuer, never in an arbitrary embedded cert.
+        let invalid = |e: String| OcspError::SignatureVerification(e);
+        let mut candidates = vec![issuer_der];
+        if let Some(certs) = &basic_response.certs {
+            candidates.extend(certs.iter().map(|c| c.as_bytes()));
+        }
+        let tbs = extract_basic_ocsp_tbs_bytes(response_bytes.response.as_bytes())
+            .ok_or_else(|| invalid("invalid response TBS".into()))?;
+        let alg = basic_response
+            .signature_algorithm
+            .to_der()
+            .map_err(|e| invalid(e.to_string()))?;
+        let verifier = synta_certificate::default_signature_verifier();
+        let trusted = candidates.into_iter().any(|der| {
+            let check = || -> Result<(), String> {
+                crate::auth::certificate::valid_now(der)?;
+                let cert =
+                    synta_certificate::Certificate::from_der(der).map_err(|e| e.to_string())?;
+                if der != issuer_der {
+                    if !crate::auth::certificate::issued_by(der, issuer_der) {
+                        return Err("untrusted OCSP signer".into());
+                    }
+                    let extensions = cert
+                        .tbs_certificate
+                        .extensions
+                        .as_ref()
+                        .ok_or("missing OCSP signing EKU")?;
+                    let eku = synta_certificate::find_extension_value(
+                        extensions.as_bytes(),
+                        &[2, 5, 29, 37],
+                    )
+                    .ok_or("missing OCSP signing EKU")?;
+                    let oids: Vec<synta::ObjectIdentifier> = Decoder::new(eku, Encoding::Der)
+                        .decode()
+                        .map_err(|e| e.to_string())?;
+                    if !oids
+                        .iter()
+                        .any(|o| o.components() == [1, 3, 6, 1, 5, 5, 7, 3, 9])
+                    {
+                        return Err("OCSP signing EKU required".into());
+                    }
+                }
+                let matches = match &basic_response.tbs_response_data.responder_id {
+                    synta_certificate::ocsp::ResponderID::ByName(name) => {
+                        name.to_der().map_err(|e| e.to_string())?
+                            == cert.tbs_certificate.subject.as_bytes()
+                    }
+                    synta_certificate::ocsp::ResponderID::ByKey(hash) => {
+                        use synta_certificate::DataHasher;
+                        let hash_bytes = synta_certificate::default_data_hasher()
+                            .hash_data(
+                                "sha1",
+                                cert.tbs_certificate
+                                    .subject_public_key_info
+                                    .subject_public_key
+                                    .as_bytes(),
+                            )
+                            .map_err(|e| e.to_string())?;
+                        hash.as_bytes() == hash_bytes
+                    }
+                };
+                if !matches {
+                    return Err("responder ID mismatch".into());
+                }
+                let ranges = synta_certificate::cert_byte_ranges(der)
+                    .ok_or("invalid responder certificate")?;
                 verifier
-                    .verify_certificate_signature(tbs_der, &sig_alg_der, signature_bits, spki_der)
-                    .map_err(|e| {
-                        OcspError::SignatureVerification(format!(
-                            "signature verification failed: {e}"
-                        ))
-                    })?;
-
-                debug!("OCSP response signature verified successfully");
-            } else {
-                warn!("OCSP response certs field is empty; skipping signature verification");
+                    .verify_certificate_signature(
+                        tbs,
+                        &alg,
+                        basic_response.signature.as_bytes(),
+                        &der[ranges.subject_public_key_info],
+                    )
+                    .map_err(|e| e.to_string())
+            };
+            check().is_ok()
+        });
+        if !trusted {
+            return Err(invalid("no authorized OCSP signature".into()));
+        }
+        let now = chrono::Utc::now();
+        let convert = |t: &synta::GeneralizedTime| {
+            crate::auth::certificate::time(&synta_certificate::Time::GeneralTime(t.clone()))
+                .map_err(OcspError::Parse)
+        };
+        let produced = convert(&basic_response.tbs_response_data.produced_at)?;
+        if produced > now + chrono::Duration::seconds(300) {
+            return Err(OcspError::Parse("future OCSP producedAt".into()));
+        }
+        if let Some(expected) = nonce {
+            let extensions = basic_response
+                .tbs_response_data
+                .response_extensions
+                .as_ref()
+                .ok_or(OcspError::NonceMismatch)?;
+            let ext = extensions
+                .iter()
+                .find(|e| e.extn_id.components() == [1, 3, 6, 1, 5, 5, 7, 48, 1, 2])
+                .ok_or(OcspError::NonceMismatch)?;
+            let got: synta::OctetStringRef<'_> =
+                Decoder::new(ext.extn_value.as_bytes(), Encoding::Der)
+                    .decode()
+                    .map_err(|_| OcspError::NonceMismatch)?;
+            if got.as_bytes() != expected {
+                return Err(OcspError::NonceMismatch);
             }
-        } else {
-            warn!(
-                "OCSP response does not include responder certificates; \
-                 skipping signature verification (responder cert may be pre-trusted)"
-            );
         }
 
         // Find the SingleResponse matching our CertID by comparing the
@@ -606,7 +703,28 @@ impl OcspClient {
 
             if resp_name_hash == cert_id.issuer_name_hash.as_slice()
                 && resp_key_hash == cert_id.issuer_key_hash.as_slice()
+                && single.cert_id.serial_number
+                    == synta::Integer::from_bytes(&cert_id.serial_number)
+                && single.cert_id.hash_algorithm.algorithm.to_string() == cert_id.hash_algorithm
             {
+                let updated = convert(&single.this_update)?;
+                let expires = if let Some(next) = &single.next_update {
+                    convert(next)?
+                } else {
+                    updated + chrono::Duration::seconds(3600)
+                };
+                if updated > now + chrono::Duration::seconds(300)
+                    || expires <= now
+                    || expires <= updated
+                    || produced < updated - chrono::Duration::seconds(300)
+                {
+                    return Err(OcspError::Parse(
+                        "stale or invalid OCSP update interval".into(),
+                    ));
+                }
+                *valid_for = (expires - now)
+                    .to_std()
+                    .map_err(|e| OcspError::Parse(e.to_string()))?;
                 // Match found — extract the cert status.
                 return match &single.cert_status {
                     synta_certificate::ocsp::CertStatus::Good(_) => {
@@ -938,3 +1056,7 @@ mod tests {
         assert_eq!(client.cache_size(), 1); // not expired yet
     }
 }
+
+#[cfg(test)]
+#[path = "regression_tests.rs"]
+mod regression_tests;

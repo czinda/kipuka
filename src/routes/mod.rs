@@ -14,12 +14,10 @@
 pub mod admin;
 pub mod cacerts;
 pub mod cmp;
-#[cfg(feature = "fullcmc")]
 pub mod cms_est;
 pub mod coap;
 pub mod csrattrs;
 pub mod est;
-#[cfg(feature = "fullcmc")]
 pub mod fullcmc;
 pub mod renewal_info;
 pub mod serverkeygen;
@@ -88,14 +86,23 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     let labeled_est_routes = Router::new().nest("/{label}", est::est_router());
 
     // Admin routes with separate authentication.
-    let admin_routes = admin::admin_router();
+    let admin_routes = if state
+        .config
+        .admin
+        .as_ref()
+        .is_some_and(|c| c.enabled && c.listen_addr.is_none())
+    {
+        admin::admin_router()
+    } else {
+        Router::new()
+    };
 
     Router::new()
         .nest("/.well-known/est", est_routes)
         .nest("/.well-known/est", labeled_est_routes)
         .nest("/admin", admin_routes)
         // CMS-wrapped EST routes (RFC 8295) — disabled pending synta-cmc API update
-        // .nest("/.well-known/est/cms", cms_est::cms_est_router())
+
         // STAR certificate routes (RFC 8739).
         .nest("/.well-known/est/star", star::star_router())
         // Renewal info (draft-ietf-lamps-est-renewal-info).
@@ -114,6 +121,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/dashboard",
             ServeDir::new("/var/www/kipuka/web").append_index_html_on_directories(true),
         )
+        .layer(axum::middleware::from_fn(crate::auth::gssapi::response_token))
         .layer(RequestBodyLimitLayer::new(max_body))
         .layer(
             TraceLayer::new_for_http()
@@ -227,10 +235,20 @@ impl LabelExtractor {
                     })?;
 
                 // Resolve the CA ID: label-specific or default.
-                let ca_id = label_config
-                    .ca_id
-                    .clone()
-                    .unwrap_or_else(|| (*app.default_ca_id).clone());
+                let ca_id = if label_config.ca_pool.is_empty() {
+                    label_config
+                        .ca_id
+                        .clone()
+                        .unwrap_or_else(|| (*app.default_ca_id).clone())
+                } else {
+                    app.ha_manager
+                        .as_ref()
+                        .and_then(|manager| manager.pool().select_allowed(&label_config.ca_pool))
+                        .map(|ca| ca.id.0)
+                        .ok_or_else(|| {
+                            KipukaError::ServiceUnavailable("no healthy CA in label pool".into())
+                        })?
+                };
 
                 // Verify the CA exists.
                 if app.get_ca(&ca_id).is_none() {
@@ -286,16 +304,33 @@ where
     type Rejection = Response;
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Response> {
+        if let Some(label) = parts.extensions.get::<LabelExtractor>() {
+            return Ok(label.clone());
+        }
         let app = Arc::<AppState>::from_ref(state);
 
         // Try to extract the {label} path parameter.
-        let label_name: Option<String> = Path::<String>::from_request_parts(parts, state)
-            .await
-            .ok()
-            .map(|Path(l)| l);
+        let label_name: Option<String> =
+            Path::<std::collections::HashMap<String, String>>::from_request_parts(parts, state)
+                .await
+                .ok()
+                .and_then(|Path(params)| params.get("label").cloned());
 
         // Delegate to the transport-agnostic resolver so HTTP and CoAP share
         // one label-resolution path (and thus one FDP_ACF.1 policy source).
-        Self::resolve(&app, label_name.as_deref()).map_err(IntoResponse::into_response)
+        let label =
+            Self::resolve(&app, label_name.as_deref()).map_err(IntoResponse::into_response)?;
+        parts.extensions.insert(label.clone());
+        Ok(label)
     }
+}
+
+/// Dedicated management listener: excludes all EST enrollment routes.
+pub fn build_admin_router(state: Arc<AppState>) -> Router {
+    Router::new()
+        .nest("/admin", admin::admin_router())
+        .layer(RequestBodyLimitLayer::new(
+            state.config.server.max_body_size,
+        ))
+        .with_state(state)
 }

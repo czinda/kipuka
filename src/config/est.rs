@@ -90,6 +90,10 @@ pub struct CsrTemplateRdn {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum EstAuthMethod {
+    /// CMS message authentication for the custom CMS endpoints.
+    Cms,
+    /// GSSAPI over TLS with channel binding.
+    Gssapi,
     /// mTLS client certificate authentication (RFC 7030 §3.3.2).
     Mtls,
     /// HTTP Basic authentication with OTP (RHELBU-3536 R7).
@@ -221,6 +225,10 @@ pub struct EstLabelConfig {
     /// Must reference a `[[ca]]` entry by its `id` field.
     /// When absent, the default CA is used.
     pub ca_id: Option<String>,
+
+    /// Explicit authorization for alternate issuers under this label.
+    #[serde(default)]
+    pub ca_pool: Vec<String>,
 
     /// Allowed authentication methods for this label.
     ///

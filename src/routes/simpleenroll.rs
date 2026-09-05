@@ -61,6 +61,7 @@ pub async fn post_simpleenroll(
 ) -> Result<Response, KipukaError> {
     let ca_id = label.ca_id();
     let identity = &auth.0.identity;
+    state.admit_enrollment(identity, "simpleenroll").await?;
 
     tracing::info!(
         ca_id = %ca_id,
@@ -470,7 +471,8 @@ fn validate_csr(
     // `permitted_*` allowlist is configured).
     {
         let policy = label.enroll_policy();
-        if let Err(reason) = crate::auth::enroll_authz::authorize_csr(&csr, &auth.identity, &policy) {
+        if let Err(reason) = crate::auth::enroll_authz::authorize_csr(&csr, &auth.identity, &policy)
+        {
             tracing::warn!(
                 identity = %auth.identity,
                 label = %label.label,

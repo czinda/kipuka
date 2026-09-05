@@ -146,7 +146,7 @@ impl DogtagClient {
 
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
+            let body = crate::bounded_text(resp).await?;
             return Err(DogtagError::ApiError { status, body });
         }
 

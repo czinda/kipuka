@@ -11,6 +11,8 @@ use serde::Deserialize;
 #[serde(rename_all = "lowercase")]
 #[derive(Default)]
 pub enum AdminAuthMethod {
+    /// Configured opaque Bearer credential (operator/auditor).
+    Bearer,
     /// mTLS client certificate authentication.
     #[default]
     Mtls,

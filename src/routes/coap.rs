@@ -45,6 +45,55 @@ impl kipuka_coap::EstHandler for CoapEstHandler {
         _content_format: Option<u16>,
         client_cert: Option<&ClientCertInfo>,
     ) -> Result<EstResponse, CoapError> {
+        // Reject unknown names before authentication without selecting a CA twice.
+        if let Some(name) = label.filter(|name| !name.is_empty())
+            && !self
+                .state
+                .config
+                .est
+                .labels
+                .iter()
+                .any(|entry| entry.name == name)
+        {
+            return Err(CoapError::ResourceNotFound(format!(
+                "unknown EST label: {name}"
+            )));
+        }
+        if matches!(
+            operation,
+            EstOperation::SimpleEnroll | EstOperation::SimpleReenroll | EstOperation::ServerKeygen
+        ) {
+            let cert = client_cert.ok_or_else(|| {
+                CoapError::Forbidden("authenticated DTLS client certificate required".into())
+            })?;
+            let label_config = self
+                .state
+                .config
+                .est
+                .labels
+                .iter()
+                .find(|c| Some(c.name.as_str()) == label);
+            if label_config.is_some_and(|c| {
+                !c.auth_methods.is_empty()
+                    && !c.auth_methods.contains(&crate::config::EstAuthMethod::Mtls)
+                    && !c
+                        .auth_methods
+                        .contains(&crate::config::EstAuthMethod::Certificate)
+            }) {
+                return Err(CoapError::Forbidden("mTLS not permitted for label".into()));
+            }
+            let runtime = tokio::runtime::Handle::try_current()
+                .map_err(|_| CoapError::Internal("CoAP runtime unavailable".into()))?;
+            runtime.block_on(async {
+                crate::auth::mtls::check_revocation(&cert.der_bytes, &self.state)
+                    .await
+                    .map_err(CoapError::Forbidden)?;
+                self.state
+                    .admit_enrollment(&cert.subject_dn, "coap")
+                    .await
+                    .map_err(|e| CoapError::Internal(e.to_string()))
+            })?;
+        }
         match operation {
             EstOperation::CaCerts => handle_cacerts(label, &self.state),
             EstOperation::SimpleEnroll => {
@@ -198,6 +247,16 @@ fn handle_simpleenroll(
         subject = %result.subject_dn,
         "CoAP simpleenroll: certificate issued"
     );
+
+    tokio::runtime::Handle::try_current()
+        .map_err(|_| CoapError::Internal("CoAP runtime unavailable".into()))?
+        .block_on(crate::ca::issue::persist_certificate(
+            state,
+            &ca_id,
+            &profile.name,
+            &result,
+        ))
+        .map_err(|e| CoapError::Internal(e.to_string()))?;
 
     // Wrap the issued certificate in PKCS#7 certs-only (reuses cacerts builder).
     let pkcs7_der = crate::routes::cacerts::build_certs_only_pkcs7(std::slice::from_ref(

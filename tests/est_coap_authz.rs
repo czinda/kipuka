@@ -111,3 +111,51 @@ async fn coap_simpleenroll_unknown_label_is_not_found() {
         "expected 4.04 Not Found for an unknown label, got {err:?}"
     );
 }
+
+/// Real bridge callback work runs on the transport's blocking worker, allowing
+/// asynchronous database admission/persistence without a nested-runtime panic.
+#[tokio::test]
+async fn coap_blocking_bridge_persists_issued_certificate_and_audit() {
+    let directory = tempfile::tempdir().unwrap();
+    let key_file = directory.path().join("synthetic-ca-key.pem");
+    let mut config = config_with_secure_label();
+    config.cas[0].key_file = key_file.to_string_lossy().into_owned();
+    config.ocsp.enabled = false;
+    let server = TestServer::start_with_config(config).await;
+    std::fs::write(&key_file, &server.ca.key_pem).unwrap();
+    let client_cert = kipuka_coap::dtls::ClientCertInfo::from_der(&server.ca.cert_der).unwrap();
+    let (csr, _) = common::generate_test_csr("CN=synthetic-device.example.test", "rsa:2048");
+    let handler = CoapEstHandler::new(server.state.clone());
+    let response = tokio::task::spawn_blocking(move || {
+        handler.handle(
+            EstOperation::SimpleEnroll,
+            None,
+            &csr,
+            Some(285),
+            Some(&client_cert),
+        )
+    })
+    .await
+    .expect("blocking callback must not panic")
+    .expect("enrollment should succeed");
+    let pkcs7 = openssl::pkcs7::Pkcs7::from_der(&response.payload).unwrap();
+    let issued = pkcs7.signed().unwrap().certificates().unwrap()[0]
+        .to_der()
+        .unwrap();
+    let persisted: Vec<u8> =
+        sqlx::query_scalar("SELECT der_encoded FROM certificates WHERE ca_id = 'default'")
+            .fetch_one(&server.state.db)
+            .await
+            .unwrap();
+    assert_eq!(persisted, issued);
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM audit_events WHERE detail_json LIKE '%ca_id=default%'",
+    )
+    .fetch_one(&server.state.db)
+    .await
+    .unwrap();
+    assert!(
+        count >= 1,
+        "issuance must persist an audit record before returning"
+    );
+}

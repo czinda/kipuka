@@ -126,6 +126,22 @@ impl AppState {
         }
     }
 
+    /// Required durable admission event before any certificate/key mutation.
+    pub async fn admit_enrollment(
+        &self,
+        identity: &str,
+        operation: &str,
+    ) -> Result<(), crate::error::KipukaError> {
+        crate::audit::record_checked(
+            &self.db,
+            &self.audit,
+            crate::audit::AuditEvent::new(crate::audit::AuditEventType::EnrollRequest)
+                .with_operator(identity)
+                .with_detail(operation),
+        )
+        .await
+    }
+
     /// Record an audit event, logging (but not propagating) any DB error.
     ///
     /// Convenience wrapper that bundles the DB pool and audit state so
@@ -167,7 +183,7 @@ impl AppState {
     fn audit_type_for(event_type: &str) -> crate::audit::AuditEventType {
         match event_type {
             "cacerts" => crate::audit::AuditEventType::EnrollRequest,
-            "simpleenroll_success" | "simpleenroll_deferred" => {
+            "cert_issued" | "simpleenroll_success" | "simpleenroll_deferred" => {
                 crate::audit::AuditEventType::CertIssue
             }
             "simplereenroll_success" => crate::audit::AuditEventType::CertReenroll,

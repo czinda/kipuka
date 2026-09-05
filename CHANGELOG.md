@@ -1,3 +1,16 @@
+## Unreleased — operational remediation
+
+- Pin Synta to a reviewed Git revision and remove mandatory sibling patches;
+  upgrade h2 to 0.4.16 and stop blanket advisory suppression in CI.
+- Share the primary in-memory SQLite pool and use one owned write transaction.
+- Restore STAR orders, retain authorized renewal policy, enforce second-level
+  validity/order expiry, and atomically persist renewal inventory and progress.
+- Add explicit label-scoped HA routing configuration and local key/certificate
+  health probes. Alternate issuers require an authorized label CA pool.
+- Enforce audit row limits and propagate required-audit failures; reject
+  unsupported signing configuration and expose alarm-triggered operation halt.
+- Correct quickstart schema and qualify standards/certification claims.
+
 # Changelog
 
 All notable changes to kipuka are documented in this file.

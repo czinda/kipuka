@@ -12,10 +12,7 @@ cargo-audit:
   before_script:
     - cargo install --locked cargo-audit 2>/dev/null || true
   script:
-    - cargo audit
-      --ignore RUSTSEC-2023-0071
-      --ignore RUSTSEC-2024-0436
-      --ignore RUSTSEC-2025-0134
+    - python3 contrib/security/audit.py
   cache:
     key: audit-${CI_COMMIT_REF_SLUG}
     paths:
@@ -49,8 +46,8 @@ fips-compliance:
   extends: .security-base
   script:
     - echo "--- FIPS algorithm validation ---"
-    - cargo test --all-features -- fips --nocapture 2>&1 || true
-    - cargo build --release --all-features
+    - cargo test --locked --all-features -- fips --nocapture 2>&1 || true
+    - cargo build --locked --release --all-features
     - ldd target/release/kipuka 2>/dev/null | grep -i ssl || echo "Static link or no OpenSSL dependency detected"
   allow_failure: true
   rules:

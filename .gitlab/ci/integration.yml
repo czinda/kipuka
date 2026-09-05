@@ -114,7 +114,7 @@ est-interop:
     - echo "--- EST interoperability tests ---"
     - echo "Validates EST protocol compliance using standard clients"
     # Build the server
-    - cargo build --release --all-features
+    - cargo build --locked --release --all-features
     # Generate self-signed test CA and server cert
     - mkdir -p /tmp/kipuka-interop
     - openssl req -x509 -new -nodes -newkey rsa:3072

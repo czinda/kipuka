@@ -18,7 +18,6 @@ use axum::routing::{get, post};
 
 use crate::state::AppState;
 
-#[cfg(feature = "fullcmc")]
 use super::fullcmc;
 use super::{cacerts, csrattrs, serverkeygen, simpleenroll, simplereenroll};
 
@@ -30,6 +29,7 @@ use super::{cacerts, csrattrs, serverkeygen, simpleenroll, simplereenroll};
 /// Content-type enforcement is applied as middleware to all POST routes.
 pub fn est_router() -> Router<Arc<AppState>> {
     Router::new()
+        .nest("/cms",super::cms_est::cms_est_router())
         // RFC 7030 §4.1: Distribution of CA Certificates
         .route("/cacerts", get(cacerts::get_cacerts))
         // RFC 7030 §4.2: Enrollment (initial)
@@ -44,7 +44,7 @@ pub fn est_router() -> Router<Arc<AppState>> {
         )
         // RFC 7030 §4.3: Full CMC (requires fullcmc feature)
         // TODO: re-enable after synta-cmc API migration
-        // .route("/fullcmc", post(fullcmc::post_fullcmc))
+        .route("/fullcmc", post(fullcmc::post_fullcmc))
         // RFC 7030 §4.4: Server-Side Key Generation
         .route(
             "/serverkeygen",
@@ -109,7 +109,9 @@ async fn enforce_est_content_type(req: Request<Body>, next: Next) -> Response {
         .unwrap_or("");
 
     // Determine the expected content type based on the path.
-    let expected = if path.ends_with("/simpleenroll")
+    let expected = if path.contains("/cms/") {
+        Some("application/pkcs7-mime")
+    } else if path.ends_with("/simpleenroll")
         || path.ends_with("/simplereenroll")
         || path.ends_with("/serverkeygen")
     {

@@ -78,9 +78,9 @@ dependencies = [
 
 [[package]]
 name = "anyhow"
-version = "1.0.102"
+version = "1.0.103"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
+checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
 name = "atoi"
@@ -388,15 +388,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
-name = "concurrent-queue"
-version = "2.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ca0197aee26d1ae37445ee532fefce43251d24cc7c166799f4d46817f1d3973"
-dependencies = [
- "crossbeam-utils",
-]
-
-[[package]]
 name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -634,7 +625,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -650,11 +641,10 @@ dependencies = [
 
 [[package]]
 name = "event-listener"
-version = "5.4.1"
+version = "5.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e13b66accf52311f30a0db42147dadea9850cb48cd070028831ae5f5d4b856ab"
+checksum = "5a23add41df1562121a9393cb065eab5146a1242410f23a644851e90cfd669d2"
 dependencies = [
- "concurrent-queue",
  "parking",
  "pin-project-lite",
 ]
@@ -847,9 +837,9 @@ checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
 name = "h2"
-version = "0.4.15"
+version = "0.4.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6cb093c84e8bd9b188d4c4a8cb6579fc016968d14c99882163cd3ff402a4f155"
+checksum = "a9f37a958b41b3b19ee2707c06439c0e9e547e847223eb791ecb0cb821c65e27"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -1358,7 +1348,9 @@ name = "kipuka-coap"
 version = "0.2.0"
 dependencies = [
  "bytes",
+ "foreign-types",
  "openssl",
+ "openssl-sys",
  "serde",
  "synta-certificate",
  "thiserror",
@@ -1403,6 +1395,8 @@ version = "0.2.0"
 dependencies = [
  "cryptoki",
  "hex",
+ "openssl",
+ "percent-encoding",
  "rustls",
  "serde",
  "synta-certificate",
@@ -1419,8 +1413,10 @@ dependencies = [
  "cryptoki",
  "hex",
  "kipuka-hsm",
+ "rpassword",
  "tracing",
  "tracing-subscriber",
+ "zeroize",
 ]
 
 [[package]]
@@ -1682,7 +1678,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2145,7 +2141,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2690,6 +2686,7 @@ dependencies = [
 [[package]]
 name = "synta"
 version = "0.2.6"
+source = "git+https://github.com/czinda/synta.git?rev=1fbba09dd92fdd37ac87426c0cac202c36bd55fe#1fbba09dd92fdd37ac87426c0cac202c36bd55fe"
 dependencies = [
  "smallvec",
  "synta-derive",
@@ -2698,6 +2695,7 @@ dependencies = [
 [[package]]
 name = "synta-certificate"
 version = "0.2.6"
+source = "git+https://github.com/czinda/synta.git?rev=1fbba09dd92fdd37ac87426c0cac202c36bd55fe#1fbba09dd92fdd37ac87426c0cac202c36bd55fe"
 dependencies = [
  "cryptoki",
  "log",
@@ -2710,6 +2708,7 @@ dependencies = [
 [[package]]
 name = "synta-cmc"
 version = "0.2.6"
+source = "git+https://github.com/czinda/synta.git?rev=1fbba09dd92fdd37ac87426c0cac202c36bd55fe#1fbba09dd92fdd37ac87426c0cac202c36bd55fe"
 dependencies = [
  "synta",
  "synta-certificate",
@@ -2718,10 +2717,12 @@ dependencies = [
 [[package]]
 name = "synta-codegen"
 version = "0.2.6"
+source = "git+https://github.com/czinda/synta.git?rev=1fbba09dd92fdd37ac87426c0cac202c36bd55fe#1fbba09dd92fdd37ac87426c0cac202c36bd55fe"
 
 [[package]]
 name = "synta-derive"
 version = "0.2.6"
+source = "git+https://github.com/czinda/synta.git?rev=1fbba09dd92fdd37ac87426c0cac202c36bd55fe#1fbba09dd92fdd37ac87426c0cac202c36bd55fe"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2731,6 +2732,7 @@ dependencies = [
 [[package]]
 name = "synta-krb5"
 version = "0.2.6"
+source = "git+https://github.com/czinda/synta.git?rev=1fbba09dd92fdd37ac87426c0cac202c36bd55fe#1fbba09dd92fdd37ac87426c0cac202c36bd55fe"
 dependencies = [
  "synta",
  "synta-codegen",
@@ -2768,7 +2770,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

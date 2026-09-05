@@ -134,7 +134,17 @@ pub async fn try_extract_otp(
             // FIA_AFL.1: record the failure and, if it reaches the threshold,
             // emit the security-violation audit event and return the lockout
             // response so the client learns it has been locked out.
-            match app.failure_tracker.record_failure(&entity_id) {
+            // Only provisioned entities may consume bounded lockout state.
+            // Otherwise arbitrary usernames can exhaust tracking before any
+            // real account has failed authentication. The public failure stays
+            // generic; lookup failure must not admit an unverified identity.
+            let track = has_active_otp(app, &entity_id).await.unwrap_or(false);
+            let status = if track {
+                app.failure_tracker.record_failure(&entity_id)
+            } else {
+                LockoutStatus::Allowed
+            };
+            match status {
                 LockoutStatus::LockedOut { retry_after } => {
                     warn!(entity_id = %entity_id, "OTP failure threshold reached: identity locked out");
                     app.record_audit_event(
@@ -153,6 +163,22 @@ pub async fn try_extract_otp(
             }
         }
     }
+}
+
+/// Admit failure tracking only for entities with an administratively provisioned,
+/// currently usable OTP. This lookup never exposes the token or its hash.
+async fn has_active_otp(app: &Arc<AppState>, entity_id: &str) -> Result<bool, sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    sqlx::query_scalar::<_, i64>(crate::db::pg_sql(
+        "SELECT id FROM otp_tokens WHERE entity_id = ? AND revoked = ? \
+         AND expires_at > ? AND current_uses < max_uses LIMIT 1",
+    ))
+    .bind(entity_id)
+    .bind(false)
+    .bind(now)
+    .fetch_optional(&app.db_ro)
+    .await
+    .map(|row| row.is_some())
 }
 
 /// Build a 429 Too Many Requests response with a `Retry-After` header

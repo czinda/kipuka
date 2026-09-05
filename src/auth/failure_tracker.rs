@@ -19,9 +19,10 @@
 //! # Concurrency and memory
 //!
 //! State is a single `parking_lot::Mutex<HashMap<..>>`.  Records are pruned
-//! opportunistically: every mutating call drops entries that are neither
-//! locked nor inside their failure window, so the map cannot grow without
-//! bound under a rotating-identity attack.
+//! opportunistically and capped at 10,000 identities. At capacity, existing
+//! counters and lockouts are retained; new identities continue through credential
+//! verification without acquiring a tracker entry until capacity becomes available.
+//! Capacity exhaustion must never lock out unrelated valid credentials.
 //!
 //! # Disabled mode
 //!
@@ -96,6 +97,7 @@ impl Record {
 pub struct FailureTracker {
     policy: LockoutPolicy,
     records: Mutex<HashMap<String, Record>>,
+    last_prune: Mutex<Instant>,
 }
 
 impl FailureTracker {
@@ -104,6 +106,7 @@ impl FailureTracker {
         Self {
             policy,
             records: Mutex::new(HashMap::new()),
+            last_prune: Mutex::new(Instant::now() - Duration::from_secs(1)),
         }
     }
 
@@ -120,16 +123,27 @@ impl FailureTracker {
         }
         let now = Instant::now();
         let mut records = self.records.lock();
-        Self::status_at(records.get(identity), now)
-            .unwrap_or_else(|| {
-                // Not locked — opportunistically prune this entry if stale.
-                if let Some(rec) = records.get(identity)
-                    && rec.is_prunable(now, self.policy.failure_window)
-                {
-                    records.remove(identity);
-                }
-                LockoutStatus::Allowed
-            })
+        if records.len() >= 10_000 {
+            let mut last = self.last_prune.lock();
+            if now.duration_since(*last) >= Duration::from_secs(1).min(self.policy.failure_window) {
+                self.prune(&mut records, now);
+                *last = now;
+            }
+        }
+        if identity.len() > 4096 {
+            return LockoutStatus::LockedOut {
+                retry_after: Duration::from_secs(1),
+            };
+        }
+        Self::status_at(records.get(identity), now).unwrap_or_else(|| {
+            // Not locked — opportunistically prune this entry if stale.
+            if let Some(rec) = records.get(identity)
+                && rec.is_prunable(now, self.policy.failure_window)
+            {
+                records.remove(identity);
+            }
+            LockoutStatus::Allowed
+        })
     }
 
     /// Record a failed authentication attempt for `identity` and return the
@@ -142,7 +156,22 @@ impl FailureTracker {
         }
         let now = Instant::now();
         let mut records = self.records.lock();
-        self.prune(&mut records, now);
+        let mut last = self.last_prune.lock();
+        if now.duration_since(*last) >= Duration::from_secs(1).min(self.policy.failure_window) {
+            self.prune(&mut records, now);
+            *last = now;
+        }
+        if identity.len() > 4096 {
+            return LockoutStatus::LockedOut {
+                retry_after: Duration::from_secs(1),
+            };
+        }
+        if records.len() >= 10_000 && !records.contains_key(identity) {
+            // The credential has already failed verification. Skipping a new
+            // tracker entry bounds memory without denying unrelated valid users
+            // or evicting active targeted lockouts and pending counters.
+            return LockoutStatus::Allowed;
+        }
 
         let rec = records.entry(identity.to_string()).or_insert(Record {
             failures: 0,
@@ -274,7 +303,7 @@ mod tests {
         t.record_success("bob");
         assert_eq!(t.record_failure("bob"), LockoutStatus::Allowed);
         assert_eq!(t.record_failure("bob"), LockoutStatus::Allowed);
-        assert!(t.check("bob").is_locked() == false);
+        assert!(!t.check("bob").is_locked());
     }
 
     #[test]
@@ -348,5 +377,35 @@ mod tests {
         // A mutating call for another identity prunes the stale entry.
         t.record_failure("other");
         assert!(!t.records.lock().contains_key("ephemeral"));
+    }
+}
+
+#[cfg(test)]
+mod capacity_tests {
+    use super::*;
+
+    #[test]
+    fn saturation_preserves_access_and_existing_targeted_lockouts() {
+        let tracker = FailureTracker::new(LockoutPolicy {
+            max_failures: 2,
+            failure_window: Duration::from_secs(300),
+            lockout_duration: Duration::from_secs(900),
+        });
+        tracker.record_failure("target");
+        for i in 1..10_000 {
+            tracker.record_failure(&format!("invented-{i}"));
+        }
+        assert_eq!(tracker.check("valid-user"), LockoutStatus::Allowed);
+        assert_eq!(tracker.record_failure("overflow"), LockoutStatus::Allowed);
+        assert_eq!(tracker.records.lock().len(), 10_000);
+        assert!(tracker.record_failure("target").is_locked());
+        assert!(tracker.check("target").is_locked());
+        tracker.record_success("target");
+        assert!(tracker.check("target").is_locked());
+        // Clearing an unlocked record admits new failure tracking again.
+        tracker.record_success("invented-1");
+        tracker.record_failure("overflow");
+        assert!(tracker.record_failure("overflow").is_locked());
+        assert_eq!(tracker.records.lock().len(), 10_000);
     }
 }

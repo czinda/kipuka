@@ -14,8 +14,6 @@ pub struct KraClient {
     http: Client,
     base_url: String,
     basic_auth: Option<(String, String)>,
-    retry_max: u32,
-    retry_delay: Duration,
 }
 
 /// Result of a key generation operation.
@@ -98,6 +96,7 @@ impl KraClient {
 
         let mut builder = Client::builder()
             .cookie_store(true)
+            .redirect(reqwest::redirect::Policy::none())
             .danger_accept_invalid_certs(config.accept_invalid_certs)
             .timeout(Duration::from_secs(config.timeout_secs));
 
@@ -160,8 +159,6 @@ impl KraClient {
             http,
             base_url,
             basic_auth,
-            retry_max: config.retry_max,
-            retry_delay: Duration::from_millis(config.retry_delay_ms),
         })
     }
 
@@ -542,41 +539,17 @@ impl KraClient {
         body: &T,
     ) -> DogtagResult<reqwest::Response> {
         let url = format!("{}{}", self.base_url, path);
-        let mut last_error = None;
-
-        for attempt in 0..=self.retry_max {
-            if attempt > 0 {
-                debug!(attempt, max = self.retry_max, "Retrying KRA request");
-                tokio::time::sleep(self.retry_delay).await;
-            }
-
-            let mut req = self
-                .http
-                .post(&url)
-                .header("Accept", "application/json")
-                .json(body);
-            if let Some((ref user, ref pass)) = self.basic_auth {
-                req = req.basic_auth(user, Some(pass));
-            }
-            match req.send().await {
-                Ok(resp) if resp.status().is_server_error() => {
-                    let status = resp.status();
-                    let body = resp.text().await.unwrap_or_default();
-                    tracing::warn!(attempt, status = status.as_u16(), "KRA server error");
-                    last_error = Some(DogtagError::ApiError {
-                        status: status.as_u16(),
-                        body,
-                    });
-                }
-                Ok(resp) => return Ok(resp),
-                Err(e) => {
-                    tracing::warn!(attempt, error = %e, "KRA request failed");
-                    last_error = Some(DogtagError::HttpError(e.to_string()));
-                }
-            }
+        let mut req = self
+            .http
+            .post(&url)
+            .header("Accept", "application/json")
+            .json(body);
+        if let Some((ref user, ref pass)) = self.basic_auth {
+            req = req.basic_auth(user, Some(pass));
         }
-
-        Err(last_error.unwrap_or(DogtagError::KraError("All retry attempts exhausted".into())))
+        req.send()
+            .await
+            .map_err(|e| DogtagError::HttpError(e.to_string()))
     }
 
     async fn json_response<T: serde::de::DeserializeOwned>(
@@ -590,7 +563,7 @@ impl KraClient {
             .unwrap_or("unknown")
             .to_owned();
 
-        let body = resp.text().await.unwrap_or_default();
+        let body = crate::bounded_text(resp).await?;
 
         if !status.is_success() {
             return Err(DogtagError::ApiError {

@@ -41,6 +41,7 @@ mod cms_est;
 mod coap;
 mod db;
 mod est;
+mod ha;
 mod hsm;
 mod lockout;
 mod otp;
@@ -57,6 +58,7 @@ pub use self::cms_est::*;
 pub use self::coap::*;
 pub use self::db::*;
 pub use self::est::*;
+pub use self::ha::*;
 pub use self::hsm::*;
 pub use self::lockout::*;
 pub use self::otp::*;
@@ -142,6 +144,9 @@ pub struct Config {
     #[serde(default)]
     pub star: Option<StarConfig>,
 
+    #[serde(default)]
+    pub ha: Option<HaConfig>,
+
     /// OCSP configuration for certificate revocation checking (RFC 6960).
     /// Absent → OCSP checking disabled (RHELBU-3536 R21).
     #[serde(default)]
@@ -213,6 +218,25 @@ impl Config {
             }
             if default_count > 1 {
                 return Err("at most one [[ca]] entry may have `is_default = true`".into());
+            }
+        }
+
+        if let Some(ha) = &self.ha {
+            ha.validate(&self.cas)?;
+        }
+        for label in &self.est.labels {
+            if !label.ca_pool.is_empty() {
+                if !self.ha.as_ref().is_some_and(|ha| ha.enabled) {
+                    return Err("label ca_pool requires enabled HA".into());
+                }
+                if label.ca_id.is_some() {
+                    return Err("label ca_id and ca_pool are mutually exclusive".into());
+                }
+                for id in &label.ca_pool {
+                    if !self.cas.iter().any(|ca| &ca.id == id) {
+                        return Err(format!("unknown CA {id} in label ca_pool"));
+                    }
+                }
             }
         }
 

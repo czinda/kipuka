@@ -23,7 +23,7 @@
 build-debug:
   extends: .build-base
   script:
-    - cargo build --all-features
+    - cargo build --locked --all-features
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
@@ -31,7 +31,7 @@ build-debug:
 build-release:
   extends: .build-base
   script:
-    - cargo build --release --all-features
+    - cargo build --locked --release --all-features
   artifacts:
     paths:
       - target/release/kipuka
@@ -44,7 +44,7 @@ build-release:
 build-docs:
   extends: .build-base
   script:
-    - cargo doc --all-features --no-deps
+    - cargo doc --locked --all-features --no-deps
     - echo '<meta http-equiv="refresh" content="0; url=kipuka/index.html">' > target/doc/index.html
   artifacts:
     paths:

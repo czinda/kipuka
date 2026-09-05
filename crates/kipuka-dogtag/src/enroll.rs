@@ -239,7 +239,7 @@ impl DogtagClient {
                 Ok(resp) => {
                     let resp_status = resp.status();
                     if !resp_status.is_success() {
-                        let body = resp.text().await.unwrap_or_default();
+                        let body = crate::bounded_text(resp).await?;
                         tracing::error!(
                             status = resp_status.as_u16(),
                             body_preview = %crate::truncate_str(&body, 200),
@@ -282,7 +282,7 @@ impl DogtagClient {
                 Ok(resp) => {
                     let resp_status = resp.status();
                     if !resp_status.is_success() {
-                        let body = resp.text().await.unwrap_or_default();
+                        let body = crate::bounded_text(resp).await?;
                         tracing::error!(
                             status = resp_status.as_u16(),
                             body_preview = %crate::truncate_str(&body, 300),
@@ -292,7 +292,9 @@ impl DogtagClient {
                     } else {
                         // Approve may return JSON (CertReviewResponse) or HTML.
                         // If JSON parsing fails, fall back to polling the request.
-                        let approved: serde_json::Value = match resp.json().await {
+                        let approved: serde_json::Value = match serde_json::from_slice(
+                            &crate::bounded_bytes(resp).await?,
+                        ) {
                             Ok(v) => v,
                             Err(e) => {
                                 tracing::warn!(error = %e, "approve response not JSON, polling request status");
@@ -500,13 +502,13 @@ impl DogtagClient {
 
             let review_url = format!("/ca/agent/ca/profileReview?requestId={request_id}&xml=true");
             let review_resp = self.get_raw(&review_url).await?;
-            let review_xml = review_resp.text().await.unwrap_or_default();
+            let review_xml = crate::bounded_text(review_resp).await?;
 
             if review_xml.contains("errorReason") && !review_xml.contains("<defId>") {
                 return Err(DogtagError::EnrollmentRejected {
                     reason: format!(
                         "SSKG review failed: {}",
-                        &review_xml[..review_xml.len().min(200)]
+                        crate::truncate_str(&review_xml, 200)
                     ),
                 });
             }
@@ -526,7 +528,7 @@ impl DogtagClient {
                 .await?;
 
             let resp_status = approve_resp.status();
-            let p12_bytes = approve_resp.bytes().await.unwrap_or_default();
+            let p12_bytes = crate::bounded_bytes(approve_resp).await?;
 
             if !resp_status.is_success() || p12_bytes.len() < 100 {
                 let preview = String::from_utf8_lossy(&p12_bytes[..p12_bytes.len().min(300)]);
@@ -633,7 +635,7 @@ impl DogtagClient {
     async fn fetch_cert_der(&self, cert_id: &str) -> DogtagResult<Vec<u8>> {
         let resp = self.get(&format!("/ca/rest/certs/{cert_id}")).await?;
         let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
+        let body = crate::bounded_text(resp).await?;
 
         if !status.is_success() {
             return Err(DogtagError::ApiError {

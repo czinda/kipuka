@@ -465,7 +465,7 @@ CREATE TABLE IF NOT EXISTS star_orders (
     id                    VARCHAR(255) PRIMARY KEY,
     subject_dn            TEXT         NOT NULL,
     key_type              VARCHAR(255) NOT NULL,
-    profile               VARCHAR(255) NOT NULL,
+    profile               TEXT         NOT NULL,
     renewal_interval_secs INT          NOT NULL,
     lifetime_end          TEXT  NOT NULL,
     max_renewals          INT          NOT NULL,
@@ -663,6 +663,39 @@ pub async fn run_migrations(pool: &sqlx::AnyPool, kind: DbKind) -> Result<(), Ki
             .map_err(|e| KipukaError::Db(format!("recording schema version: {e}")))?;
 
         tracing::info!("migration v3 applied successfully");
+    }
+
+    if current < 4 {
+        sqlx::query("CREATE TABLE IF NOT EXISTS audit_writer_lock (id INTEGER PRIMARY KEY, revision INTEGER NOT NULL)")
+            .execute(pool).await.map_err(|e| KipukaError::Db(format!("audit lock migration: {e}")))?;
+        let insert = match kind {
+            DbKind::MariaDb => "INSERT IGNORE INTO audit_writer_lock (id, revision) VALUES (1, 0)",
+            _ => {
+                "INSERT INTO audit_writer_lock (id, revision) VALUES (1, 0) ON CONFLICT (id) DO NOTHING"
+            }
+        };
+        sqlx::query(insert)
+            .execute(pool)
+            .await
+            .map_err(|e| KipukaError::Db(e.to_string()))?;
+        sqlx::query("INSERT INTO schema_version (version) VALUES (4)")
+            .execute(pool)
+            .await
+            .map_err(|e| KipukaError::Db(e.to_string()))?;
+    }
+
+    if current < 5 {
+        if kind == DbKind::MariaDb {
+            // STAR now stores the complete authorized policy snapshot, not a name.
+            sqlx::query("ALTER TABLE star_orders MODIFY COLUMN profile TEXT NOT NULL")
+                .execute(pool)
+                .await
+                .map_err(|e| KipukaError::Db(format!("STAR policy migration: {e}")))?;
+        }
+        sqlx::query("INSERT INTO schema_version (version) VALUES (5)")
+            .execute(pool)
+            .await
+            .map_err(|e| KipukaError::Db(e.to_string()))?;
     }
 
     Ok(())
