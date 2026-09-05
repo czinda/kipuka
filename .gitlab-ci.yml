@@ -19,6 +19,8 @@ variables:
 
 # Native build prerequisites are mandatory: GSSAPI needs Kerberos headers/libraries.
 .rust-base:
+  # Independent verification continues even if a different check fails.
+  needs: []
   image: ${RUST_IMAGE}
   before_script:
     - apt-get update -qq

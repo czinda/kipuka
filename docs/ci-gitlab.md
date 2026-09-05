@@ -63,3 +63,14 @@ Before adding those jobs back, provide a dedicated disposable runner, provision
 its external services, make setup consume `CI_COMMIT_SHA`, and copy sanitized logs
 into the checkout for artifact upload. Keytabs, passwords, and generated secret
 environment files must not be uploaded as artifacts.
+
+## Observed runner blocker (2026-09-05)
+
+The shared-runner BuildKit probe reached the first build command but failed to
+mount `devpts` with `permission denied` (pipeline 17487268, job 60344531).
+Container verification remains a blocking failure until an administrator provides
+a compatible runner or adjusts the approved runner configuration. This is not a
+source compilation failure. GitHub Actions built the same Containerfile and ran
+`kipuka --version` successfully in run 33992960640. Independent GitLab Rust and
+packaging checks run without waiting on container verification; publishing still
+requires all earlier stages to succeed.
