@@ -28,6 +28,7 @@ variables:
     - git config --global core.symlinks true
 
 default:
+  tags: [itup-alm-x86]
   image: ${RUST_IMAGE}
   cache:
     key: "rust-${RUST_VERSION}-${CI_COMMIT_REF_SLUG}"
