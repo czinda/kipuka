@@ -10,11 +10,27 @@ bans are blocking checks. Dependency installation failures are not suppressed.
 
 ## Runner and publication requirements
 
-Rust jobs require a Docker executor with registry and Cargo dependency access.
-`container-build` requires a shell executor tagged `shell`, with Podman installed
-and usable by its runner account. It builds the submitted checkout and executes
-`kipuka --help` inside the resulting image. No login or push occurs for merge
-requests, verification branches, schedules, or manually started pipelines.
+Rust jobs use the shared Kubernetes runner tagged `itup-alm-x86`, with registry
+and Cargo dependency access. `container-verify` uses the same runner and pinned
+`moby/buildkit:v0.33.0-rootless` (official release and registry tag verified). It
+starts immediately alongside lint to expose runner capability failures early.
+The job copies the submitted Containerfile to a temporary directory and appends
+an exec-form `RUN` of `kipuka --version` to its final stage. This exercises the
+final filesystem and configured USER without requiring a runtime shell. It builds
+a temporary OCI archive, then deletes it; it never authenticates or publishes.
+
+Rootless BuildKit still needs user namespaces and mount syscalls permitted by
+the runner's security policy. `--oci-worker-no-process-sandbox` follows
+[GitLab's BuildKit setup](https://docs.gitlab.com/ci/docker/using_buildkit/).
+AppArmor or namespace denial is an infrastructure failure, not a passing smoke
+test; a runner administrator must resolve it. This capability has not yet been
+established on the shared runner by a completed build.
+
+`container-publish` retains Podman build and runtime `--version` verification on
+a dedicated runner tagged `shell`. The existing project runner (63617) is stale
+and has no such tag; publication remains blocked until an administrator provides
+a working shell runner with Podman. It is excluded entirely from verification
+branches, merge requests, schedules, and manually started pipelines.
 
 Only a push pipeline on a protected default branch or protected tag publishes to
 `quay.io/czinda/kipuka`. Configure protected, masked `QUAY_USERNAME` and
