@@ -4,6 +4,7 @@ cargo-audit:
   script:
     - cargo install --locked cargo-audit --version 0.22.1
     - python3 -m unittest discover -s contrib/security -p "test_*.py"
+    - python3 -B -m unittest discover -s contrib/security -p test_audit.py
     - python3 contrib/security/audit.py
 
 cargo-deny:
