@@ -90,6 +90,10 @@ pub struct CsrTemplateRdn {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum EstAuthMethod {
+    /// CMS message authentication for the custom CMS endpoints.
+    Cms,
+    /// GSSAPI over TLS with channel binding.
+    Gssapi,
     /// mTLS client certificate authentication (RFC 7030 §3.3.2).
     Mtls,
     /// HTTP Basic authentication with OTP (RHELBU-3536 R7).
@@ -222,6 +226,10 @@ pub struct EstLabelConfig {
     /// When absent, the default CA is used.
     pub ca_id: Option<String>,
 
+    /// Explicit authorization for alternate issuers under this label.
+    #[serde(default)]
+    pub ca_pool: Vec<String>,
+
     /// Allowed authentication methods for this label.
     ///
     /// When empty, all globally-enabled auth methods are accepted.
@@ -240,9 +248,36 @@ pub struct EstLabelConfig {
     /// Require that the CSR Common Name matches the authenticated identity.
     ///
     /// When `true`, the server rejects CSRs where the CN does not match
-    /// the client's authenticated principal name.
+    /// the client's authenticated principal name.  NIAP CA PP FDP_ACF.1
+    /// identity binding — enforced in `crate::auth::enroll_authz`.
     #[serde(default)]
     pub require_cn_match: bool,
+
+    /// Require the authenticated identity to appear as a Subject Alternative
+    /// Name entry (dNSName, rfc822Name, or iPAddress, matched by type).
+    ///
+    /// NIAP CA PP FDP_ACF.1 identity binding.  Complements
+    /// `require_cn_match`; both may be set.  Default: `false`.
+    #[serde(default)]
+    pub require_san_match: bool,
+
+    /// Name-authorization allowlist of permitted dNSName patterns (RFC 6125,
+    /// wildcards allowed).  When non-empty, every dNSName SAN in the CSR must
+    /// match one entry, bounding this label to a fixed namespace.
+    #[serde(default)]
+    pub permitted_dns_names: Vec<String>,
+
+    /// Name-authorization allowlist of permitted iPAddress SANs (textual
+    /// form, e.g. `"10.0.0.1"` or `"2001:db8::1"`).  When non-empty, every
+    /// iPAddress SAN in the CSR must equal one entry.
+    #[serde(default)]
+    pub permitted_ip_addresses: Vec<String>,
+
+    /// Name-authorization allowlist of permitted rfc822Name patterns (full
+    /// address or bare domain).  When non-empty, every rfc822Name SAN in the
+    /// CSR must match one entry.
+    #[serde(default)]
+    pub permitted_emails: Vec<String>,
 
     /// Maximum validity period (days) for certificates issued under this label.
     ///

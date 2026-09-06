@@ -403,7 +403,7 @@ max_usage = 1
 
 [admin]
 enabled = true
-auth_method = "mtls"
+auth_method = "bearer"
 admin_ca_file = "/dev/null"
 bearer_token = "test-admin-token"
 

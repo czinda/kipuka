@@ -269,11 +269,16 @@ pub async fn get_cert(
 /// | 9    | privilegeWithdrawn   |
 /// | 10   | aACompromise         |
 pub async fn revoke_cert(
-    _admin: AdminAuth,
+    admin: AdminAuth,
     Path(serial): Path<String>,
     State(state): State<Arc<AppState>>,
     Json(req): Json<RevokeCertRequest>,
 ) -> Response {
+    // FMT_SMR.1: only operators may revoke certificates.
+    if let Some(resp) = admin.require_operator() {
+        return resp;
+    }
+
     tracing::info!(
         serial = %serial,
         reason = req.reason,

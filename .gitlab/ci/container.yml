@@ -1,31 +1,56 @@
-# =============================================================================
-# Container image build — uses shell executor for direct podman access
-# =============================================================================
-# Builds the kipuka OCI image and pushes to quay.io.
-# Requires CI variables: QUAY_USERNAME, QUAY_PASSWORD
-
-container-build:
+# Rootless build/smoke on the available shared Kubernetes runner; never publishes.
+container-verify:
   stage: package
-  tags:
-    - shell
+  needs: []
+  tags: [itup-alm-x86]
+  image:
+    name: moby/buildkit:v0.33.0-rootless
+    entrypoint: [""]
+  cache: []
+  timeout: 60 minutes
   variables:
-    IMAGE_TAG: "quay.io/czinda/kipuka:latest"
-  before_script:
-    # Clone synta dependencies locally (avoids DNS issues in container builds)
-    - git clone --depth 1 https://codeberg.org/abbra/synta.git synta 2>/dev/null || true
-    # Replace git deps with local paths
-    - sed -i 's|synta = { git = "https://codeberg.org/abbra/synta.git", branch = "main" }|synta = { path = "synta" }|' Cargo.toml
-    - sed -i 's|synta-certificate = { git = "https://codeberg.org/abbra/synta.git", branch = "main", features = \["openssl"\] }|synta-certificate = { path = "synta/synta-certificate", features = ["openssl"] }|' Cargo.toml
-    - 'sed -i ''s|synta-cmc = { git = "https://codeberg.org/czinda/synta.git", rev = "e1159fe" }|synta-cmc = { path = "synta/synta-cmc" }|'' Cargo.toml'
-    - sed -i 's|synta-krb5 = { git = "https://codeberg.org/abbra/synta.git", branch = "main", features = \["std"\] }|synta-krb5 = { path = "synta/synta-krb5", features = ["std"] }|' Cargo.toml
-    # Remove [patch] sections
-    - python3 -c "import re; t=open('Cargo.toml').read(); t=re.sub(r'\[patch\.[^\]]+\][^\[]*','',t); open('Cargo.toml','w').write(t)"
-    - rm -f Cargo.lock
+    BUILDKITD_FLAGS: --oci-worker-no-process-sandbox
   script:
-    - podman build -t ${IMAGE_TAG} -f Containerfile .
-    - echo "${QUAY_PASSWORD}" | podman login -u "${QUAY_USERNAME}" --password-stdin quay.io
-    - podman push ${IMAGE_TAG}
+    - |
+      set -eu
+      dockerfile_dir="$(mktemp -d)"
+      trap 'rm -rf "$dockerfile_dir"' EXIT
+      cp Containerfile "$dockerfile_dir/Containerfile"
+      # Append to the submitted final stage, retaining its filesystem and USER.
+      # Exec form does not depend on a shell being present in the runtime image.
+      printf '\nRUN ["/usr/local/bin/kipuka", "--version"]\n' >> "$dockerfile_dir/Containerfile"
+      buildctl-daemonless.sh build \
+        --progress plain \
+        --frontend dockerfile.v0 \
+        --local "context=$CI_PROJECT_DIR" \
+        --local "dockerfile=$dockerfile_dir" \
+        --opt filename=Containerfile \
+        --output "type=oci,dest=$dockerfile_dir/verified-image.tar"
+
+# Publication still requires a dedicated Podman shell runner and all prior stages.
+container-publish:
+  stage: deploy
+  tags: [shell]
+  cache: []
+  script:
+    - |
+      set -eu
+      image="quay.io/czinda/kipuka"
+      local_image="localhost/kipuka-ci:${CI_JOB_ID}"
+      auth_file="$(mktemp)"
+      trap 'rm -f "$auth_file"; podman image rm "$local_image"' EXIT
+      podman build --pull=always -t "$local_image" -f Containerfile .
+      podman run --rm "$local_image" --version
+      if [ "$CI_PIPELINE_SOURCE" = "push" ] && [ "${CI_COMMIT_REF_PROTECTED:-false}" = "true" ] && { [ "${CI_COMMIT_BRANCH:-}" = "$CI_DEFAULT_BRANCH" ] || [ -n "${CI_COMMIT_TAG:-}" ]; }; then
+        : "${QUAY_USERNAME:?QUAY_USERNAME is required for publication}"
+        : "${QUAY_PASSWORD:?QUAY_PASSWORD is required for publication}"
+        printf '%s' "$QUAY_PASSWORD" | podman login --authfile "$auth_file" -u "$QUAY_USERNAME" --password-stdin quay.io
+        podman push --authfile "$auth_file" "$local_image" "docker://${image}:${CI_COMMIT_SHA}"
+        if [ -n "${CI_COMMIT_TAG:-}" ]; then
+          podman push --authfile "$auth_file" "$local_image" "docker://${image}:${CI_COMMIT_TAG}"
+        else
+          podman push --authfile "$auth_file" "$local_image" "docker://${image}:latest"
+        fi
+      fi
   rules:
-    - if: $CI_COMMIT_BRANCH == "feature/sskg-kra-integration"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-    - if: $CI_COMMIT_TAG
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_PROTECTED == "true" && ($CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH || $CI_COMMIT_TAG)'

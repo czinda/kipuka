@@ -11,6 +11,8 @@
 //! use a separate authentication mechanism (see [`super::routes::admin`]).
 
 pub mod cms_auth;
+pub mod enroll_authz;
+pub mod failure_tracker;
 pub mod gssapi;
 pub mod mtls;
 pub mod name_match;
@@ -144,14 +146,31 @@ where
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Response> {
         let app = Arc::<AppState>::from_ref(state);
 
+        let label = crate::routes::LabelExtractor::from_request_parts(parts, state).await?;
+        let allowed = app
+            .config
+            .est
+            .labels
+            .iter()
+            .find(|l| l.name == label.label)
+            .map(|l| &l.auth_methods);
+        let permits = |method: crate::config::EstAuthMethod| {
+            allowed.is_none_or(|methods| methods.is_empty() || methods.contains(&method))
+        };
+
         // Try mTLS first — the client certificate is available as a request extension
         // injected by the TLS accept loop.
-        if let Some(auth) = mtls::try_extract_mtls(parts, &app).await {
+        if (permits(crate::config::EstAuthMethod::Mtls)
+            || permits(crate::config::EstAuthMethod::Certificate))
+            && let Some(auth) = mtls::try_extract_mtls(parts, &app).await
+        {
             return Ok(EstAuth(auth));
         }
 
         // Try HTTP Basic (OTP) authentication.
-        if let Some(result) = otp::try_extract_otp(parts, &app).await {
+        if permits(crate::config::EstAuthMethod::Otp)
+            && let Some(result) = otp::try_extract_otp(parts, &app).await
+        {
             match result {
                 Ok(auth) => return Ok(EstAuth(auth)),
                 Err(e) => return Err(e),
@@ -159,7 +178,9 @@ where
         }
 
         // Try GSSAPI/SPNEGO authentication.
-        if let Some(result) = gssapi::try_extract_gssapi(parts, &app).await {
+        if permits(crate::config::EstAuthMethod::Gssapi)
+            && let Some(result) = gssapi::try_extract_gssapi(parts, &app).await
+        {
             match result {
                 Ok(auth) => return Ok(EstAuth(auth)),
                 Err(e) => return Err(e),
@@ -197,3 +218,5 @@ where
         Ok(OptionalAuth(AuthResult::anonymous()))
     }
 }
+
+pub(crate) mod certificate;

@@ -104,7 +104,7 @@ async fn run() -> Result<(), String> {
             .map_err(|e| e.to_string())?;
     }
 
-    let db_ro = kipuka::db::init_ro_pool(&config.database, db_kind, &secrets.db_url)
+    let db_ro = kipuka::db::init_ro_pool(&db, &config.database, db_kind, &secrets.db_url)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -185,7 +185,9 @@ async fn run() -> Result<(), String> {
         }
 
         // Find the HSM slot by token label or slot ID.
-        let slot = if let Some(ref label) = hsm_cfg.token_label {
+        let slot = if let Some(id) = hsm_cfg.slot_id {
+            kipuka_hsm::HsmSlot::find_by_id(&ctx, id).map_err(|e| format!("PKCS#11 slot: {e}"))?
+        } else if let Some(ref label) = hsm_cfg.token_label {
             kipuka_hsm::HsmSlot::find_by_label(&ctx, label)
                 .map_err(|e| format!("HSM slot lookup by label '{label}' failed: {e}"))?
         } else {
@@ -248,7 +250,7 @@ async fn run() -> Result<(), String> {
     };
 
     // ── Audit state ──────────────────────────────────────────────────────────
-    let audit = Arc::new(AuditState::new());
+    let audit = Arc::new(AuditState::with_config(config.audit.clone()));
 
     // Record server startup
     kipuka::audit::record(
@@ -301,11 +303,45 @@ async fn run() -> Result<(), String> {
 
     let state = state.gssapi_require_crypto(gssapi_require_crypto);
 
-    let app_state = state.build();
+    let state = if let Some(star_config) = config.star.as_ref().filter(|c| c.enabled) {
+        let manager = Arc::new(kipuka::star::StarManager::new(star_config.clone()));
+        manager
+            .restore(&db)
+            .await
+            .map_err(|e| format!("STAR restore failed: {e}"))?;
+        state.star_manager(manager)
+    } else {
+        state
+    };
+
+    let mut app_state = state.build();
+    app_state.ha_manager =
+        kipuka::ha::build_manager(config.clone(), app_state.cas.clone(), app_state.hsm.clone());
+    let ha_task = if let Some(manager) = &app_state.ha_manager {
+        Some(manager.start().await)
+    } else {
+        None
+    };
 
     // ── Router ───────────────────────────────────────────────────────────────
     let app_state_arc = Arc::new(app_state.clone());
     let app = kipuka::routes::build_router(app_state_arc.clone());
+
+    let star_task = if let Some(manager) = &app_state.star_manager {
+        Some(
+            kipuka::star::renewal::spawn_renewal_task(
+                manager.clone(),
+                db.clone(),
+                app_state.cas.clone(),
+                Arc::new(config.cas.clone()),
+                app_state.hsm.clone(),
+                audit.clone(),
+            )
+            .await,
+        )
+    } else {
+        None
+    };
 
     // ── CoAP/DTLS server (RFC 9483) ─────────────────────────────────────────
     if let Some(ref coap_cfg) = config.coap
@@ -367,6 +403,51 @@ async fn run() -> Result<(), String> {
         });
     }
 
+    let tls_channel_binding = if config.tls.enabled {
+        let bytes = std::fs::read(&config.tls.cert_file).map_err(|e| e.to_string())?;
+        let cert = rustls_pemfile::certs(&mut std::io::BufReader::new(bytes.as_slice()))
+            .next()
+            .transpose()
+            .map_err(|e| e.to_string())?
+            .ok_or("empty TLS certificate file")?;
+        match kipuka::auth::gssapi::server_end_point(&cert) {
+            Ok(binding) => Some(binding),
+            Err(error) if app_state.gss_cred.is_some() => return Err(error),
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+    let admin_task = if let Some(admin) = config.admin.as_ref().filter(|c| c.enabled) {
+        if matches!(
+            admin.auth_method,
+            kipuka::config::AdminAuthMethod::Basic | kipuka::config::AdminAuthMethod::Gssapi
+        ) {
+            return Err("admin authentication supports explicit mtls or bearer; basic/gssapi admin roles are not implemented".into());
+        }
+        if let Some(addr) = &admin.listen_addr {
+            if !config.tls.enabled {
+                return Err("separate admin listener requires TLS".into());
+            }
+            let tls = kipuka::tls::admin_listener_config(&config.tls, admin);
+            let acceptor = kipuka::tls::build_tls_acceptor(&tls, hsm_for_tls.as_ref())
+                .map_err(|e| e.to_string())?;
+            let listener = tokio::net::TcpListener::bind(addr)
+                .await
+                .map_err(|e| format!("admin listener {addr}: {e}"))?;
+            let router = kipuka::routes::build_admin_router(app_state_arc.clone());
+            let timeout = config.server.shutdown_timeout_secs;
+            let binding = tls_channel_binding.clone();
+            Some(tokio::spawn(async move {
+                serve_tls(listener, acceptor, router, timeout, binding).await
+            }))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     // ── Server startup ───────────────────────────────────────────────────────
     let listen_addr = config.server.effective_listen_addr();
     tracing::info!(listen = %listen_addr, "starting EST server");
@@ -386,7 +467,14 @@ async fn run() -> Result<(), String> {
         spawn_background_tasks(app_state.clone());
 
         // Serve with graceful shutdown
-        serve_tls(listener, acceptor, app, config.server.shutdown_timeout_secs).await?;
+        serve_tls(
+            listener,
+            acceptor,
+            app,
+            config.server.shutdown_timeout_secs,
+            tls_channel_binding,
+        )
+        .await?;
     } else {
         let listener = tokio::net::TcpListener::bind(&listen_addr)
             .await
@@ -399,6 +487,19 @@ async fn run() -> Result<(), String> {
 
         // Serve with graceful shutdown
         serve_plain(listener, app, config.server.shutdown_timeout_secs).await?;
+    }
+
+    if let Some(task) = admin_task {
+        task.abort();
+    }
+    if let Some(task) = star_task {
+        task.abort();
+    }
+    if let Some(manager) = &app_state.ha_manager {
+        manager.shutdown();
+    }
+    if let Some(task) = ha_task {
+        task.abort();
     }
 
     // Record graceful shutdown
@@ -431,6 +532,7 @@ async fn serve_tls(
     acceptor: tokio_rustls::TlsAcceptor,
     app: axum::Router,
     shutdown_timeout_secs: u64,
+    channel_binding: Option<Vec<u8>>,
 ) -> Result<(), String> {
     use hyper_util::rt::TokioIo;
     use tower::Service;
@@ -444,6 +546,7 @@ async fn serve_tls(
                 let (tcp_stream, peer_addr) = result
                     .map_err(|e| format!("accept error: {e}"))?;
 
+                let channel_binding=channel_binding.clone();
                 let acceptor = acceptor.clone();
                 let app = app.clone();
 
@@ -475,6 +578,7 @@ async fn serve_tls(
                                 kipuka::auth::mtls::PeerCertificate(cert_der.clone()),
                             );
                         }
+                        if let Some(binding)=&channel_binding {req.extensions_mut().insert(kipuka::auth::gssapi::TlsChannelBinding(binding.clone()));}
                         let mut svc = app.clone();
                         async move {
                             svc.call(req).await

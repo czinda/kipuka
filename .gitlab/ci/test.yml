@@ -1,76 +1,13 @@
-# =============================================================================
-# Stage: test
-# =============================================================================
-
-.test-base:
-  stage: test
-  image: ${RUST_IMAGE}
-  cache:
-    key: test-${CI_COMMIT_REF_SLUG}
-    paths:
-      - target/
-      - ${CARGO_HOME}/registry/
-      - ${CARGO_HOME}/git/
-    policy: pull
-  before_script:
-    - apt-get update -qq && apt-get install -y -qq libssl-dev pkg-config clang cmake libclang-dev libc6-dev >/dev/null 2>&1 || true
-  retry:
-    max: 1
-    when: runner_system_failure
-
+# Both feature configurations exercise every workspace member and doctests.
 unit-tests:
-  extends: .test-base
-  timeout: 30 minutes
+  variables:
+    KUBERNETES_MEMORY_REQUEST: "4Gi"
+    KUBERNETES_MEMORY_LIMIT: "8Gi"
+  extends: .rust-base
+  stage: test
+  timeout: 45 minutes
+  parallel:
+    matrix:
+      - FEATURES: ["", "--all-features"]
   script:
-    - cargo test --all-features 2>&1
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-
-est-protocol-tests:
-  extends: .test-base
-  timeout: 30 minutes
-  script:
-    - cargo test --test est_cacerts --test est_enroll 2>&1
-  needs:
-    - job: build-debug
-      optional: true
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-
-otp-tests:
-  extends: .test-base
-  timeout: 30 minutes
-  script:
-    - cargo test --test otp_auth 2>&1
-  needs:
-    - job: build-debug
-      optional: true
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-
-ha-tests:
-  extends: .test-base
-  timeout: 30 minutes
-  script:
-    - cargo test --test ha_failover 2>&1
-  needs:
-    - job: build-debug
-      optional: true
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-
-coap-tests:
-  extends: .test-base
-  timeout: 30 minutes
-  script:
-    - cargo test -p kipuka-coap 2>&1
-  needs:
-    - job: build-debug
-      optional: true
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - cargo test --locked --workspace $FEATURES

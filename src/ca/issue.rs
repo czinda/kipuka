@@ -247,6 +247,12 @@ pub struct EnrollmentProfile {
     pub name: String,
     /// Maximum validity period in days.
     pub max_validity_days: u32,
+    /// Optional shorter validity for automatic renewal.
+    #[serde(default)]
+    pub max_validity_seconds: Option<u64>,
+    /// Absolute issuance deadline (for renewal order lifetime).
+    #[serde(default)]
+    pub max_not_after: Option<DateTime<Utc>>,
     /// Key usage flags to set (e.g., digitalSignature, keyEncipherment).
     pub key_usage: Vec<String>,
     /// Extended key usage OIDs (e.g., serverAuth, clientAuth).
@@ -321,6 +327,8 @@ impl Default for EnrollmentProfile {
         Self {
             name: "default".into(),
             max_validity_days: cab_forum_max_validity_days(),
+            max_validity_seconds: None,
+            max_not_after: None,
             key_usage: vec!["digitalSignature".into(), "keyEncipherment".into()],
             extended_key_usage: vec!["serverAuth".into()],
             include_ski: true,
@@ -392,9 +400,28 @@ pub fn issue_certificate(
     ocsp_url: Option<&str>,
     crl_url: Option<&str>,
 ) -> Result<IssuanceResult, IssuanceError> {
-    // Step 1: Parse and validate CSR.
     validate_csr(csr_der)?;
+    issue_verified_request(
+        csr_der,
+        profile,
+        ca_cert_der,
+        signing_key,
+        hash_algorithm,
+        ocsp_url,
+        crl_url,
+    )
+}
 
+// Private: only the PKCS#10 and CRMF verification boundaries may call this.
+fn issue_verified_request(
+    csr_der: &[u8],
+    profile: &EnrollmentProfile,
+    ca_cert_der: &[u8],
+    signing_key: CaSigningKey<'_>,
+    hash_algorithm: &str,
+    ocsp_url: Option<&str>,
+    crl_url: Option<&str>,
+) -> Result<IssuanceResult, IssuanceError> {
     // Step 1a: Check subject DN for prohibited attributes (BR §7.1.2.10.2).
     check_subject_dn_compliance(csr_der)?;
 
@@ -459,7 +486,28 @@ pub fn issue_certificate(
 
     // Step 9: Compute validity period.
     let now = Utc::now();
-    let not_after_chrono = now + chrono::Duration::days(profile.max_validity_days as i64);
+    let mut not_after_chrono = now + chrono::Duration::days(profile.max_validity_days as i64);
+    if let Some(seconds) = profile.max_validity_seconds {
+        let seconds = i64::try_from(seconds)
+            .map_err(|_| IssuanceError::SigningError("validity overflow".into()))?;
+        not_after_chrono = not_after_chrono.min(
+            now.checked_add_signed(chrono::Duration::seconds(seconds))
+                .ok_or_else(|| IssuanceError::SigningError("validity overflow".into()))?,
+        );
+    }
+    if let Some(limit) = profile.max_not_after {
+        not_after_chrono = not_after_chrono.min(limit);
+    }
+    crate::auth::certificate::valid_now(ca_cert_der).map_err(IssuanceError::SigningError)?;
+    not_after_chrono = not_after_chrono.min(
+        crate::auth::certificate::time(&ca_cert.tbs_certificate.validity.not_after)
+            .map_err(IssuanceError::SigningError)?,
+    );
+    if not_after_chrono <= now {
+        return Err(IssuanceError::SigningError(
+            "empty certificate validity period".into(),
+        ));
+    }
 
     let not_before_time = chrono_to_synta_time(now)
         .map_err(|e| IssuanceError::SigningError(format!("not_before time conversion: {e}")))?;
@@ -482,6 +530,14 @@ pub fn issue_certificate(
         .serial_number(serial)
         .not_valid_before(not_before_time)
         .not_valid_after(not_after_time);
+
+    // SANs are the requested identities already authorized by the route policy.
+    // All CA/usage/policy extensions remain controlled by the enrollment profile.
+    for (oid, critical, value) in requested_extensions(csr_der)? {
+        if oid.components() == synta_certificate::oids::SUBJECT_ALT_NAME {
+            builder = builder.add_extension(oid, critical, &value);
+        }
+    }
 
     // Basic Constraints: CA:FALSE (critical, per CA/B Forum BR §7.1.2.7).
     if let Some(bc_der) = synta_certificate::encode_basic_constraints(false, None) {
@@ -733,9 +789,23 @@ fn validate_csr(csr_der: &[u8]) -> Result<(), IssuanceError> {
         ));
     }
 
-    // Verify the CSR can be parsed.
-    synta_certificate::csr::CertificationRequest::from_der(csr_der)
+    use synta_certificate::SignatureVerifier;
+    let csr = synta_certificate::csr::CertificationRequest::from_der(csr_der)
         .map_err(|e| IssuanceError::InvalidCsr(format!("PKCS#10 parse failed: {e}")))?;
+    let encode_error = |e| IssuanceError::InvalidCsr(format!("CSR encoding: {e}"));
+    let cri = csr
+        .certification_request_info
+        .to_der()
+        .map_err(encode_error)?;
+    let algorithm = csr.signature_algorithm.to_der().map_err(encode_error)?;
+    let spki = csr
+        .certification_request_info
+        .subject_pkinfo
+        .to_der()
+        .map_err(encode_error)?;
+    synta_certificate::default_signature_verifier()
+        .verify_certificate_signature(&cri, &algorithm, csr.signature.as_bytes(), &spki)
+        .map_err(|e| IssuanceError::InvalidCsr(format!("CSR proof of possession failed: {e}")))?;
 
     debug!(len = csr_der.len(), "CSR structure validated");
     Ok(())
@@ -1064,5 +1134,189 @@ fn check_required_extensions(profile: &EnrollmentProfile) -> Result<(), Issuance
         ));
     }
 
+    Ok(())
+}
+
+/// Decode requested extensions strictly; duplicate OIDs are ambiguous and rejected.
+pub(crate) fn requested_extensions(
+    csr_der: &[u8],
+) -> Result<Vec<(synta::ObjectIdentifier, bool, Vec<u8>)>, IssuanceError> {
+    let csr = synta_certificate::csr::CertificationRequest::from_der(csr_der)
+        .map_err(|e| IssuanceError::InvalidCsr(e.to_string()))?;
+    let mut result = Vec::new();
+    if let Some(attrs) = &csr.certification_request_info.attributes {
+        for attr in attrs.elements() {
+            if attr.attr_type.components() != synta_certificate::oids::PKCS9_EXTENSION_REQUEST {
+                continue;
+            }
+            for value in attr.attr_values.elements() {
+                let extensions: Vec<synta_certificate::Extension<'_>> =
+                    synta::Decoder::new(value.as_bytes(), synta::Encoding::Der)
+                        .decode()
+                        .map_err(|e| {
+                            IssuanceError::InvalidCsr(format!("requested extensions: {e}"))
+                        })?;
+                for ext in extensions {
+                    if result.iter().any(|(oid, _, _)| oid == &ext.extn_id) {
+                        return Err(IssuanceError::InvalidCsr(
+                            "duplicate requested extension".into(),
+                        ));
+                    }
+                    result.push((
+                        ext.extn_id,
+                        ext.critical.as_ref().is_some_and(|v| v.0),
+                        ext.extn_value.as_bytes().to_vec(),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(result)
+}
+
+/// CRMF signing-key proof boundary. RA-verified and encryption PoP need separate
+/// explicit RA/encipherment policies and are not implicitly trusted here.
+pub(crate) fn issue_crmf_certificate(
+    request: &synta_certificate::crmf_types::CertReqMsg<'_>,
+    profile: &EnrollmentProfile,
+    ca_cert_der: &[u8],
+    signing_key: CaSigningKey<'_>,
+    hash_algorithm: &str,
+    ocsp_url: Option<&str>,
+    crl_url: Option<&str>,
+) -> Result<IssuanceResult, IssuanceError> {
+    use synta_certificate::{SignatureVerifier, crmf_types::ProofOfPossession};
+    let invalid = |e| IssuanceError::InvalidCsr(format!("CRMF encoding: {e}"));
+    let template = &request.cert_req.cert_template;
+    let subject = template
+        .subject
+        .as_ref()
+        .ok_or_else(|| IssuanceError::InvalidCsr("CRMF subject required".into()))?
+        .to_der()
+        .map_err(invalid)?;
+    let spki = template
+        .public_key
+        .as_ref()
+        .ok_or_else(|| IssuanceError::InvalidCsr("CRMF public key required".into()))?
+        .to_der()
+        .map_err(invalid)?;
+    let Some(ProofOfPossession::Signature(pop)) = &request.popo else {
+        return Err(IssuanceError::InvalidCsr(
+            "supported CRMF signature proof of possession required".into(),
+        ));
+    };
+    // When subject and publicKey are in CertTemplate, RFC4211 requires signing
+    // CertRequest itself, with poposkInput absent.
+    if pop.poposk_input.is_some() {
+        return Err(IssuanceError::InvalidCsr(
+            "unexpected poposkInput for complete CertTemplate".into(),
+        ));
+    }
+    let tbs = request.cert_req.to_der().map_err(invalid)?;
+    let algorithm = pop.algorithm_identifier.to_der().map_err(invalid)?;
+    synta_certificate::default_signature_verifier()
+        .verify_certificate_signature(&tbs, &algorithm, pop.signature.as_bytes(), &spki)
+        .map_err(|e| IssuanceError::InvalidCsr(format!("CRMF proof of possession failed: {e}")))?;
+    let mut builder = synta_certificate::CsrBuilder::new()
+        .subject_name(&subject)
+        .public_key_der(&spki);
+    if let Some(extensions) = &template.extensions {
+        for ext in extensions {
+            builder = builder.add_extension(
+                ext.extn_id.clone(),
+                ext.critical.as_ref().is_some_and(|v| v.0),
+                ext.extn_value.as_bytes(),
+            );
+        }
+    }
+    // Internal representation only, after verifying the real CRMF signature.
+    let cri = builder
+        .build_cri(&algorithm)
+        .map_err(|e| IssuanceError::InvalidCsr(e.to_string()))?;
+    let csr = synta_certificate::CsrBuilder::assemble(&cri, &algorithm, pop.signature.as_bytes())
+        .map_err(|e| IssuanceError::InvalidCsr(e.to_string()))?;
+    issue_verified_request(
+        &csr,
+        profile,
+        ca_cert_der,
+        signing_key,
+        hash_algorithm,
+        ocsp_url,
+        crl_url,
+    )
+}
+
+/// Sign a protocol message with the configured CA key without exporting HSM keys.
+pub(crate) fn sign_message(
+    key: CaSigningKey<'_>,
+    hash: &str,
+    message: &[u8],
+) -> Result<(Vec<u8>, Vec<u8>), crate::error::KipukaError> {
+    use synta_certificate::{CertificateSigner, PrivateKey};
+    let err = |e: String| crate::error::KipukaError::Ca(format!("message signing failed: {e}"));
+    match key {
+        CaSigningKey::Pem(pem) => {
+            let key = synta_certificate::BackendPrivateKey::from_pem(pem, None)
+                .map_err(|e| err(e.to_string()))?;
+            let signer = key.as_signer(hash);
+            Ok((
+                signer
+                    .signature_algorithm_der_erased()
+                    .map_err(|e| err(e.to_string()))?,
+                signer
+                    .sign_tbs_erased(message)
+                    .map_err(|e| err(e.to_string()))?,
+            ))
+        }
+        CaSigningKey::Hsm { context, key_label } => {
+            let signer = HsmCertificateSigner {
+                context,
+                key_label,
+                hash_algorithm: hash,
+            };
+            Ok((
+                signer
+                    .signature_algorithm_der()
+                    .map_err(|e| err(e.to_string()))?,
+                signer.sign_tbs(message).map_err(|e| err(e.to_string()))?,
+            ))
+        }
+    }
+}
+
+/// Store a newly issued certificate before reporting successful issuance.
+pub(crate) async fn persist_certificate(
+    state: &crate::state::AppState,
+    ca_id: &str,
+    profile: &str,
+    result: &IssuanceResult,
+) -> Result<(), crate::error::KipukaError> {
+    persist_certificate_on(&state.db, ca_id, profile, result).await?;
+    crate::audit::record_checked(
+        &state.db,
+        &state.audit,
+        crate::audit::AuditEvent::new(crate::audit::AuditEventType::CertIssue)
+            .with_detail(format!("ca_id={ca_id}, serial={}", result.serial_number)),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Persist within the caller's transaction, allowing STAR state and inventory to commit atomically.
+pub(crate) async fn persist_certificate_on<'e, E: sqlx::Executor<'e, Database = sqlx::Any>>(
+    executor: E,
+    ca_id: &str,
+    profile: &str,
+    result: &IssuanceResult,
+) -> Result<(), crate::error::KipukaError> {
+    let cert = synta_certificate::Certificate::from_der(&result.certificate_der)
+        .map_err(|e| crate::error::KipukaError::Ca(e.to_string()))?;
+    let issuer = synta_certificate::format_dn(cert.tbs_certificate.issuer.as_bytes());
+    sqlx::query(crate::db::pg_sql("INSERT INTO certificates (serial, subject_dn, issuer_dn, not_before, not_after, der_encoded, ca_id, profile, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')"))
+        .bind(&result.serial_number).bind(&result.subject_dn).bind(issuer)
+        .bind(result.not_before.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+        .bind(result.not_after.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+        .bind(&result.certificate_der).bind(ca_id).bind(profile).execute(executor).await
+        .map_err(|e| crate::error::KipukaError::Db(format!("certificate persistence failed: {e}")))?;
     Ok(())
 }

@@ -108,7 +108,7 @@ impl HsmKeyPair {
     ) -> HsmResult<Self> {
         let session = slot.open_rw_session()?;
 
-        let (private_key, public_key) = match algorithm {
+        let (public_key, private_key) = match algorithm {
             KeyAlgorithm::Rsa(bits) => {
                 Self::generate_rsa(&session, bits, label, id, provider_config)?
             }
@@ -338,81 +338,38 @@ impl HsmKeyPair {
 
     /// Find a key pair by label.
     pub fn find_by_label(slot: &HsmSlot, label: &str, algorithm: KeyAlgorithm) -> HsmResult<Self> {
-        let session = slot.open_ro_session()?;
-
-        let template = vec![
-            Attribute::Label(label.as_bytes().to_vec()),
-            Attribute::Class(ObjectClass::PRIVATE_KEY),
-        ];
-
-        session.find_objects(&template).map_err(|e| {
-            HsmError::KeyNotFound(format!("Failed to search for key '{label}': {e}"))
-        })?;
-
-        let private_key = session
-            .find_objects(&template)
-            .map_err(|e| HsmError::KeyNotFound(format!("Find operation failed: {e}")))?
-            .into_iter()
-            .next()
-            .ok_or_else(|| HsmError::KeyNotFound(format!("Key '{label}' not found")))?;
-
-        // Find matching public key
-        let public_template = vec![
-            Attribute::Label(label.as_bytes().to_vec()),
-            Attribute::Class(ObjectClass::PUBLIC_KEY),
-        ];
-
-        let public_key = session
-            .find_objects(&public_template)
-            .map_err(|e| HsmError::KeyNotFound(format!("Public key search failed: {e}")))?
-            .into_iter()
-            .next()
-            .ok_or_else(|| HsmError::KeyNotFound(format!("Public key '{label}' not found")))?;
-
-        Ok(Self {
-            session,
-            private_key,
-            public_key,
+        Self::find_selected(
+            slot,
+            vec![Attribute::Label(label.as_bytes().to_vec())],
             algorithm,
-        })
+        )
     }
 
-    /// Find a key pair by CKA_ID.
     pub fn find_by_id(slot: &HsmSlot, id: &[u8], algorithm: KeyAlgorithm) -> HsmResult<Self> {
+        Self::find_selected(slot, vec![Attribute::Id(id.to_vec())], algorithm)
+    }
+
+    fn find_selected(
+        slot: &HsmSlot,
+        selector: Vec<Attribute>,
+        algorithm: KeyAlgorithm,
+    ) -> HsmResult<Self> {
         let session = slot.open_ro_session()?;
-
-        let template = vec![
-            Attribute::Id(id.to_vec()),
-            Attribute::Class(ObjectClass::PRIVATE_KEY),
-        ];
-
-        let private_key = session
-            .find_objects(&template)
-            .map_err(|e| HsmError::KeyNotFound(format!("Find operation failed: {e}")))?
-            .into_iter()
-            .next()
-            .ok_or_else(|| {
-                HsmError::KeyNotFound(format!("Key with ID {} not found", hex::encode(id)))
-            })?;
-
-        let public_template = vec![
-            Attribute::Id(id.to_vec()),
-            Attribute::Class(ObjectClass::PUBLIC_KEY),
-        ];
-
-        let public_key = session
-            .find_objects(&public_template)
-            .map_err(|e| HsmError::KeyNotFound(format!("Public key search failed: {e}")))?
-            .into_iter()
-            .next()
-            .ok_or_else(|| {
-                HsmError::KeyNotFound(format!("Public key with ID {} not found", hex::encode(id)))
-            })?;
-
+        let mut private = selector.clone();
+        private.push(Attribute::Class(ObjectClass::PRIVATE_KEY));
+        let mut public = selector;
+        public.push(Attribute::Class(ObjectClass::PUBLIC_KEY));
+        let private_keys = session.find_objects(&private)?;
+        let public_keys = session.find_objects(&public)?;
+        if private_keys.len() != 1 || public_keys.len() != 1 {
+            return Err(HsmError::KeyNotFound(
+                "key selector must match exactly one key pair".into(),
+            ));
+        }
         Ok(Self {
             session,
-            private_key,
-            public_key,
+            private_key: private_keys[0],
+            public_key: public_keys[0],
             algorithm,
         })
     }
@@ -429,36 +386,28 @@ impl HsmKeyPair {
     /// - `id` - Key ID (CKA_ID, hex-encoded)
     /// - `type` - Object type (private, public, cert)
     pub fn from_uri(slot: &HsmSlot, uri: &str, algorithm: KeyAlgorithm) -> HsmResult<Self> {
-        let url = Url::parse(uri).map_err(|e| HsmError::UriParse(e.to_string()))?;
-
-        if url.scheme() != "pkcs11" {
-            return Err(HsmError::UriParse(format!(
-                "Invalid scheme '{}', expected 'pkcs11'",
-                url.scheme()
-            )));
+        let params = parse_uri(uri)?;
+        if let Some(token) = params.get("token")
+            && token != slot.token_label()?.as_bytes()
+        {
+            return Err(HsmError::UriParse(
+                "URI token does not match selected slot".into(),
+            ));
         }
-
-        // Parse query parameters
-        let params: HashMap<String, String> = url
-            .query_pairs()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
-
-        // Prefer CKA_ID lookup
-        if let Some(id_hex) = params.get("id") {
-            let id = hex::decode(id_hex)
-                .map_err(|e| HsmError::UriParse(format!("Invalid hex ID '{id_hex}': {e}")))?;
-            return Self::find_by_id(slot, &id, algorithm);
+        if params.get("type").is_some_and(|kind| kind != b"private") {
+            return Err(HsmError::UriParse("a private key URI is required".into()));
         }
-
-        // Fallback to CKA_LABEL
+        let mut selector = Vec::new();
+        if let Some(id) = params.get("id") {
+            selector.push(Attribute::Id(id.clone()));
+        }
         if let Some(label) = params.get("object") {
-            return Self::find_by_label(slot, label, algorithm);
+            selector.push(Attribute::Label(label.clone()));
         }
-
-        Err(HsmError::UriParse(
-            "URI must contain 'id' or 'object' attribute".to_string(),
-        ))
+        if selector.is_empty() {
+            return Err(HsmError::UriParse("URI must contain id or object".into()));
+        }
+        Self::find_selected(slot, selector, algorithm)
     }
 
     /// Get the private key handle.
@@ -498,5 +447,73 @@ mod tests {
         let uri = "pkcs11:token=MyToken;object=MyKey;type=private";
         let url = Url::parse(uri).unwrap();
         assert_eq!(url.scheme(), "pkcs11");
+    }
+}
+
+/// Parse the supported RFC 7512 selectors without normalizing binary IDs.
+pub fn parse_uri(uri: &str) -> HsmResult<HashMap<String, Vec<u8>>> {
+    let url = Url::parse(uri).map_err(|e| HsmError::UriParse(e.to_string()))?;
+
+    if url.scheme() != "pkcs11" {
+        return Err(HsmError::UriParse(format!(
+            "Invalid scheme '{}', expected 'pkcs11'",
+            url.scheme()
+        )));
+    }
+
+    if url.query().is_some() || url.fragment().is_some() || url.has_host() {
+        return Err(HsmError::UriParse(
+            "PKCS#11 URI query, fragment, and authority are unsupported".into(),
+        ));
+    }
+    // RFC 7512 attributes live in the opaque path, separated by ';'.
+    let mut params: HashMap<String, Vec<u8>> = HashMap::new();
+    for part in url.path().split(';') {
+        let (name, value) = part
+            .split_once('=')
+            .ok_or_else(|| HsmError::UriParse("invalid PKCS#11 attribute".into()))?;
+        if !matches!(name, "token" | "object" | "id" | "type") {
+            return Err(HsmError::UriParse("unsupported PKCS#11 selector".into()));
+        }
+        let raw = value.as_bytes();
+        for (i, b) in raw.iter().enumerate() {
+            if *b == b'%'
+                && (i + 2 >= raw.len()
+                    || !raw[i + 1].is_ascii_hexdigit()
+                    || !raw[i + 2].is_ascii_hexdigit())
+            {
+                return Err(HsmError::UriParse("invalid percent escape".into()));
+            }
+        }
+        let bytes = percent_encoding::percent_decode_str(value).collect::<Vec<_>>();
+        if params.insert(name.to_string(), bytes).is_some() {
+            return Err(HsmError::UriParse("duplicate PKCS#11 attribute".into()));
+        }
+    }
+    Ok(params)
+}
+
+#[cfg(test)]
+mod uri_regressions {
+    use super::*;
+    #[test]
+    fn standard_binary_id_and_percent_encoded_label() {
+        let parsed =
+            parse_uri("pkcs11:token=Synthetic%20token;object=TLS%3Bkey;id=%00%ff;type=private")
+                .unwrap();
+        assert_eq!(parsed["token"], b"Synthetic token");
+        assert_eq!(parsed["object"], b"TLS;key");
+        assert_eq!(parsed["id"], [0, 255]);
+    }
+    #[test]
+    fn ambiguous_or_ignored_selectors_are_rejected() {
+        for uri in [
+            "pkcs11:object=a;object=b",
+            "pkcs11:object=a%2",
+            "pkcs11:object=a;unknown=x",
+            "pkcs11:object=a?pin-value=synthetic",
+        ] {
+            assert!(parse_uri(uri).is_err(), "{uri}");
+        }
     }
 }

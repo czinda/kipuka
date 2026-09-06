@@ -115,6 +115,13 @@ pub(crate) fn pg_sql_dynamic(s: String) -> String {
 ///
 /// The `resolved_url` is the pre-resolved database URL from `SecretResolver`.
 pub async fn init_pool(config: &DbConfig, resolved_url: &str) -> Result<(Db, DbKind), KipukaError> {
+    // The sqlx `Any` driver requires the backend drivers to be registered
+    // before any pool can connect.  This is idempotent (guarded internally by
+    // a `Once`), so calling it here makes `init_pool` self-sufficient for every
+    // caller — the binary, embedded users, and integration tests that never run
+    // `main` — instead of relying on a separate setup call elsewhere.
+    sqlx::any::install_default_drivers();
+
     let url = resolved_url.to_string();
 
     let kind = DbKind::from_url(&url);
@@ -124,7 +131,16 @@ pub async fn init_pool(config: &DbConfig, resolved_url: &str) -> Result<(Db, DbK
         .acquire_timeout(std::time::Duration::from_secs(config.connect_timeout_secs))
         .max_lifetime(std::time::Duration::from_secs(config.max_lifetime_secs));
 
-    let pool_opts = if let Some(max) = config.max_connections {
+    let in_memory =
+        kind == DbKind::Sqlite && (url.contains(":memory:") || url.contains("mode=memory"));
+    let pool_opts = if in_memory {
+        // An ephemeral database must retain its one schema-bearing connection.
+        pool_opts
+            .max_connections(1)
+            .min_connections(1)
+            .max_lifetime(None)
+            .idle_timeout(None)
+    } else if let Some(max) = config.max_connections {
         pool_opts.max_connections(max)
     } else {
         match kind {
@@ -133,7 +149,7 @@ pub async fn init_pool(config: &DbConfig, resolved_url: &str) -> Result<(Db, DbK
         }
     };
 
-    let pool_opts = if let Some(min) = config.min_connections {
+    let pool_opts = if let Some(min) = config.min_connections.filter(|_| !in_memory) {
         pool_opts.min_connections(min)
     } else {
         pool_opts
@@ -162,6 +178,7 @@ pub async fn init_pool(config: &DbConfig, resolved_url: &str) -> Result<(Db, DbK
 /// (WAL concurrency benefit).  For `:memory:` and non-SQLite backends,
 /// returns a clone of the primary pool.
 pub async fn init_ro_pool(
+    primary: &Db,
     _config: &DbConfig,
     kind: DbKind,
     resolved_url: &str,
@@ -169,14 +186,8 @@ pub async fn init_ro_pool(
     let url = resolved_url.to_string();
 
     // Only SQLite file-backed databases benefit from a separate RO pool
-    if kind != DbKind::Sqlite || url.contains(":memory:") {
-        // For non-SQLite or in-memory: caller should clone the primary pool
-        let pool = sqlx::any::AnyPoolOptions::new()
-            .max_connections(1)
-            .connect(&url)
-            .await
-            .map_err(|e| KipukaError::Db(format!("failed to connect RO pool: {e}")))?;
-        return Ok(pool);
+    if kind != DbKind::Sqlite || (url.contains(":memory:") || url.contains("mode=memory")) {
+        return Ok(primary.clone());
     }
 
     // Build a read-only URL for SQLite
@@ -203,17 +214,12 @@ pub async fn begin_write(
     pool: &Db,
     kind: DbKind,
 ) -> Result<sqlx::Transaction<'_, sqlx::Any>, KipukaError> {
-    if kind == DbKind::Sqlite {
-        // SQLite: BEGIN IMMEDIATE prevents SQLITE_BUSY_SNAPSHOT
-        sqlx::query("BEGIN IMMEDIATE")
-            .execute(pool)
-            .await
-            .map_err(|e| KipukaError::Db(format!("BEGIN IMMEDIATE failed: {e}")))?;
+    let tx = if kind == DbKind::Sqlite {
+        pool.begin_with("BEGIN IMMEDIATE").await
+    } else {
+        pool.begin().await
     }
-    let tx = pool
-        .begin()
-        .await
-        .map_err(|e| KipukaError::Db(format!("begin transaction failed: {e}")))?;
+    .map_err(|e| KipukaError::Db(format!("begin transaction failed: {e}")))?;
     Ok(tx)
 }
 

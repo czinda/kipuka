@@ -84,6 +84,7 @@ pub async fn post_fullcmc(
 ) -> Result<Response, KipukaError> {
     let ca_id = label.ca_id();
     let identity = &auth.0.identity;
+    state.admit_enrollment(identity, "fullcmc").await?;
 
     // Check that fullcmc is enabled in the configuration.
     if !state.config.est.fullcmc {
@@ -232,9 +233,9 @@ pub async fn post_fullcmc(
     let sender_nonce = extract_sender_nonce(&pki_data.control_sequence);
 
     let control_names: Vec<String> = pki_data
-        .controls
+        .control_sequence
         .iter()
-        .map(|c| format!("{:?}", c.oid))
+        .map(|c| format!("{:?}", c.attr_type))
         .collect();
 
     tracing::info!(
@@ -279,10 +280,17 @@ pub async fn post_fullcmc(
     let mut body_part_ids: Vec<u32> = Vec::new();
     let mut failed_body_part_ids: Vec<u32> = Vec::new();
 
-    for entry in &pki_data.req_sequence {
+    let requests = crate::ca::protocol::cmc_requests(&pki_data)?;
+    for entry in &requests {
         let body_part_id = entry.body_part_id;
 
-        if entry.request_type == synta_cmc::parser::RequestType::Pkcs10 {
+        if entry.request_type == 0 {
+            crate::auth::enroll_authz::authorize_csr_der(
+                &entry.der,
+                identity,
+                &label.enroll_policy(),
+            )
+            .map_err(KipukaError::Forbidden)?;
             match crate::ca::issue::issue_certificate(
                 &entry.der,
                 &profile,
@@ -401,6 +409,15 @@ pub async fn post_fullcmc(
     let pki_response_der = resp_builder
         .build()
         .map_err(|e| KipukaError::Ca(format!("CMC PKIResponse build failed: {e}")))?;
+
+    let pki_response_der = crate::ca::protocol::cmc_transaction(&pki_response_der, transaction_id)?;
+    let pki_response_der = crate::ca::protocol::signed_cmc(
+        &pki_response_der,
+        &issued_certs,
+        &ca.cert_der,
+        resolved_key.as_signing_key(),
+        &ca.hash_algorithm,
+    )?;
 
     // Step 6: Encode the response as base64.
     let body = encode_est_base64(&pki_response_der);

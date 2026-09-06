@@ -144,12 +144,42 @@ pub async fn post_star_order(
         ));
     }
 
-    // Create the STAR order via the manager.
+    crate::auth::enroll_authz::authorize_csr_der(&csr_der, identity, &label.enroll_policy())
+        .map_err(KipukaError::Forbidden)?;
+    let ca = state.get_ca(ca_id).ok_or(KipukaError::NotFound)?;
+    let ca_cfg = state
+        .config
+        .cas
+        .iter()
+        .find(|c| c.id == ca_id)
+        .ok_or(KipukaError::NotFound)?;
+    let resolved_key = crate::ca::issue::resolve_signing_key(ca_cfg, state.hsm.as_ref()).await?;
+    let profile = crate::ca::issue::EnrollmentProfile {
+        max_validity_days: label
+            .max_validity_days
+            .unwrap_or(ca.validity_days)
+            .min(crate::ca::issue::cab_forum_max_validity_days()),
+        max_validity_seconds: Some(renewal_interval_secs),
+        max_not_after: Some(chrono::Utc::now() + chrono::Duration::days(i64::from(lifetime_days))),
+        ..Default::default()
+    };
+    crate::audit::record_checked(
+        &state.db,
+        &state.audit,
+        crate::audit::AuditEvent::new(crate::audit::AuditEventType::EnrollRequest)
+            .with_operator(identity)
+            .with_detail("STAR admission"),
+    )
+    .await?;
+    let _operation = star_manager.operation_guard().await;
     let order = star_manager
         .create_order(
             identity.clone(),
-            String::new(), // key_type — extracted from CSR in production
-            "default".to_owned(),
+            format!(
+                "{:?}",
+                super::serverkeygen::detect_key_type_from_csr(&csr_der)
+            ),
+            serde_json::to_string(&profile).map_err(|e| KipukaError::Internal(e.to_string()))?,
             renewal_interval_secs,
             lifetime_days,
             ca_id.to_owned(),
@@ -157,102 +187,90 @@ pub async fn post_star_order(
             Some(identity.clone()),
         )
         .map_err(star_error_to_kipuka)?;
-
     let order_id = order.id.clone();
+    let issued: Result<_, KipukaError> = async {
+        // Issue the first certificate.
+        let result = crate::ca::issue::issue_certificate(
+            &csr_der,
+            &profile,
+            &ca.cert_der,
+            resolved_key.as_signing_key(),
+            &ca.hash_algorithm,
+            ca.ocsp_url.as_deref(),
+            ca.crl_url.as_deref(),
+        )
+        .map_err(|e| KipukaError::Ca(format!("STAR certificate issuance failed: {e}")))?;
 
-    // Issue the first certificate using the same pattern as simpleenroll.
-
-    // Look up the CA backend.
-    let ca = state.get_ca(ca_id).ok_or(KipukaError::NotFound)?;
-
-    // Look up the CA config to get key material path or PKCS#11 URI.
-    let ca_cfg = state
-        .config
-        .cas
-        .iter()
-        .find(|c| c.id == ca_id)
-        .ok_or_else(|| KipukaError::Ca(format!("CA config not found for id={ca_id}")))?;
-
-    // Resolve key material.
-    let resolved_key = crate::ca::issue::resolve_signing_key(ca_cfg, state.hsm.as_ref()).await?;
-
-    // Build an enrollment profile scoped to the STAR renewal interval.
-    // STAR certificates are short-lived: validity = renewal_interval.
-    let validity_days = (renewal_interval_secs as u32 / 86400).max(1);
-    let profile = crate::ca::issue::EnrollmentProfile {
-        max_validity_days: validity_days,
-        ..crate::ca::issue::EnrollmentProfile::default()
-    };
-
-    // Issue the first certificate.
-    let result = crate::ca::issue::issue_certificate(
-        &csr_der,
-        &profile,
-        &ca.cert_der,
-        resolved_key.as_signing_key(),
-        &ca.hash_algorithm,
-        ca.ocsp_url.as_deref(),
-        ca.crl_url.as_deref(),
-    )
-    .map_err(|e| KipukaError::Ca(format!("STAR certificate issuance failed: {e}")))?;
-
-    // Store the first certificate in the order.
-    let first_cert = StarCertificate {
-        certificate_der: result.certificate_der.clone(),
-        serial_number: result.serial_number.clone(),
-        not_before: result.not_before,
-        not_after: result.not_after,
-        renewal_number: 0,
-        star_order_id: order_id.clone(),
-    };
-    star_manager
-        .store_renewed_certificate(&order_id, first_cert.clone())
-        .map_err(star_error_to_kipuka)?;
-
-    // Persist order to database.
-    sqlx::query(
-        "INSERT INTO star_orders \
+        // Store the first certificate in the order.
+        let first_cert = StarCertificate {
+            certificate_der: result.certificate_der.clone(),
+            serial_number: result.serial_number.clone(),
+            not_before: result.not_before,
+            not_after: result.not_after,
+            renewal_number: 1,
+            star_order_id: order_id.clone(),
+        };
+        let mut tx = crate::db::begin_write(&state.db, state.db_kind).await?;
+        // Persist order to database.
+        sqlx::query(crate::db::pg_sql(
+            "INSERT INTO star_orders \
          (id, subject_dn, key_type, profile, renewal_interval_secs, \
-          lifetime_end, max_renewals, status, requestor_dn, ca_id, csr_der) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)",
-    )
-    .bind(&order_id)
-    .bind(&order.subject_dn)
-    .bind(&order.key_type)
-    .bind(&order.profile)
-    .bind(renewal_interval_secs as i64)
-    .bind(order.lifetime_end.to_rfc3339())
-    .bind(order.max_renewals as i64)
-    .bind(identity)
-    .bind(ca_id)
-    .bind(&csr_der)
-    .execute(&state.db)
-    .await?;
+          lifetime_end, max_renewals, current_renewals, status, requestor_dn, ca_id, csr_der) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'active', ?, ?, ?)",
+        ))
+        .bind(&order_id)
+        .bind(&order.subject_dn)
+        .bind(&order.key_type)
+        .bind(&order.profile)
+        .bind(renewal_interval_secs as i64)
+        .bind(order.lifetime_end.to_rfc3339())
+        .bind(order.max_renewals as i64)
+        .bind(identity)
+        .bind(ca_id)
+        .bind(&csr_der)
+        .execute(&mut *tx)
+        .await?;
 
-    // Persist the first certificate to the star_certificates table.
-    sqlx::query(
-        "INSERT INTO star_certificates \
+        // Persist the first certificate to the star_certificates table.
+        sqlx::query(crate::db::pg_sql(
+            "INSERT INTO star_certificates \
          (star_order_id, serial_number, certificate_der, not_before, not_after, renewal_number) \
          VALUES (?, ?, ?, ?, ?, ?)",
-    )
-    .bind(&order_id)
-    .bind(&first_cert.serial_number)
-    .bind(&first_cert.certificate_der)
-    .bind(first_cert.not_before.to_rfc3339())
-    .bind(first_cert.not_after.to_rfc3339())
-    .bind(first_cert.renewal_number as i64)
-    .execute(&state.db)
-    .await?;
+        ))
+        .bind(&order_id)
+        .bind(&first_cert.serial_number)
+        .bind(&first_cert.certificate_der)
+        .bind(first_cert.not_before.to_rfc3339())
+        .bind(first_cert.not_after.to_rfc3339())
+        .bind(first_cert.renewal_number as i64)
+        .execute(&mut *tx)
+        .await?;
 
-    state
-        .record_audit_event(
-            "star_order_created",
-            &format!(
-                "order_id={order_id}, ca_id={ca_id}, identity={identity}, serial={}",
+        crate::ca::issue::persist_certificate_on(&mut *tx, ca_id, &profile.name, &result).await?;
+        crate::audit::record_issuance_in_transaction(
+            &mut tx,
+            &state.audit,
+            ca_id,
+            format!(
+                "STAR order={order_id}, identity={identity}, serial={}",
                 result.serial_number
             ),
         )
-        .await;
+        .await?;
+        crate::audit::commit_issuance(tx, &state.audit).await?;
+        star_manager
+            .store_renewed_certificate(&order_id, first_cert)
+            .map_err(star_error_to_kipuka)?;
+        Ok(result)
+    }
+    .await;
+    let result = match issued {
+        Ok(result) => result,
+        Err(error) => {
+            star_manager.remove_order(&order_id);
+            return Err(error);
+        }
+    };
 
     // Wrap the issued certificate in PKCS#7 certs-only (RFC 7030 §4.2.3).
     let pkcs7_der = crate::routes::cacerts::build_certs_only_pkcs7(std::slice::from_ref(
@@ -383,17 +401,25 @@ pub async fn delete_star_order(
         "STAR order cancellation request"
     );
 
-    // Cancel via the STAR manager.
+    let _operation = star_manager.operation_guard().await;
+    let order = star_manager
+        .get_order(&order_id)
+        .ok_or(KipukaError::NotFound)?;
+    if order.requestor_dn.as_deref() != Some(identity.as_str()) {
+        return Err(KipukaError::Forbidden(
+            "only the order owner may cancel".into(),
+        ));
+    }
+    sqlx::query(crate::db::pg_sql(
+        "UPDATE star_orders SET status = 'cancelled', cancelled_at = ? WHERE id = ?",
+    ))
+    .bind(chrono::Utc::now().to_rfc3339())
+    .bind(&order_id)
+    .execute(&state.db)
+    .await?;
     star_manager
         .cancel_order(&order_id)
         .map_err(star_error_to_kipuka)?;
-
-    // Update database.
-    sqlx::query("UPDATE star_orders SET status = 'cancelled', cancelled_at = ? WHERE id = ?")
-        .bind(chrono::Utc::now().to_rfc3339())
-        .bind(&order_id)
-        .execute(&state.db)
-        .await?;
 
     state
         .record_audit_event(

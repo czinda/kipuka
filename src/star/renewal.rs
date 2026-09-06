@@ -68,6 +68,7 @@ async fn renewal_cycle(
     let span = tracing::info_span!("star_renewal_cycle");
     let _enter = span.enter();
 
+    let _guard = star_manager.operation_guard().await;
     // Phase 1: Remove expired orders.
     let expired_count = star_manager.cleanup_expired();
 
@@ -115,11 +116,30 @@ async fn renewal_cycle(
         };
 
         // Build an enrollment profile scoped to this renewal interval.
-        let validity_days = (order.renewal_interval.as_secs() as u32 / 86400).max(1);
-        let profile = EnrollmentProfile {
-            max_validity_days: validity_days,
-            ..EnrollmentProfile::default()
+        let validity_secs = order.renewal_interval.as_secs();
+        let mut profile: EnrollmentProfile = match serde_json::from_str(&order.profile) {
+            Ok(profile) => profile,
+            Err(error) => {
+                warn!(order_id = %id, %error, "STAR order lacks persisted authorization policy");
+                failed += 1;
+                continue;
+            }
         };
+        profile.max_validity_seconds = Some(validity_secs);
+        profile.max_not_after = Some(order.lifetime_end);
+        if let Err(error) = crate::audit::record_checked(
+            db,
+            audit,
+            AuditEvent::new(AuditEventType::EnrollRequest)
+                .with_ca_id(&order.ca_id)
+                .with_detail(format!("STAR renewal for {id}")),
+        )
+        .await
+        {
+            warn!(%error, "STAR renewal rejected by audit policy");
+            failed += 1;
+            continue;
+        }
 
         // Resolve key material — HSM-backed or PEM from disk.
         let ca_cfg = match ca_configs.iter().find(|c| c.id == order.ca_id) {
@@ -169,58 +189,33 @@ async fn renewal_cycle(
                     star_order_id: id.clone(),
                 };
 
-                // Store the renewed certificate in the manager.
-                if let Err(e) = star_manager.store_renewed_certificate(id, cert.clone()) {
-                    warn!(
-                        order_id = %id,
-                        error = %e,
-                        "failed to store renewed certificate in manager"
-                    );
+                let issuer_dn = match synta_certificate::Certificate::from_der(&ca.cert_der) {
+                    Ok(parsed) => synta_certificate::format_dn(parsed.tbs_certificate.subject.0),
+                    Err(error) => {
+                        warn!(%error, "cannot parse STAR issuer");
+                        failed += 1;
+                        continue;
+                    }
+                };
+                // Commit inventory, renewal and order progress atomically before publication.
+                if let Err(error) =
+                    persist_renewal(db, &order, &cert, &issuer_dn, &profile.name, audit).await
+                {
+                    error!(order_id = %id, %error, "STAR renewal transaction failed");
                     failed += 1;
                     continue;
                 }
-
-                // Persist to the database.
-                if let Err(e) = persist_certificate(db, id, &cert).await {
-                    error!(
-                        order_id = %id,
-                        serial = %cert.serial_number,
-                        error = %e,
-                        "failed to persist renewed certificate to database"
-                    );
-                    // Don't fail the renewal — the in-memory state is
-                    // already updated.  The DB will catch up on the next
-                    // successful write or via a reconciliation pass.
+                if let Err(error) = star_manager.store_renewed_certificate(id, cert.clone()) {
+                    error!(order_id = %id, %error, "committed STAR renewal could not be published");
+                    failed += 1;
+                    continue;
                 }
-
-                // Update the renewal counter in the database.
-                if let Err(e) = update_renewal_count(db, id, order.current_renewals + 1).await {
-                    error!(
-                        order_id = %id,
-                        error = %e,
-                        "failed to update renewal count in database"
-                    );
-                }
-
-                // Record the audit event.
-                crate::audit::record(
-                    db,
-                    audit,
-                    AuditEvent::new(AuditEventType::CertIssue)
-                        .with_ca_id(&order.ca_id)
-                        .with_detail(format!(
-                            "STAR renewal #{} for order {id}, serial={}, validity={validity_days}d",
-                            order.current_renewals + 1,
-                            result.serial_number,
-                        )),
-                )
-                .await;
 
                 info!(
                     order_id = %id,
                     serial = %result.serial_number,
                     renewal = order.current_renewals + 1,
-                    validity_days,
+                    validity_secs,
                     "STAR certificate renewed"
                 );
                 renewed += 1;
@@ -245,40 +240,51 @@ async fn renewal_cycle(
     );
 }
 
-/// Insert a renewed certificate into the `star_certificates` table.
-async fn persist_certificate(
+/// Commit one renewal with compare-and-set progress to prevent duplicate publication.
+async fn persist_renewal(
     db: &sqlx::AnyPool,
-    order_id: &str,
+    order: &crate::star::StarOrder,
     cert: &StarCertificate,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "INSERT INTO star_certificates \
-         (star_order_id, serial_number, certificate_der, not_before, not_after, renewal_number) \
-         VALUES (?, ?, ?, ?, ?, ?)",
-    )
-    .bind(order_id)
-    .bind(&cert.serial_number)
-    .bind(&cert.certificate_der)
-    .bind(cert.not_before.to_rfc3339())
-    .bind(cert.not_after.to_rfc3339())
-    .bind(cert.renewal_number as i64)
-    .execute(db)
-    .await?;
-
-    Ok(())
-}
-
-/// Update the current renewal count on a STAR order row.
-async fn update_renewal_count(
-    db: &sqlx::AnyPool,
-    order_id: &str,
-    count: u32,
-) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE star_orders SET current_renewals = ? WHERE id = ?")
-        .bind(count as i64)
-        .bind(order_id)
-        .execute(db)
+    issuer_dn: &str,
+    profile_name: &str,
+    audit: &AuditState,
+) -> Result<(), crate::error::KipukaError> {
+    let mut tx = db.begin().await?;
+    let sql = if cert.not_after.timestamp() >= order.lifetime_end.timestamp() {
+        "UPDATE star_orders SET current_renewals = ?, status = 'completed' WHERE id = ? AND current_renewals = ? AND status = 'active'"
+    } else {
+        "UPDATE star_orders SET current_renewals = ?, status = 'active' WHERE id = ? AND current_renewals = ? AND status = 'active'"
+    };
+    let updated = sqlx::query(crate::db::pg_sql(sql))
+        .bind(cert.renewal_number as i64)
+        .bind(&order.id)
+        .bind(order.current_renewals as i64)
+        .execute(&mut *tx)
         .await?;
-
+    if updated.rows_affected() != 1 {
+        return Err(sqlx::Error::RowNotFound.into());
+    }
+    sqlx::query(crate::db::pg_sql(
+        "INSERT INTO star_certificates (star_order_id, serial_number, certificate_der, not_before, not_after, renewal_number) VALUES (?, ?, ?, ?, ?, ?)"))
+        .bind(&order.id).bind(&cert.serial_number).bind(&cert.certificate_der)
+        .bind(cert.not_before.to_rfc3339()).bind(cert.not_after.to_rfc3339())
+        .bind(cert.renewal_number as i64).execute(&mut *tx).await?;
+    sqlx::query(crate::db::pg_sql(
+        "INSERT INTO certificates (serial, subject_dn, issuer_dn, not_before, not_after, der_encoded, ca_id, profile, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')"))
+        .bind(&cert.serial_number).bind(&order.subject_dn).bind(issuer_dn)
+        .bind(cert.not_before.to_rfc3339()).bind(cert.not_after.to_rfc3339())
+        .bind(&cert.certificate_der).bind(&order.ca_id).bind(profile_name)
+        .execute(&mut *tx).await?;
+    crate::audit::record_issuance_in_transaction(
+        &mut tx,
+        audit,
+        &order.ca_id,
+        format!(
+            "STAR renewal #{} for order {}, serial={}",
+            cert.renewal_number, order.id, cert.serial_number
+        ),
+    )
+    .await?;
+    crate::audit::commit_issuance(tx, audit).await?;
     Ok(())
 }

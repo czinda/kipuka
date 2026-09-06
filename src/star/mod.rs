@@ -94,7 +94,7 @@ pub enum StarOrderStatus {
     Active,
     /// The subscriber or IdO cancelled the order; no further renewals.
     Cancelled,
-    /// All scheduled renewals have been issued (`max_renewals` reached).
+    /// The current certificate covers the complete order lifetime.
     Completed,
     /// The order's `lifetime_end` has passed.
     Expired,
@@ -163,11 +163,123 @@ pub struct StarOrder {
 pub struct StarManager {
     /// Active STAR orders keyed by order ID.
     orders: DashMap<String, StarOrder>,
+    operation_lock: tokio::sync::Mutex<()>,
     /// STAR subsystem configuration.
     config: crate::config::StarConfig,
 }
 
 impl StarManager {
+    /// Serialize admission, cancellation and renewal across awaits.
+    pub async fn operation_guard(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.operation_lock.lock().await
+    }
+
+    /// Restore committed orders and their latest certificates before serving requests.
+    pub async fn restore(&self, db: &sqlx::AnyPool) -> Result<(), StarError> {
+        use sqlx::Row;
+        let rows = sqlx::query("SELECT id, subject_dn, key_type, profile, renewal_interval_secs, lifetime_end, max_renewals, current_renewals, CASE WHEN status = 'active' THEN 'active' WHEN status = 'completed' THEN 'completed' WHEN status = 'cancelled' THEN 'cancelled' ELSE 'expired' END AS status, requestor_dn, ca_id, csr_der, created_at, cancelled_at FROM star_orders").fetch_all(db).await.map_err(|e| StarError::DatabaseError(e.to_string()))?;
+        let parse = |s: String| {
+            DateTime::parse_from_rfc3339(&s)
+                .map(|v| v.with_timezone(&Utc))
+                .map_err(|e| StarError::DatabaseError(e.to_string()))
+        };
+        let mut restored = Vec::new();
+        for row in rows {
+            let get = |key: &str| {
+                row.try_get::<String, _>(key)
+                    .map_err(|e| StarError::DatabaseError(e.to_string()))
+            };
+            let num = |key: &str| {
+                row.try_get::<i64, _>(key)
+                    .map_err(|e| StarError::DatabaseError(e.to_string()))
+            };
+            let id = get("id")?;
+            let status = match get("status")?.as_str() {
+                "active" => StarOrderStatus::Active,
+                "completed" => StarOrderStatus::Completed,
+                "cancelled" => StarOrderStatus::Cancelled,
+                "expired" => StarOrderStatus::Expired,
+                _ => {
+                    return Err(StarError::DatabaseError(
+                        "invalid stored order status".into(),
+                    ));
+                }
+            };
+            let latest = sqlx::query(crate::db::pg_sql("SELECT serial_number, certificate_der, not_before, not_after, renewal_number FROM star_certificates WHERE star_order_id = ? ORDER BY renewal_number DESC LIMIT 1")).bind(&id).fetch_optional(db).await.map_err(|e| StarError::DatabaseError(e.to_string()))?;
+            let certificate = if let Some(c) = latest {
+                Some(StarCertificate {
+                    serial_number: c
+                        .try_get("serial_number")
+                        .map_err(|e| StarError::DatabaseError(e.to_string()))?,
+                    certificate_der: c
+                        .try_get("certificate_der")
+                        .map_err(|e| StarError::DatabaseError(e.to_string()))?,
+                    not_before: parse(
+                        c.try_get("not_before")
+                            .map_err(|e| StarError::DatabaseError(e.to_string()))?,
+                    )?,
+                    not_after: parse(
+                        c.try_get("not_after")
+                            .map_err(|e| StarError::DatabaseError(e.to_string()))?,
+                    )?,
+                    renewal_number: c
+                        .try_get::<i64, _>("renewal_number")
+                        .map_err(|e| StarError::DatabaseError(e.to_string()))?
+                        as u32,
+                    star_order_id: id.clone(),
+                })
+            } else {
+                None
+            };
+            let cancelled: Option<String> = row
+                .try_get("cancelled_at")
+                .map_err(|e| StarError::DatabaseError(e.to_string()))?;
+            restored.push(StarOrder {
+                id,
+                subject_dn: get("subject_dn")?,
+                key_type: get("key_type")?,
+                profile: get("profile")?,
+                renewal_interval: Duration::from_secs(num("renewal_interval_secs")? as u64),
+                lifetime_end: parse(get("lifetime_end")?)?,
+                max_renewals: num("max_renewals")? as u32,
+                current_renewals: num("current_renewals")? as u32,
+                status,
+                requestor_dn: row
+                    .try_get("requestor_dn")
+                    .map_err(|e| StarError::DatabaseError(e.to_string()))?,
+                ca_id: get("ca_id")?,
+                csr_der: row
+                    .try_get("csr_der")
+                    .map_err(|e| StarError::DatabaseError(e.to_string()))?,
+                created_at: parse(get("created_at")?)?,
+                cancelled_at: cancelled.map(parse).transpose()?,
+                current_certificate: certificate,
+            });
+        }
+        self.orders.clear();
+        for mut order in restored {
+            if order.status == StarOrderStatus::Completed
+                && order.lifetime_end > Utc::now()
+                && order
+                    .current_certificate
+                    .as_ref()
+                    .is_none_or(|cert| cert.not_after.timestamp() < order.lifetime_end.timestamp())
+            {
+                sqlx::query(crate::db::pg_sql("UPDATE star_orders SET status = 'active' WHERE id = ? AND status = 'completed'"))
+                    .bind(&order.id).execute(db).await.map_err(|e| StarError::DatabaseError(e.to_string()))?;
+                order.status = StarOrderStatus::Active;
+            }
+            self.orders.insert(order.id.clone(), order);
+        }
+        self.cleanup_expired();
+        Ok(())
+    }
+
+    /// Remove a provisional admission after its database transaction fails.
+    pub fn remove_order(&self, id: &str) {
+        self.orders.remove(id);
+    }
+
     /// Create a new `StarManager` with the given configuration.
     pub fn new(config: crate::config::StarConfig) -> Self {
         info!(
@@ -179,6 +291,7 @@ impl StarManager {
         );
         Self {
             orders: DashMap::new(),
+            operation_lock: tokio::sync::Mutex::new(()),
             config,
         }
     }
@@ -203,6 +316,11 @@ impl StarManager {
         csr_der: Vec<u8>,
         requestor_dn: Option<String>,
     ) -> Result<StarOrder, StarError> {
+        if lifetime_days == 0 || lifetime_days > self.config.max_lifetime_days {
+            return Err(StarError::IssuanceError(
+                "STAR lifetime is outside configured bounds".into(),
+            ));
+        }
         // Validate renewal interval against configured bounds.
         if renewal_interval_secs < self.config.min_renewal_interval_secs
             || renewal_interval_secs > self.config.max_renewal_interval_secs
@@ -236,7 +354,15 @@ impl StarManager {
         let now = Utc::now();
         let lifetime_end = now + chrono::Duration::days(i64::from(lifetime_days));
         let total_lifetime_secs = (lifetime_end - now).num_seconds().max(0) as u64;
-        let max_renewals = (total_lifetime_secs / renewal_interval_secs) as u32;
+        // Informational estimate includes overlap. Completion is governed by
+        // certificate coverage of lifetime_end, never this estimate.
+        let cadence = ((renewal_interval_secs as f64) * (1.0 - self.config.pre_renewal_factor))
+            .floor()
+            .max(1.0) as u64;
+        let max_renewals = total_lifetime_secs
+            .div_ceil(cadence)
+            .saturating_add(1)
+            .min(u32::MAX as u64) as u32;
 
         let id = Uuid::new_v4().to_string();
         let order = StarOrder {
@@ -280,6 +406,10 @@ impl StarManager {
             .get(star_id)
             .ok_or_else(|| StarError::OrderNotFound(star_id.to_owned()))?;
 
+        if order.lifetime_end <= Utc::now() {
+            return Err(StarError::OrderExpired(star_id.to_owned()));
+        }
+
         match order.status {
             StarOrderStatus::Cancelled => {
                 return Err(StarError::OrderCancelled(star_id.to_owned()));
@@ -299,7 +429,7 @@ impl StarManager {
     /// Store a newly renewed certificate in the order.
     ///
     /// Increments the renewal counter and transitions the order to
-    /// `Completed` if `max_renewals` has been reached.
+    /// `Completed` once the certificate covers the complete order lifetime.
     pub fn store_renewed_certificate(
         &self,
         star_id: &str,
@@ -328,13 +458,14 @@ impl StarManager {
             "stored renewed STAR certificate"
         );
 
+        let covers_lifetime = cert.not_after.timestamp() >= order.lifetime_end.timestamp();
         order.current_certificate = Some(cert);
 
-        if order.current_renewals >= order.max_renewals {
+        if covers_lifetime {
             info!(
                 order_id = %star_id,
                 renewals = order.current_renewals,
-                "STAR order completed (max renewals reached)"
+                "STAR order completed (certificate covers lifetime)"
             );
             order.status = StarOrderStatus::Completed;
         }
@@ -417,7 +548,7 @@ impl StarManager {
     ///
     /// An order needs renewal when:
     /// 1. Its status is `Active`.
-    /// 2. It has not exhausted `max_renewals`.
+    /// 2. It has not completed coverage of the order lifetime.
     /// 3. The current certificate's expiry minus the pre-renewal window
     ///    is in the past (or no certificate has been issued yet).
     ///
@@ -425,17 +556,17 @@ impl StarManager {
     /// For example, with a 24-hour interval and factor 0.5, renewal
     /// triggers when 12 hours remain on the current certificate.
     pub fn orders_needing_renewal(&self) -> Vec<String> {
-        let now = Utc::now();
+        self.orders_needing_renewal_at(Utc::now())
+    }
+
+    fn orders_needing_renewal_at(&self, now: DateTime<Utc>) -> Vec<String> {
         let factor = self.config.pre_renewal_factor;
         let mut needs_renewal = Vec::new();
 
         for entry in self.orders.iter() {
             let order = entry.value();
 
-            if order.status != StarOrderStatus::Active {
-                continue;
-            }
-            if order.current_renewals >= order.max_renewals {
+            if order.status != StarOrderStatus::Active || order.lifetime_end <= now {
                 continue;
             }
 
@@ -499,5 +630,75 @@ mod humantime_serde {
     {
         let secs = u64::deserialize(deserializer)?;
         Ok(Duration::from_secs(secs))
+    }
+}
+
+#[cfg(test)]
+mod review13_tests {
+    use super::*;
+
+    #[test]
+    fn overlapping_renewals_cover_the_entire_order_lifetime() {
+        for factor in [0.1, 0.5, 0.9] {
+            let manager = StarManager::new(crate::config::StarConfig {
+                pre_renewal_factor: factor,
+                ..Default::default()
+            });
+            let order = manager
+                .create_order(
+                    "synthetic".into(),
+                    "rsa".into(),
+                    "{}".into(),
+                    3600,
+                    1,
+                    "default".into(),
+                    vec![],
+                    None,
+                )
+                .unwrap();
+            let mut start = order.created_at;
+            let mut issued = 0;
+            loop {
+                let end = (start + chrono::Duration::hours(1)).min(order.lifetime_end);
+                issued += 1;
+                manager
+                    .store_renewed_certificate(
+                        &order.id,
+                        StarCertificate {
+                            certificate_der: vec![],
+                            serial_number: issued.to_string(),
+                            not_before: start,
+                            not_after: end,
+                            renewal_number: issued,
+                            star_order_id: order.id.clone(),
+                        },
+                    )
+                    .unwrap();
+                if end >= order.lifetime_end {
+                    assert_eq!(
+                        manager.get_order(&order.id).unwrap().status,
+                        StarOrderStatus::Completed
+                    );
+                    break;
+                }
+                start = end - chrono::Duration::seconds((3600.0 * factor) as i64);
+                assert_eq!(
+                    manager.orders_needing_renewal_at(start),
+                    vec![order.id.clone()]
+                );
+                assert!(issued < 300, "renewal horizon must terminate");
+            }
+            assert!(
+                issued > 24,
+                "overlap requires more than 24 hourly certificates"
+            );
+            assert_eq!(
+                manager
+                    .get_current_certificate(&order.id)
+                    .unwrap()
+                    .not_after,
+                order.lifetime_end
+            );
+        }
     }
 }

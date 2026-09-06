@@ -356,6 +356,16 @@ impl SecretResolver {
             None
         };
 
+        let auditor_bearer_token = if let Some(ref admin) = config.admin {
+            if let Some(ref token_ref) = admin.auditor_bearer_token {
+                Some(self.resolve("admin.auditor_bearer_token", token_ref)?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         let ldap_bind_password = if config.otp.enabled {
             if let Some(ref ldap) = config.otp.ldap {
                 if ldap.bind_password.is_empty() {
@@ -385,6 +395,7 @@ impl SecretResolver {
             db_url,
             hsm_pin,
             admin_bearer_token,
+            auditor_bearer_token,
             ldap_bind_password,
             cmp_mac_secrets,
         })
@@ -408,6 +419,7 @@ pub struct ResolvedSecrets {
     pub db_url: String,
     pub hsm_pin: Option<String>,
     pub admin_bearer_token: Option<String>,
+    pub auditor_bearer_token: Option<String>,
     pub ldap_bind_password: Option<String>,
     pub cmp_mac_secrets: HashMap<String, String>,
 }
@@ -420,6 +432,10 @@ impl std::fmt::Debug for ResolvedSecrets {
             .field(
                 "admin_bearer_token",
                 &self.admin_bearer_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "auditor_bearer_token",
+                &self.auditor_bearer_token.as_ref().map(|_| "<redacted>"),
             )
             .field(
                 "ldap_bind_password",

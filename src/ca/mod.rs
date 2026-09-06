@@ -18,3 +18,5 @@ pub use init::{CaInitError, CaInstance};
 pub use issue::{IssuanceError, IssuanceResult};
 pub use keygen::{KeyGenError, KeyGenResult, KeyType};
 pub use pool::CaBackendPool;
+
+pub(crate) mod protocol;

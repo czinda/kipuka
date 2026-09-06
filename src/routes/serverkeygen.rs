@@ -90,6 +90,7 @@ pub async fn post_serverkeygen(
 ) -> Result<Response, KipukaError> {
     let ca_id = label.ca_id();
     let identity = &auth.0.identity;
+    state.admit_enrollment(identity, "serverkeygen").await?;
 
     // Check that serverkeygen is enabled.
     if !state.config.est.serverkeygen {
@@ -112,6 +113,35 @@ pub async fn post_serverkeygen(
 
     if csr_der.is_empty() {
         return Err(KipukaError::BadRequest("empty CSR template".into()));
+    }
+
+    // Enrollment authorization (NIAP CA PP FDP_ACF.1).
+    //
+    // The client supplies a CSR *template* naming the subject/SANs it wants the
+    // server-generated key certified for.  Bind those names to the
+    // authenticated requester and enforce the per-label allowlist — the same
+    // control /simpleenroll and CMS-EST serverkeygen apply — so a client cannot
+    // obtain a server-generated key for an identity it does not own.  A no-op
+    // unless the label opts in.
+    if let Err(reason) =
+        crate::auth::enroll_authz::authorize_csr_der(&csr_der, identity, &label.enroll_policy())
+    {
+        tracing::warn!(
+            ca_id = %ca_id,
+            identity = %identity,
+            %reason,
+            "serverkeygen rejected: CSR template not authorized for requester"
+        );
+        state
+            .record_audit_event_with_actor(
+                "serverkeygen_denied",
+                identity,
+                &format!("ca_id={ca_id}, identity={identity}, reason={reason}"),
+            )
+            .await;
+        return Err(KipukaError::Forbidden(format!(
+            "enrollment not authorized: {reason}"
+        )));
     }
 
     // Look up the CA backend.
@@ -216,9 +246,7 @@ pub async fn post_serverkeygen(
             let pkey = parsed
                 .pkey
                 .ok_or_else(|| KipukaError::Ca("No private key in PKCS#12".into()))?;
-            let key_der = pkey
-                .private_key_to_der()
-                .map_err(|e| KipukaError::Ca(format!("PKCS#8 DER: {e}")))?;
+            let key_der = encode_pkcs8_private_key(&pkey)?;
 
             let cert = if let Some(cert) = &parsed.cert {
                 cert.to_der()
@@ -393,6 +421,8 @@ pub async fn post_serverkeygen(
     )
     .map_err(|e| KipukaError::Ca(format!("certificate issuance for keygen failed: {e}")))?;
 
+    crate::ca::issue::persist_certificate(&state, ca_id, &profile.name, &issuance_result).await?;
+
     // Step 6: Wrap the certificate in PKCS#7 certs-only.
     let cert_pkcs7_der = crate::routes::cacerts::build_certs_only_pkcs7(std::slice::from_ref(
         &issuance_result.certificate_der,
@@ -433,7 +463,7 @@ pub async fn post_serverkeygen(
 ///
 /// This is a synchronous function to avoid holding `Box<dyn ErasedCertificateSigner>`
 /// (which is not `Send`) across async await points.
-fn build_keygen_csr(
+pub(crate) fn build_keygen_csr(
     template_csr_der: &[u8],
     public_key_der: &[u8],
     private_key_pkcs8_der: &[u8],
@@ -456,9 +486,15 @@ fn build_keygen_csr(
         generated_key.as_signer("sha256")
     };
 
-    synta_certificate::CsrBuilder::new()
+    let mut builder = synta_certificate::CsrBuilder::new()
         .subject_name(&subject_der)
-        .public_key_der(public_key_der)
+        .public_key_der(public_key_der);
+    for (oid, critical, value) in crate::ca::issue::requested_extensions(template_csr_der)
+        .map_err(|e| KipukaError::BadRequest(e.to_string()))?
+    {
+        builder = builder.add_extension(oid, critical, &value);
+    }
+    builder
         .sign(&signer)
         .map_err(|e| KipukaError::Ca(format!("CSR construction failed: {e}")))
 }
@@ -468,7 +504,7 @@ fn build_keygen_csr(
 /// Parses the CSR to inspect the public key algorithm OID and extracts
 /// the key type. Falls back to RSA-2048 if the CSR cannot be parsed or
 /// uses an unrecognised algorithm (e.g., a placeholder key).
-fn detect_key_type_from_csr(csr_der: &[u8]) -> crate::ca::keygen::KeyType {
+pub(crate) fn detect_key_type_from_csr(csr_der: &[u8]) -> crate::ca::keygen::KeyType {
     use crate::ca::keygen::{EcCurve, KeyType};
 
     let Ok(csr) = synta_certificate::csr::CertificationRequest::from_der(csr_der) else {
@@ -522,7 +558,7 @@ fn detect_key_type_from_csr(csr_der: &[u8]) -> crate::ca::keygen::KeyType {
 /// RFC 7030 §4.4.2: the response contains two MIME parts:
 /// 1. The certificate chain (PKCS#7 certs-only, base64-encoded)
 /// 2. The private key (PKCS#8 DER, base64-encoded)
-fn build_multipart_response(cert_pkcs7_der: &[u8], private_key_pkcs8: &[u8]) -> String {
+pub(crate) fn build_multipart_response(cert_pkcs7_der: &[u8], private_key_pkcs8: &[u8]) -> String {
     let cert_b64 = encode_est_base64(cert_pkcs7_der);
     let key_b64 = encode_est_base64(private_key_pkcs8);
 
@@ -542,4 +578,35 @@ fn build_multipart_response(cert_pkcs7_der: &[u8], private_key_pkcs8: &[u8]) -> 
         cert_type = content_types::PKCS7_CERTS,
         key_type = content_types::PKCS8,
     )
+}
+
+/// Export PrivateKeyInfo, not the algorithm-specific RSAPrivateKey/ECPrivateKey.
+fn encode_pkcs8_private_key(
+    key: &openssl::pkey::PKeyRef<openssl::pkey::Private>,
+) -> Result<Vec<u8>, KipukaError> {
+    key.private_key_to_pkcs8()
+        .map_err(|e| KipukaError::Ca(format!("PKCS#8 DER: {e}")))
+}
+
+#[cfg(test)]
+mod pkcs8_response_regression {
+    #[test]
+    fn recovered_rsa_and_ec_keys_use_strict_pkcs8_encoding() {
+        use openssl::{
+            ec::{EcGroup, EcKey},
+            nid::Nid,
+            pkey::PKey,
+            rsa::Rsa,
+        };
+        let rsa = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
+        let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
+        let ec = PKey::from_ec_key(EcKey::generate(&group).unwrap()).unwrap();
+        for key in [rsa, ec] {
+            let der = super::encode_pkcs8_private_key(&key).unwrap();
+            let parsed = PKey::private_key_from_pkcs8(&der)
+                .expect("application/pkcs8 must contain PrivateKeyInfo");
+            assert!(parsed.public_eq(&key));
+            assert!(PKey::private_key_from_pkcs8(&key.private_key_to_der().unwrap()).is_err());
+        }
+    }
 }

@@ -50,6 +50,13 @@ pub struct AppState {
     /// Shared audit state (overflow flag, alarm counter).
     pub audit: Arc<AuditState>,
 
+    /// Authentication failure tracker / lockout enforcer (FIA_AFL.1).
+    ///
+    /// Always present; a `max_failures = 0` policy makes every operation a
+    /// no-op so the control can be disabled without a `None` branch at call
+    /// sites.
+    pub failure_tracker: Arc<crate::auth::failure_tracker::FailureTracker>,
+
     /// HA manager for multi-CA failover (present when HA is configured).
     pub ha_manager: Option<Arc<crate::ha::HaManager>>,
 
@@ -119,38 +126,95 @@ impl AppState {
         }
     }
 
+    /// Required durable admission event before any certificate/key mutation.
+    pub async fn admit_enrollment(
+        &self,
+        identity: &str,
+        operation: &str,
+    ) -> Result<(), crate::error::KipukaError> {
+        crate::audit::record_checked(
+            &self.db,
+            &self.audit,
+            crate::audit::AuditEvent::new(crate::audit::AuditEventType::EnrollRequest)
+                .with_operator(identity)
+                .with_detail(operation),
+        )
+        .await
+    }
+
     /// Record an audit event, logging (but not propagating) any DB error.
     ///
     /// Convenience wrapper that bundles the DB pool and audit state so
     /// call sites only need to pass the event type and detail.
     pub async fn record_audit_event(&self, event_type: &str, detail: &str) {
-        // Map the string event type to the enum; default to AdminAction
-        // for unrecognised types so we never silently drop events.
-        let audit_type = match event_type {
+        crate::audit::record(
+            &self.db,
+            &self.audit,
+            crate::audit::AuditEvent::new(Self::audit_type_for(event_type)).with_detail(detail),
+        )
+        .await;
+    }
+
+    /// Record an audit event that carries a responsible actor identity.
+    ///
+    /// Populates the `actor` column (via [`AuditEvent::with_operator`]) so the
+    /// FAU_SAR.1 review endpoint can filter by actor.  Used where the
+    /// responsible principal is known — enrollment-authorization denials
+    /// (FDP_ACF.1) and audit-trail review — so those events are attributable
+    /// rather than leaving `actor` NULL and the filter inert.
+    ///
+    /// [`AuditEvent::with_operator`]: crate::audit::AuditEvent::with_operator
+    pub async fn record_audit_event_with_actor(&self, event_type: &str, actor: &str, detail: &str) {
+        crate::audit::record(
+            &self.db,
+            &self.audit,
+            crate::audit::AuditEvent::new(Self::audit_type_for(event_type))
+                .with_operator(actor)
+                .with_detail(detail),
+        )
+        .await;
+    }
+
+    /// Map a string event type to its [`crate::audit::AuditEventType`].
+    ///
+    /// Unrecognised types default to
+    /// [`AdminAction`](crate::audit::AuditEventType::AdminAction) so an event is
+    /// never silently dropped.
+    fn audit_type_for(event_type: &str) -> crate::audit::AuditEventType {
+        match event_type {
             "cacerts" => crate::audit::AuditEventType::EnrollRequest,
-            "simpleenroll_success" | "simpleenroll_deferred" => {
+            "cert_issued" | "simpleenroll_success" | "simpleenroll_deferred" => {
                 crate::audit::AuditEventType::CertIssue
             }
             "simplereenroll_success" => crate::audit::AuditEventType::CertReenroll,
             "fullcmc_success" => crate::audit::AuditEventType::CertIssue,
             "serverkeygen_success" => crate::audit::AuditEventType::CertIssue,
+            // Enrollment-authorization denials (FDP_ACF.1) across every
+            // transport map to the enroll.reject taxonomy so they are
+            // filterable as a class and not lumped under the admin.action
+            // default.  They are not SecurityViolation: a denial is an access
+            // decision, not an alarm condition, and must not trip FAU_ARP.1.
+            "simpleenroll_denied"
+            | "simplereenroll_denied"
+            | "serverkeygen_denied"
+            | "cms_simpleenroll_denied"
+            | "cms_simplereenroll_denied"
+            | "cms_serverkeygen_denied" => crate::audit::AuditEventType::EnrollReject,
             "otp_generated" => crate::audit::AuditEventType::OtpCreate,
             "otp_revoked" => crate::audit::AuditEventType::OtpRevoke,
             "otp_auth_failure" => crate::audit::AuditEventType::AuthFailure,
+            // FIA_AFL.1 threshold reached — a security-relevant event that also
+            // trips the NIAP alarm counter (FAU_ARP.1) via SecurityViolation.
+            "auth_lockout" => crate::audit::AuditEventType::SecurityViolation,
             "cert_revoked" => crate::audit::AuditEventType::CertRevoke,
             "star_order_created" | "star_renewal_success" => {
                 crate::audit::AuditEventType::CertIssue
             }
-            "star_order_cancelled" => crate::audit::AuditEventType::AdminAction,
+            "star_order_cancelled" | "admin_audit_review" => {
+                crate::audit::AuditEventType::AdminAction
+            }
             _ => crate::audit::AuditEventType::AdminAction,
-        };
-
-        crate::audit::record(
-            &self.db,
-            &self.audit,
-            crate::audit::AuditEvent::new(audit_type).with_detail(detail),
-        )
-        .await;
+        }
     }
 }
 
@@ -211,6 +275,7 @@ pub struct AppStateBuilder {
     otp_store: Option<Arc<kipuka_otp::OtpStore>>,
     hsm: Option<Arc<kipuka_hsm::HsmContext>>,
     audit: Option<Arc<AuditState>>,
+    failure_tracker: Option<Arc<crate::auth::failure_tracker::FailureTracker>>,
     ha_manager: Option<Arc<crate::ha::HaManager>>,
     gss_cred: Option<Arc<dyn std::any::Any + Send + Sync>>,
     gssapi_require_crypto: bool,
@@ -232,6 +297,7 @@ impl AppStateBuilder {
             otp_store: None,
             hsm: None,
             audit: None,
+            failure_tracker: None,
             ha_manager: None,
             gss_cred: None,
             gssapi_require_crypto: true,
@@ -290,6 +356,14 @@ impl AppStateBuilder {
         self
     }
 
+    pub fn failure_tracker(
+        mut self,
+        tracker: Arc<crate::auth::failure_tracker::FailureTracker>,
+    ) -> Self {
+        self.failure_tracker = Some(tracker);
+        self
+    }
+
     pub fn ha_manager(mut self, manager: Arc<crate::ha::HaManager>) -> Self {
         self.ha_manager = Some(manager);
         self
@@ -324,9 +398,17 @@ impl AppStateBuilder {
     pub fn build(self) -> AppState {
         let db = self.db.expect("db is required");
         let db_ro = self.db_ro.unwrap_or_else(|| db.clone());
+        let config = self.config.expect("config is required");
+
+        // Derive the failure tracker from `[auth_lockout]` when not supplied.
+        let failure_tracker = self.failure_tracker.unwrap_or_else(|| {
+            Arc::new(crate::auth::failure_tracker::FailureTracker::new(
+                config.auth_lockout.to_policy(),
+            ))
+        });
 
         AppState {
-            config: self.config.expect("config is required"),
+            config,
             secrets: self.secrets.expect("secrets is required"),
             db,
             db_ro,
@@ -336,6 +418,7 @@ impl AppStateBuilder {
             otp_store: self.otp_store,
             hsm: self.hsm,
             audit: self.audit.expect("audit is required"),
+            failure_tracker,
             ha_manager: self.ha_manager,
             gss_cred: self.gss_cred,
             gssapi_require_crypto: self.gssapi_require_crypto,

@@ -19,8 +19,7 @@ perf.data*
 .DS_Store
 
 # Environment and secrets
-.env
-.env.*
+.env*
 !.env.example
 *.age
 

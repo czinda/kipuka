@@ -231,16 +231,151 @@ impl HsmContext {
         }
     }
 
-    /// Sign data using the HSM key identified by label.
-    ///
-    /// Uses `CKM_SHA256_RSA_PKCS` for RSA keys (the mechanism hashes
-    /// and signs in one operation, so `data` is the raw TBS bytes).
-    ///
-    /// # Arguments
-    ///
-    /// * `key_label` - CKA_LABEL of the private key in the token
-    /// * `data` - data to sign (raw TBS certificate bytes)
-    /// * `hash_algorithm` - hash algorithm name ("sha256", "sha384", "sha512")
+    /// Resolve a strict RFC 7512 key selector against the configured token.
+    pub fn tls_key_label(&self, uri: &str) -> HsmResult<String> {
+        use cryptoki::object::{Attribute, AttributeType, ObjectClass};
+        let params = key::parse_uri(uri)?;
+        if params.get("type").is_some_and(|kind| kind != b"private") {
+            return Err(HsmError::UriParse("private key URI required".into()));
+        }
+        if let Some(token) = params.get("token") {
+            let slot = self
+                .slot
+                .as_ref()
+                .ok_or_else(|| HsmError::SlotAccess("no active slot".into()))?;
+            if token != slot.token_label()?.as_bytes() {
+                return Err(HsmError::UriParse(
+                    "token differs from configured slot".into(),
+                ));
+            }
+        }
+        let mut selector = vec![Attribute::Class(ObjectClass::PRIVATE_KEY)];
+        if let Some(label) = params.get("object") {
+            selector.push(Attribute::Label(label.clone()));
+        }
+        if let Some(id) = params.get("id") {
+            selector.push(Attribute::Id(id.clone()));
+        }
+        if selector.len() == 1 {
+            return Err(HsmError::UriParse("object or id required".into()));
+        }
+        let guard = self
+            .session
+            .lock()
+            .map_err(|_| HsmError::SigningFailure("session mutex poisoned".into()))?;
+        let session = guard
+            .as_ref()
+            .ok_or_else(|| HsmError::SigningFailure("HSM session unavailable".into()))?;
+        let objects = session.find_objects(&selector)?;
+        if objects.len() != 1 {
+            return Err(HsmError::KeyNotFound(
+                "URI must match exactly one private key".into(),
+            ));
+        }
+        let attributes = session.get_attributes(objects[0], &[AttributeType::Label])?;
+        let label = attributes
+            .into_iter()
+            .find_map(|a| {
+                if let Attribute::Label(label) = a {
+                    Some(label)
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| HsmError::KeyNotFound("TLS key has no label".into()))?;
+        String::from_utf8(label)
+            .map_err(|_| HsmError::UriParse("TLS key label must be UTF-8".into()))
+    }
+
+    /// Sign the TLS transcript with the selected scheme and wire encoding.
+    pub fn sign_tls(
+        &self,
+        key_label: &str,
+        data: &[u8],
+        scheme: rustls::SignatureScheme,
+    ) -> HsmResult<Vec<u8>> {
+        use cryptoki::mechanism::rsa::{PkcsMgfType, PkcsPssParams};
+        use cryptoki::mechanism::{Mechanism, MechanismType};
+        use cryptoki::object::{Attribute, ObjectClass};
+        use rustls::SignatureScheme as S;
+        let guard = self
+            .session
+            .lock()
+            .map_err(|_| HsmError::SigningFailure("session mutex poisoned".into()))?;
+        let session = guard
+            .as_ref()
+            .ok_or_else(|| HsmError::SigningFailure("HSM not initialized".into()))?;
+        let objects = session.find_objects(&[
+            Attribute::Label(key_label.as_bytes().to_vec()),
+            Attribute::Class(ObjectClass::PRIVATE_KEY),
+        ])?;
+        if objects.len() != 1 {
+            return Err(HsmError::KeyNotFound(
+                "signing key label must match exactly one object".into(),
+            ));
+        }
+        let (md, hash, mgf, len) = match scheme {
+            S::RSA_PSS_SHA256 | S::RSA_PKCS1_SHA256 | S::ECDSA_NISTP256_SHA256 => (
+                openssl::hash::MessageDigest::sha256(),
+                MechanismType::SHA256,
+                PkcsMgfType::MGF1_SHA256,
+                32u64,
+            ),
+            S::RSA_PSS_SHA384 | S::RSA_PKCS1_SHA384 | S::ECDSA_NISTP384_SHA384 => (
+                openssl::hash::MessageDigest::sha384(),
+                MechanismType::SHA384,
+                PkcsMgfType::MGF1_SHA384,
+                48,
+            ),
+            S::RSA_PSS_SHA512 | S::RSA_PKCS1_SHA512 | S::ECDSA_NISTP521_SHA512 => (
+                openssl::hash::MessageDigest::sha512(),
+                MechanismType::SHA512,
+                PkcsMgfType::MGF1_SHA512,
+                64,
+            ),
+            _ => {
+                return Err(HsmError::UnsupportedMechanism(
+                    "unsupported TLS scheme".into(),
+                ));
+            }
+        };
+        let pss = PkcsPssParams {
+            hash_alg: hash,
+            mgf,
+            s_len: cryptoki::types::Ulong::from(len),
+        };
+        let mech = match scheme {
+            S::RSA_PSS_SHA256 => Mechanism::Sha256RsaPkcsPss(pss),
+            S::RSA_PSS_SHA384 => Mechanism::Sha384RsaPkcsPss(pss),
+            S::RSA_PSS_SHA512 => Mechanism::Sha512RsaPkcsPss(pss),
+            S::RSA_PKCS1_SHA256 => Mechanism::Sha256RsaPkcs,
+            S::RSA_PKCS1_SHA384 => Mechanism::Sha384RsaPkcs,
+            S::RSA_PKCS1_SHA512 => Mechanism::Sha512RsaPkcs,
+            _ => Mechanism::Ecdsa,
+        };
+        let ec = matches!(mech, Mechanism::Ecdsa);
+        let digest =
+            openssl::hash::hash(md, data).map_err(|e| HsmError::SigningFailure(e.to_string()))?;
+        let sig = session.sign(&mech, objects[0], if ec { &digest } else { data })?;
+        if !ec {
+            return Ok(sig);
+        }
+        if sig.is_empty() || sig.len() % 2 != 0 {
+            return Err(HsmError::SigningFailure(
+                "invalid raw ECDSA signature".into(),
+            ));
+        }
+        let half = sig.len() / 2;
+        let encode = || -> Result<Vec<u8>, openssl::error::ErrorStack> {
+            openssl::ecdsa::EcdsaSig::from_private_components(
+                openssl::bn::BigNum::from_slice(&sig[..half])?,
+                openssl::bn::BigNum::from_slice(&sig[half..])?,
+            )?
+            .to_der()
+        };
+        encode().map_err(|e| HsmError::SigningFailure(e.to_string()))
+    }
+
     pub fn sign_data(
         &self,
         key_label: &str,

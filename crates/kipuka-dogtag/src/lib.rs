@@ -108,3 +108,80 @@ pub(crate) fn truncate_str(s: &str, max_bytes: usize) -> &str {
     }
     &s[..end]
 }
+
+/// Cumulative limit applies even to chunked or misleading Content-Length bodies.
+pub(crate) async fn bounded_bytes(mut response: reqwest::Response) -> DogtagResult<Vec<u8>> {
+    const LIMIT: usize = 4 * 1024 * 1024;
+    if response.content_length().is_some_and(|n| n > LIMIT as u64) {
+        return Err(DogtagError::ParseError(
+            "backend response exceeds 4 MiB".into(),
+        ));
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| DogtagError::HttpError(e.to_string()))?
+    {
+        if chunk.len() > LIMIT.saturating_sub(bytes.len()) {
+            return Err(DogtagError::ParseError(
+                "backend response exceeds 4 MiB".into(),
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+pub(crate) async fn bounded_text(response: reqwest::Response) -> DogtagResult<String> {
+    Ok(String::from_utf8_lossy(&bounded_bytes(response).await?).into_owned())
+}
+
+#[cfg(test)]
+mod review_regressions {
+    use super::*;
+    #[test]
+    fn tls_verification_is_the_default() {
+        let config: DogtagConfig = serde_json::from_value(serde_json::json!({
+            "ca_url":"https://ca.example.test", "agent_cert_file":"cert", "agent_key_file":"key", "ca_cert_file":"ca", "profile_id":"profile"
+        })).unwrap();
+        assert!(!config.accept_invalid_certs);
+    }
+
+    #[tokio::test]
+    async fn chunked_backend_response_is_bounded() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let writer = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut request = [0; 4096];
+            let _ = socket.read(&mut request);
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
+            let block = vec![b'x'; 65536];
+            for _ in 0..65 {
+                if socket
+                    .write_all(b"10000\r\n")
+                    .and_then(|_| socket.write_all(&block))
+                    .and_then(|_| socket.write_all(b"\r\n"))
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            let _ = socket.write_all(b"0\r\n\r\n");
+        });
+        let response = reqwest::get(format!("http://{address}")).await.unwrap();
+        assert!(
+            bounded_bytes(response)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("exceeds 4 MiB")
+        );
+        writer.join().unwrap();
+    }
+}

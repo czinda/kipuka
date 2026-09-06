@@ -8,17 +8,17 @@
 //! ```bash
 //! # Generate ML-DSA-87 key pair (post-quantum)
 //! kipuka-keygen --module /usr/lib64/pkcs11/libkryoptic_pkcs11.so \
-//!     --token pq-kipuka-tls --pin 1234 \
+//!     --token pq-kipuka-tls --pin-env HSM_PIN \
 //!     --algorithm ml-dsa-87 --label my-signing-key
 //!
 //! # Generate RSA-4096 key pair
 //! kipuka-keygen --module /path/to/pkcs11.so \
-//!     --token rsa-root --pin 1234 \
+//!     --token rsa-root --pin-env HSM_PIN \
 //!     --algorithm rsa:4096 --label root-ca-signing
 //!
 //! # List objects in a token
 //! kipuka-keygen --module /path/to/pkcs11.so \
-//!     --token pq-kipuka-tls --pin 1234 --list
+//!     --token pq-kipuka-tls --pin-env HSM_PIN --list
 //! ```
 
 use std::process::ExitCode;
@@ -45,9 +45,9 @@ struct Cli {
     #[arg(long)]
     token: String,
 
-    /// User PIN for the token
+    /// Environment variable holding the token PIN (otherwise prompt without echo).
     #[arg(long)]
-    pin: String,
+    pin_env: Option<String>,
 
     /// Key algorithm: ml-dsa-87, ml-dsa-65, ml-dsa-44, rsa:2048, rsa:4096, ec:p256, ec:p384
     #[arg(long, default_value = "ml-dsa-87")]
@@ -74,6 +74,18 @@ fn main() -> ExitCode {
         .init();
 
     let cli = Cli::parse();
+
+    let pin = match cli.pin_env.as_deref() {
+        Some(name) => std::env::var(name).map_err(|e| e.to_string()),
+        None => rpassword::prompt_password("Token PIN: ").map_err(|e| e.to_string()),
+    };
+    let pin = match pin {
+        Ok(pin) if !pin.is_empty() => zeroize::Zeroizing::new(pin),
+        _ => {
+            error!("a nonempty token PIN is required");
+            return ExitCode::FAILURE;
+        }
+    };
 
     let pkcs11 = match Pkcs11::new(&cli.module) {
         Ok(ctx) => ctx,
@@ -106,7 +118,7 @@ fn main() -> ExitCode {
         }
     };
 
-    if let Err(e) = session.login(UserType::User, Some(&AuthPin::new(cli.pin.clone().into()))) {
+    if let Err(e) = session.login(UserType::User, Some(&AuthPin::new(pin.to_string().into()))) {
         error!(error = %e, "login failed");
         return ExitCode::FAILURE;
     }
@@ -117,7 +129,13 @@ fn main() -> ExitCode {
         return list_objects(&session);
     }
 
-    let id = hex::decode(&cli.id).unwrap_or_else(|_| vec![0x01]);
+    let id = match hex::decode(&cli.id) {
+        Ok(id) if !id.is_empty() => id,
+        _ => {
+            error!("key ID must be nonempty hexadecimal");
+            return ExitCode::FAILURE;
+        }
+    };
 
     match cli.algorithm.to_lowercase().as_str() {
         "ml-dsa-87" | "mldsa87" => {
@@ -315,10 +333,7 @@ fn list_objects(session: &cryptoki::session::Session) -> ExitCode {
                 println!("No objects found.");
                 return ExitCode::SUCCESS;
             }
-            println!(
-                "{:<8} {:<15} {:<12} {}",
-                "Handle", "Class", "KeyType", "Label"
-            );
+            println!("{:<8} {:<15} {:<12} Label", "Handle", "Class", "KeyType");
             println!("{}", "-".repeat(60));
             for obj in objects {
                 let info = session.get_attributes(
@@ -373,5 +388,38 @@ fn list_objects(session: &cryptoki::session::Session) -> ExitCode {
             error!(error = %e, "failed to list objects");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod review_regressions {
+    use super::*;
+    #[test]
+    fn plaintext_pin_argument_is_not_accepted() {
+        assert!(
+            Cli::try_parse_from([
+                "kipuka-keygen",
+                "--token",
+                "synthetic",
+                "--pin",
+                "synthetic"
+            ])
+            .is_err()
+        );
+        let parsed = Cli::try_parse_from([
+            "kipuka-keygen",
+            "--token",
+            "synthetic",
+            "--pin-env",
+            "SYNTHETIC_PIN",
+        ])
+        .unwrap();
+        assert_eq!(parsed.pin_env.as_deref(), Some("SYNTHETIC_PIN"));
+        assert!(
+            Cli::try_parse_from(["kipuka-keygen", "--token", "synthetic"])
+                .unwrap()
+                .pin_env
+                .is_none()
+        );
     }
 }

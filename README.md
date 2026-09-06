@@ -1,7 +1,8 @@
+<!-- Implementation scope is tracked in docs/support-boundaries.md. -->
 # kipuka
 
 An EST (RFC 7030) enrollment server with Multi-CA High Availability, HSM support,
-and NIAP CA Protection Profile compliance. Built in Rust on the
+and structured audit logging. Built in Rust on the
 [Synta](https://codeberg.org/abbra/synta) ASN.1/X.509 library. Architecture
 inspired by the [Akamu](https://codeberg.org/abbra/akamu) ACME server.
 
@@ -24,9 +25,9 @@ inspired by the [Akamu](https://codeberg.org/abbra/akamu) ACME server.
 - **Server-side key generation** (`/serverkeygen`): RSA, ECDSA, ML-DSA, ML-KEM
   with encrypted private key return via CMS EnvelopedData
 - **Full CMC support** (`/fullcmc`): RFC 5272 PKIData/PKIResponse via synta-cmc
-- **CMS-EST endpoints** (RFC 8295): `/cms/simpleenroll`, `/cms/simplereenroll`,
+- **Experimental CMS-wrapped endpoints**: `/cms/simpleenroll`, `/cms/simplereenroll`,
   `/cms/serverkeygen`, `/cms/fullcmc` for CMS-wrapped EST operations
-- **STAR certificates** (RFC 8739): short-lived auto-renewal with configurable
+- **Custom EST automatic-renewal orders**: short-lived auto-renewal with configurable
   lifetime and renewal window
 - **EST Renewal Info** (draft-ietf-lamps-est-renewal-info): `GET /renewal-info/:cert_id`
   returning JSON `suggestedWindow` for renewal scheduling
@@ -69,10 +70,10 @@ inspired by the [Akamu](https://codeberg.org/abbra/akamu) ACME server.
 ### PQC and Compliance
 - **PQC-ready**: ML-DSA signing (FIPS 204), ML-KEM key encapsulation (FIPS 203),
   and composite hybrid algorithms via Synta and PKCS#11
-- **Audit logging**: NIAP FAU_GEN.1 compliant event recording
+- **Audit logging**: structured event recording; no independent NIAP certification claimed
 - **synta-cmc crate**: RFC 5272 CMC protocol implementation covering 13 RFCs
 
-### CoAP/DTLS Transport (RFC 7252 / RFC 9483)
+### CoAP/DTLS Transport (RFC 7252 / RFC 9148)
 - **EST-coaps** (RFC 9148): EST enrollment over CoAP/DTLS for constrained devices
 - **OpenSSL DTLS transport**: UDP socket binding with client certificate extraction
 - **CoapDtlsServer**: full DTLS server with EST operation bridging
@@ -80,9 +81,10 @@ inspired by the [Akamu](https://codeberg.org/abbra/akamu) ACME server.
 - **187 tests** including 69 CoAP/DTLS-specific tests
 
 ### Testing and Conformance
-- **RFC conformance suite**: 12 test suites, 129 wire-format assertions validating
-  compliance against RFC 7030, RFC 9908, RFC 8739, RFC 8295, RFC 4210, RFC 9483,
-  and NIAP FAU_GEN.1
+- **Protocol smoke suites**: mix live endpoint checks with source inspection.
+  Source checks, skipped scenarios and passing test counts do not establish
+  standards conformance or secure interoperability. See
+  [support and assurance boundaries](docs/support-boundaries.md).
 - **idm-ci integration**: Beaker-based testing with Dogtag PKI on RHEL 10
 
 ```bash
@@ -115,9 +117,14 @@ podman run --rm \
 
 ### Build from source
 
+Use Rust 1.88 or newer, OpenSSL 3.5 or newer with development headers,
+`pkg-config`, Clang and CMake. Synta is pinned to a full Git revision in
+Cargo.toml and Cargo.lock; no sibling checkout is required. Local development
+patches belong in an uncommitted Cargo configuration.
+
 ```bash
 # Build
-cargo build --release
+cargo build --locked --release
 
 # Generate test CA and server certificates
 # (use your own CA infrastructure for production)
@@ -127,9 +134,6 @@ cargo build --release
 cp kipuka.toml.example kipuka.toml
 $EDITOR kipuka.toml
 
-# Run database migrations
-cargo run -- migrate --config kipuka.toml
-
 # Start the server
 cargo run --release -- --config kipuka.toml
 ```
@@ -138,29 +142,32 @@ cargo run --release -- --config kipuka.toml
 
 See [`kipuka.toml.example`](kipuka.toml.example) for a fully documented configuration file.
 
-Minimal configuration:
+Minimal configuration (paths must exist and contain your deployment certificates):
 
 ```toml
 [server]
-listen = "0.0.0.0:8443"
+listen_addr = "0.0.0.0:8443"
 
 [tls]
-cert = "/etc/kipuka/server.pem"
-key = "/etc/kipuka/server.key"
+cert_file = "/etc/kipuka/server.pem"
+key_file = "/etc/kipuka/server.key"
+ca_file = "/etc/kipuka/client-ca.pem"
 
-[tls.client_auth]
-trust_anchors = "/etc/kipuka/client-ca.pem"
-
-[db]
-url = "sqlite:///var/lib/kipuka/kipuka.db"
+[database]
+url = "sqlite:///var/lib/kipuka/kipuka.db?mode=rwc"
+run_migrations = true
 
 [[ca]]
 id = "main"
-cert = "/etc/kipuka/ca.pem"
-key = "/etc/kipuka/ca.key"
+cert_file = "/etc/kipuka/ca.pem"
+key_file = "/etc/kipuka/ca.key"
 ```
 
-## Compliance
+Migrations run at startup when `database.run_migrations = true`; there is no
+`migrate` subcommand. The database directory must already exist and be writable.
+
+
+## Standards references and implementation scope
 
 ### Protocol Standards
 
@@ -168,9 +175,9 @@ key = "/etc/kipuka/ca.key"
 |----------|-------|--------|
 | RFC 7030 | EST (Enrollment over Secure Transport) | Core implementation |
 | RFC 8951 | EST clarifications | Implemented |
-| RFC 8295 | CMS-EST (EST with CMS) | /cms/* endpoints |
+| RFC 8295 | EST extensions for PAL packages | Not implemented by custom /cms/* routes |
 | RFC 4210 | CMP (Certificate Management Protocol) | Enrollment, revocation, general messages |
-| RFC 8739 | STAR (Short-Term Automatic Renewal) | Short-lived auto-renewal certificates |
+| RFC 8739 | ACME STAR extension | Not implemented; custom EST renewal is distinct |
 | RFC 5272 | CMC (Certificate Management over CMS) | /fullcmc endpoint via synta-cmc |
 | RFC 6402 | CMC Updates | Implemented |
 | RFC 5273 | CMC Transport Protocols | HTTP transport |
@@ -180,7 +187,7 @@ key = "/etc/kipuka/ca.key"
 | RFC 2986 | PKCS#10 (Certification Request Syntax) | Primary CSR format |
 | RFC 5280 | X.509 PKI Certificate and CRL Profile | Via synta-certificate |
 | RFC 7252 | CoAP (Constrained Application Protocol) | CoAP transport layer |
-| RFC 9483 | DTLS (Datagram TLS) as Transport for EST | EST-coaps via kipuka-coap |
+| RFC 9483 | Lightweight CMP Profile | No complete conformance claim |
 | RFC 9148 | EST-coaps (EST over CoAP) | Constrained device enrollment |
 | RFC 7959 | CoAP Block-Wise Transfers | Large payload support |
 | RFC 9908 | CSR Attributes Clarification | CSR template mode for /csrattrs |
@@ -197,7 +204,7 @@ key = "/etc/kipuka/ca.key"
 | RFC 9688/9882/9936 | Post-Quantum CMS (ML-DSA/ML-KEM) | Algorithm pairing validation |
 | RFC 7906 | NSA CMS Key Management Attributes | Key provenance OIDs |
 
-### Compliance Frameworks
+### Standards references and implementation scope Frameworks
 
 | Standard | Scope | Status |
 |----------|-------|--------|
@@ -259,7 +266,7 @@ EST operation data flows, and HSM integration points.
 cargo build
 
 # Build (release)
-cargo build --release
+cargo build --locked --release
 
 # Run tests
 cargo test

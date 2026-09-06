@@ -227,15 +227,27 @@ impl CaPool {
     /// Returns `None` when no healthy CA is available and the fallback
     /// behavior is [`FallbackBehavior::Reject`].
     pub fn select(&self) -> Option<CaConnection> {
+        self.select_allowed(
+            &self
+                .connections
+                .iter()
+                .map(|c| c.id.0.clone())
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    /// Select only within the caller's authorized CA set.
+    pub fn select_allowed(&self, allowed: &[String]) -> Option<CaConnection> {
         let statuses = self.statuses.read();
         let healthy: Vec<&CaConnection> = self
             .connections
             .iter()
             .filter(|c| {
-                statuses
-                    .get(&c.id)
-                    .map(|s| s.health.is_available())
-                    .unwrap_or(false)
+                allowed.contains(&c.id.0)
+                    && statuses
+                        .get(&c.id)
+                        .map(|s| s.health.is_available())
+                        .unwrap_or(false)
             })
             .collect();
 

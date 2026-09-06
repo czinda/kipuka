@@ -50,7 +50,7 @@ impl HaManager {
     /// Spawns a tokio task that periodically probes each CA backend and
     /// updates the pool's availability map. The task runs until
     /// [`HaManager::shutdown`] is called.
-    pub async fn start(&self) {
+    pub async fn start(&self) -> tokio::task::JoinHandle<()> {
         let checker = self.health_checker.clone();
         let mut rx = self.shutdown_rx.clone();
 
@@ -58,6 +58,9 @@ impl HaManager {
 
         tokio::spawn(async move {
             loop {
+                if *rx.borrow() {
+                    break;
+                }
                 checker.run_probes().await;
 
                 tokio::select! {
@@ -68,7 +71,7 @@ impl HaManager {
                     }
                 }
             }
-        });
+        })
     }
 
     /// Signal the health checker to stop.
@@ -81,4 +84,49 @@ impl HaManager {
     pub fn pool(&self) -> &Arc<CaPool> {
         &self.pool
     }
+}
+
+/// Build explicitly configured HA routing and probes before server startup.
+pub fn build_manager(
+    config: Arc<crate::config::Config>,
+    cas: Arc<indexmap::IndexMap<String, Arc<crate::state::CaState>>>,
+    hsm: Option<Arc<kipuka_hsm::HsmContext>>,
+) -> Option<Arc<HaManager>> {
+    let ha = config.ha.as_ref().filter(|ha| ha.enabled)?;
+    let connections = config
+        .cas
+        .iter()
+        .enumerate()
+        .map(|(priority, ca)| CaConnection {
+            id: CaId(ca.id.clone()),
+            endpoint: ha
+                .endpoints
+                .get(&ca.id)
+                .cloned()
+                .unwrap_or_else(|| format!("local:{}", ca.id)),
+            weight: 1,
+            priority: priority as u32,
+        })
+        .collect();
+    let pool = Arc::new(CaPool::new(
+        connections,
+        pool::PoolConfig {
+            strategy: ha.strategy.clone(),
+            fallback: FallbackBehavior::Reject,
+            circuit_breaker: pool::CircuitBreakerConfig {
+                failure_threshold: ha.failure_threshold,
+                cooldown: std::time::Duration::from_secs(ha.cooldown_secs),
+            },
+        },
+    ));
+    let health_config = HealthConfig {
+        probe_interval: std::time::Duration::from_secs(ha.probe_interval_secs),
+        probe_timeout: std::time::Duration::from_secs(ha.probe_timeout_secs),
+        ..HealthConfig::default()
+    };
+    let mut manager = HaManager::new(pool, health_config);
+    manager.health_checker = manager
+        .health_checker
+        .with_local(Arc::new(health::LocalProbeContext { config, cas, hsm }));
+    Some(Arc::new(manager))
 }

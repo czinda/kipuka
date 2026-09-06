@@ -46,16 +46,13 @@ impl DogtagClient {
 
         let status = resp.status();
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = crate::bounded_text(resp).await?;
             return Err(DogtagError::ApiError {
                 status: status.as_u16(),
                 body,
             });
         }
 
-        resp.bytes()
-            .await
-            .map(|b| b.to_vec())
-            .map_err(|e| DogtagError::ParseError(format!("Failed to read CMC response: {e}")))
+        crate::bounded_bytes(resp).await
     }
 }

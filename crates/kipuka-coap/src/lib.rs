@@ -1,4 +1,4 @@
-//! EST over CoAP (RFC 9483) transport for constrained devices.
+//! EST over CoAP (RFC 9148) transport for constrained devices.
 //!
 //! This crate implements the CoAP transport binding for Enrollment over Secure
 //! Transport, enabling EST operations on constrained IoT devices that cannot
@@ -6,7 +6,7 @@
 //!
 //! # Protocol Mapping
 //!
-//! RFC 9483 maps EST operations to CoAP as follows:
+//! RFC 9148 maps EST operations to CoAP as follows:
 //! - HTTPS transport is replaced by CoAP over DTLS ("coaps")
 //! - EST URI paths use abbreviated names (e.g., `/sen` for `/simpleenroll`)
 //! - HTTP Content-Type headers map to CoAP Content-Format option IDs
@@ -17,7 +17,7 @@
 //! - [`server`]: CoAP message parsing, encoding, and EST-coaps URI routing
 //! - [`dtls`]: DTLS session management abstraction for CoAP security
 //! - [`block`]: RFC 7959 block-wise transfer for large EST payloads
-//! - [`content_format`]: CoAP content-format IDs for EST media types (RFC 9483 §5.4)
+//! - [`content_format`]: CoAP content-format IDs for EST media types (RFC 9148 §5.4)
 
 pub mod block;
 pub mod content_format;
@@ -41,7 +41,7 @@ pub enum CoapError {
 
     /// Unrecognized CoAP Content-Format option value.
     ///
-    /// RFC 9483 §5.4 defines the content-format IDs that EST-coaps supports.
+    /// RFC 9148 §5.4 defines the content-format IDs that EST-coaps supports.
     #[error("Unsupported Content-Format: {0}")]
     UnsupportedContentFormat(u16),
 
@@ -51,7 +51,7 @@ pub enum CoapError {
 
     /// DTLS session establishment or resumption failure.
     ///
-    /// RFC 9483 §5 requires DTLS to secure all EST-coaps exchanges.
+    /// RFC 9148 §5 requires DTLS to secure all EST-coaps exchanges.
     #[error("DTLS error: {0}")]
     DtlsError(String),
 
@@ -78,6 +78,16 @@ pub enum CoapError {
     /// handshake.
     #[error("Unauthorized: {0}")]
     Unauthorized(String),
+
+    /// Authenticated client is not authorized for the request (4.03).
+    ///
+    /// The peer authenticated successfully but the request is denied by an
+    /// access-control policy — e.g. the EST enrollment-authorization check
+    /// (NIAP CA PP FDP_ACF.1): the CSR names an identity the requester is not
+    /// permitted to enroll.  Distinct from [`Unauthorized`](Self::Unauthorized),
+    /// which means authentication itself is missing.
+    #[error("Forbidden: {0}")]
+    Forbidden(String),
 
     /// Internal server error (catch-all).
     #[error("Internal error: {0}")]

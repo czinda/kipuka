@@ -35,6 +35,7 @@ impl DogtagClient {
         let mut builder = Client::builder()
             .danger_accept_invalid_certs(config.accept_invalid_certs)
             .cookie_store(true)
+            .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(config.timeout_secs));
 
         // HTTPS: mTLS with agent cert + basic auth for Dogtag REST authorization
@@ -114,8 +115,9 @@ impl DogtagClient {
         body: &T,
     ) -> DogtagResult<reqwest::Response> {
         let url = format!("{}{}", self.base_url, path);
-        self.request_with_retry(|| self.do_post_json(&url, body))
+        self.do_post_json(&url, body)
             .await
+            .map_err(|e| DogtagError::HttpError(e.to_string()))
     }
 
     pub(crate) async fn post_bytes(
@@ -126,18 +128,14 @@ impl DogtagClient {
     ) -> DogtagResult<reqwest::Response> {
         let url = format!("{}{}", self.base_url, path);
         let ct = content_type.to_owned();
-        self.request_with_retry(|| {
-            let mut req = self
-                .http
-                .post(&url)
-                .header("Content-Type", &ct)
-                .body(body.clone());
-            if let Some((ref user, ref pass)) = self.basic_auth {
-                req = req.basic_auth(user, Some(pass));
-            }
-            req.send()
-        })
-        .await
+        let mut req = self.http.post(&url).header("Content-Type", &ct).body(body);
+        if let Some((ref user, ref pass)) = self.basic_auth {
+            req = req.basic_auth(user, Some(pass));
+        }
+        // A transport failure may occur after commit: never replay a mutation.
+        req.send()
+            .await
+            .map_err(|e| DogtagError::HttpError(e.to_string()))
     }
 
     pub(crate) async fn get_raw(&self, path: &str) -> DogtagResult<reqwest::Response> {
@@ -195,7 +193,7 @@ impl DogtagClient {
             match make_request().await {
                 Ok(resp) if resp.status().is_server_error() => {
                     let status = resp.status();
-                    let body = resp.text().await.unwrap_or_default();
+                    let body = crate::bounded_text(resp).await?;
                     warn!(
                         attempt,
                         status = status.as_u16(),
@@ -235,7 +233,7 @@ impl DogtagClient {
             .unwrap_or("unknown")
             .to_owned();
 
-        let body = resp.text().await.unwrap_or_default();
+        let body = crate::bounded_text(resp).await?;
 
         if !status.is_success() {
             return Err(DogtagError::ApiError {
@@ -256,5 +254,57 @@ impl DogtagClient {
                 "JSON parse failed (content-type: {content_type}): {e}; body: {preview}"
             ))
         })
+    }
+}
+
+#[cfg(test)]
+mod review_regressions {
+    use super::*;
+    #[tokio::test]
+    async fn mutations_are_not_replayed_after_server_failure() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let count = Arc::new(AtomicUsize::new(0));
+        let count_task = count.clone();
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0; 4096];
+                let received = stream.read(&mut request).await.unwrap();
+                assert!(received > 0);
+                count_task.fetch_add(1, Ordering::SeqCst);
+                stream.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+            }
+        });
+        let client = DogtagClient {
+            http: Client::new(),
+            base_url: format!("http://{address}"),
+            basic_auth: None,
+            retry_max: 3,
+            retry_delay: Duration::from_millis(1),
+        };
+        assert_eq!(
+            client
+                .post_json("/issue", &serde_json::json!({}))
+                .await
+                .unwrap()
+                .status(),
+            503
+        );
+        assert_eq!(
+            client
+                .post_bytes("/cmc", vec![1], "application/pkcs7-mime")
+                .await
+                .unwrap()
+                .status(),
+            503
+        );
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+        server.abort();
     }
 }

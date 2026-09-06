@@ -88,6 +88,7 @@ pub async fn post_simplereenroll(
     }
 
     let identity = &auth.0.identity;
+    state.admit_enrollment(identity, "simplereenroll").await?;
 
     tracing::info!(
         ca_id = %ca_id,
@@ -125,6 +126,35 @@ pub async fn post_simplereenroll(
         );
         return Err(KipukaError::Forbidden(format!(
             "client certificate revocation check failed: {e}"
+        )));
+    }
+
+    // Enrollment authorization (NIAP CA PP FDP_ACF.1).
+    //
+    // POP linking above proves the CSR subject equals the TLS client-cert
+    // subject, but the per-label SAN identity binding and the name allowlist
+    // are independent controls: a renewing client can still add SANs it was
+    // never authorized for.  Apply the same policy the /simpleenroll and
+    // CMS-EST reenroll paths enforce, so re-enrollment is not a bypass.  A
+    // no-op unless the label opts in.
+    if let Err(reason) =
+        crate::auth::enroll_authz::authorize_csr_der(&csr_der, identity, &label.enroll_policy())
+    {
+        tracing::warn!(
+            ca_id = %ca_id,
+            identity = %identity,
+            %reason,
+            "simplereenroll rejected: CSR not authorized for requester"
+        );
+        state
+            .record_audit_event_with_actor(
+                "simplereenroll_denied",
+                identity,
+                &format!("ca_id={ca_id}, identity={identity}, reason={reason}"),
+            )
+            .await;
+        return Err(KipukaError::Forbidden(format!(
+            "enrollment not authorized: {reason}"
         )));
     }
 

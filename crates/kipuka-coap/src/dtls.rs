@@ -1,6 +1,6 @@
 //! DTLS session management for EST-coaps transport security.
 //!
-//! RFC 9483 §5 mandates DTLS to secure all EST-coaps exchanges. This module
+//! RFC 9148 §5 mandates DTLS to secure all EST-coaps exchanges. This module
 //! provides session tracking, caching abstractions, and a concrete OpenSSL-based
 //! DTLS implementation using memory BIOs for UDP transport.
 //!
@@ -31,9 +31,8 @@ use std::time::{Duration, Instant};
 
 /// DTLS protocol version.
 ///
-/// RFC 9483 §5 supports both DTLS 1.2 (RFC 6347) and DTLS 1.3 (RFC 9147).
-/// DTLS 1.3 is preferred when both peers support it, as it reduces
-/// handshake round trips and provides improved security properties.
+/// This model can represent DTLS 1.2 and 1.3; the OpenSSL transport currently
+/// negotiates DTLS 1.2 only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DtlsVersion {
     /// DTLS 1.2 per RFC 6347.
@@ -54,8 +53,8 @@ impl DtlsVersion {
 
 /// An established DTLS session for a CoAP/EST-coaps connection.
 ///
-/// RFC 9483 §5: EST-coaps uses DTLS to secure the CoAP transport.
-/// DTLS 1.2 (RFC 6347) and DTLS 1.3 (RFC 9147) are supported.
+/// RFC 9148 §5: EST-coaps uses DTLS to secure the CoAP transport.
+/// The OpenSSL transport supports DTLS 1.2 (RFC 6347).
 ///
 /// This struct tracks the session state needed for EST operations:
 /// the peer identity (from the client certificate or PSK), the session
@@ -69,7 +68,7 @@ pub struct DtlsSession {
     /// Client certificate presented during handshake (DER-encoded), if any.
     ///
     /// For certificate-based EST enrollment, the client may present an
-    /// existing certificate for re-enrollment (RFC 9483 §5.3).
+    /// existing certificate for re-enrollment (RFC 9148 §5.3).
     client_cert: Option<Vec<u8>>,
     /// Timestamp when the session was established.
     created_at: Instant,
@@ -307,7 +306,7 @@ impl DtlsSessionCache {
 /// Wraps an `openssl::ssl::SslContext` configured with the server certificate,
 /// private key, and trusted CA for optional client certificate verification.
 ///
-/// RFC 9483 §5 requires DTLS for all EST-coaps exchanges. The server presents
+/// RFC 9148 §5 requires DTLS for all EST-coaps exchanges. The server presents
 /// its certificate during the handshake and optionally requests a client
 /// certificate for mTLS-based enrollment authentication.
 ///
@@ -360,7 +359,10 @@ impl DtlsContext {
 
         // Request client certificate but do not require it — EST operations
         // that need mTLS will check the certificate after handshake.
-        ctx_builder.set_verify(SslVerifyMode::PEER);
+        ctx_builder.set_verify(SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT);
+        ctx_builder
+            .set_min_proto_version(Some(openssl::ssl::SslVersion::DTLS1_2))
+            .map_err(|e| CoapError::DtlsError(e.to_string()))?;
 
         // Load the CA certificate for client certificate verification.
         let ca = X509::from_pem(ca_pem).map_err(|e| {
@@ -408,85 +410,134 @@ impl std::fmt::Debug for DtlsContext {
 /// 3. Call `SSL_write` to encrypt response data.
 /// 4. Read from the write BIO to get the encrypted datagram.
 /// 5. Send the encrypted datagram via UDP socket.
-#[derive(Debug)]
-pub struct DtlsConnection {
-    /// OpenSSL SSL instance for this peer.
-    ssl: openssl::ssl::Ssl,
-    /// Peer network address.
-    peer_addr: SocketAddr,
-    /// Client certificate extracted after successful handshake.
-    client_cert: Option<ClientCertInfo>,
-    /// Whether the DTLS handshake has completed.
-    handshake_complete: bool,
+#[derive(Debug, Default)]
+struct DatagramIo {
+    incoming: std::collections::VecDeque<Vec<u8>>,
+    outgoing: Vec<Vec<u8>>,
+}
+impl std::io::Read for DatagramIo {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let packet = self
+            .incoming
+            .pop_front()
+            .ok_or(std::io::ErrorKind::WouldBlock)?;
+        if packet.len() > buf.len() {
+            return Err(std::io::ErrorKind::InvalidData.into());
+        }
+        buf[..packet.len()].copy_from_slice(&packet);
+        Ok(packet.len())
+    }
+}
+impl std::io::Write for DatagramIo {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if self.outgoing.len() >= 64 {
+            return Err(std::io::ErrorKind::OutOfMemory.into());
+        }
+        self.outgoing.push(buf.to_vec());
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
+#[derive(Debug)]
+pub struct DtlsConnection {
+    stream: openssl::ssl::SslStream<DatagramIo>,
+    peer_addr: SocketAddr,
+    client_cert: Option<ClientCertInfo>,
+    handshake_complete: bool,
+    pub(crate) created_at: Instant,
+}
 impl DtlsConnection {
-    /// Creates a new DTLS connection for the given peer.
-    ///
-    /// The connection is in the pre-handshake state. Call [`accept_handshake`]
-    /// to begin the DTLS server-side handshake.
     pub fn new(ctx: &DtlsContext, peer_addr: SocketAddr) -> Result<Self, CoapError> {
-        let ssl = openssl::ssl::Ssl::new(ctx.ssl_context())
-            .map_err(|e| CoapError::DtlsError(format!("Failed to create SSL instance: {e}")))?;
-
+        let mut ssl = openssl::ssl::Ssl::new(ctx.ssl_context()).map_err(dtls_error)?;
+        ssl.set_accept_state();
+        ssl.set_mtu(1200).map_err(dtls_error)?;
+        let stream =
+            openssl::ssl::SslStream::new(ssl, DatagramIo::default()).map_err(dtls_error)?;
         Ok(Self {
-            ssl,
+            stream,
             peer_addr,
             client_cert: None,
             handshake_complete: false,
+            created_at: Instant::now(),
         })
     }
-
-    /// Returns the peer network address.
     pub fn peer_addr(&self) -> SocketAddr {
         self.peer_addr
     }
-
-    /// Returns client certificate information, if a client certificate was
-    /// presented and successfully parsed during the DTLS handshake.
     pub fn client_cert(&self) -> Option<&ClientCertInfo> {
         self.client_cert.as_ref()
     }
-
-    /// Returns whether the DTLS handshake has completed successfully.
     pub fn is_handshake_complete(&self) -> bool {
         self.handshake_complete
     }
-
-    /// Extracts and caches the client certificate from the SSL session.
-    ///
-    /// Called after the handshake completes to parse the peer certificate
-    /// (if any) into a [`ClientCertInfo`].
-    fn extract_client_cert(&mut self) {
-        if let Some(peer_cert) = self.ssl.peer_certificate()
-            && let Ok(der) = peer_cert.to_der()
-        {
-            self.client_cert = ClientCertInfo::from_der(&der);
+    pub fn ssl(&self) -> &openssl::ssl::SslRef {
+        self.stream.ssl()
+    }
+    pub(crate) fn receive(&mut self, packet: &[u8]) -> Result<Vec<Vec<u8>>, CoapError> {
+        self.stream.get_mut().incoming.push_back(packet.to_vec());
+        if !self.handshake_complete {
+            match self.stream.accept() {
+                Ok(()) => {
+                    let cert = self.stream.ssl().peer_certificate().ok_or_else(|| {
+                        CoapError::Unauthorized("client certificate required".into())
+                    })?;
+                    self.client_cert =
+                        ClientCertInfo::from_der(&cert.to_der().map_err(dtls_error)?);
+                    if self.client_cert.is_none() {
+                        return Err(CoapError::Unauthorized("invalid client certificate".into()));
+                    }
+                    self.handshake_complete = true;
+                }
+                Err(e) if retry_ssl(&e) => return Ok(Vec::new()),
+                Err(e) => return Err(dtls_error(e)),
+            }
         }
+        let mut result = Vec::new();
+        let mut buf = vec![0; 65535];
+        loop {
+            match self.stream.ssl_read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => result.push(buf[..n].to_vec()),
+                Err(e) if retry_ssl(&e) => break,
+                Err(e) => return Err(dtls_error(e)),
+            }
+        }
+        Ok(result)
     }
-
-    /// Marks the handshake as complete and extracts the client certificate.
-    ///
-    /// This should be called by the server loop once the DTLS handshake
-    /// has finished successfully.
-    pub fn complete_handshake(&mut self) {
-        self.handshake_complete = true;
-        self.extract_client_cert();
+    pub(crate) fn encrypt(&mut self, data: &[u8]) -> Result<(), CoapError> {
+        if !self.handshake_complete {
+            return Err(CoapError::Unauthorized("DTLS handshake incomplete".into()));
+        }
+        self.stream.ssl_write(data).map_err(dtls_error)?;
+        Ok(())
     }
-
-    /// Returns a reference to the underlying `Ssl` instance.
-    ///
-    /// Used by the server implementation for memory BIO operations.
-    pub fn ssl(&self) -> &openssl::ssl::Ssl {
-        &self.ssl
+    pub(crate) fn handle_timeout(&mut self) -> Result<(), CoapError> {
+        use foreign_types::ForeignTypeRef;
+        // OpenSSL ssl.h DTLSv1_handle_timeout macro, DTLS_CTRL_HANDLE_TIMEOUT=74.
+        // The SSL object remains exclusively borrowed for the duration of the call.
+        let result = unsafe {
+            openssl_sys::SSL_ctrl(self.stream.ssl().as_ptr(), 74, 0, std::ptr::null_mut())
+        };
+        if result < 0 {
+            return Err(CoapError::DtlsError("DTLS retransmission failed".into()));
+        }
+        Ok(())
     }
-
-    /// Returns a mutable reference to the underlying `Ssl` instance.
-    ///
-    /// Used by the server implementation for memory BIO operations.
-    pub fn ssl_mut(&mut self) -> &mut openssl::ssl::Ssl {
-        &mut self.ssl
+    pub(crate) fn outgoing(&mut self) -> Vec<Vec<u8>> {
+        std::mem::take(&mut self.stream.get_mut().outgoing)
     }
+}
+fn retry_ssl(e: &openssl::ssl::Error) -> bool {
+    matches!(
+        e.code(),
+        openssl::ssl::ErrorCode::WANT_READ | openssl::ssl::ErrorCode::WANT_WRITE
+    )
+}
+fn dtls_error(e: impl std::fmt::Display) -> CoapError {
+    CoapError::DtlsError(e.to_string())
 }
 
 #[cfg(test)]

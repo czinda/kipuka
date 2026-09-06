@@ -108,10 +108,15 @@ pub struct OtpSummary {
 /// The `token` field contains the actual OTP value.  It is returned
 /// exactly once and cannot be retrieved later.
 pub async fn generate_otp(
-    _admin: AdminAuth,
+    admin: AdminAuth,
     State(state): State<Arc<AppState>>,
     Json(req): Json<GenerateOtpRequest>,
 ) -> Response {
+    // FMT_SMR.1: only operators may issue OTPs.
+    if let Some(resp) = admin.require_operator() {
+        return resp;
+    }
+
     let otp_config = &state.config.otp;
 
     // Check that OTP is enabled.
@@ -256,10 +261,15 @@ pub async fn list_otps(_admin: AdminAuth, State(state): State<Arc<AppState>>) ->
 /// Immediately invalidates the specified OTP, preventing any further
 /// enrollment attempts using it.
 pub async fn revoke_otp(
-    _admin: AdminAuth,
+    admin: AdminAuth,
     Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> Response {
+    // FMT_SMR.1: only operators may revoke OTPs.
+    if let Some(resp) = admin.require_operator() {
+        return resp;
+    }
+
     if !state.config.otp.enabled {
         return (
             StatusCode::BAD_REQUEST,

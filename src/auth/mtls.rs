@@ -94,42 +94,14 @@ pub async fn try_extract_mtls(parts: &Parts, _app: &Arc<AppState>) -> Option<Aut
 /// client possesses the private key corresponding to the certificate
 /// being renewed.
 ///
-/// Identity matching follows RFC 6125:
-///
-/// - **Section 6.4.4**: if the client certificate has SANs, the identity
-///   is matched against SANs exclusively (CN is ignored).
-/// - **Section 6.4.3**: wildcard matching rules apply to dNSName SANs.
-/// - **Section 6.4.1**: comparison is case-insensitive for DNS names.
-///
-/// For subject DN comparison (when SANs are absent), the DNs are
-/// canonicalized (trimmed, lowercased) before comparison.
+/// The full formatted distinguished names are trimmed and compared
+/// case-insensitively. SAN hostname matching cannot authorize a subject change.
+/// CSR signature verification is performed separately by the issuer.
 ///
 /// Returns `Ok(())` if subjects match, `Err` with a description if not.
 pub fn validate_pop_linking(auth: &AuthResult, csr_subject: &str) -> Result<(), String> {
-    // If the client certificate has SANs, use RFC 6125 identity matching.
-    // Per RFC 6125 §6.4.4, when SANs are present the subject CN is ignored.
-    //
-    // The csr_subject is a full DN (e.g., "CN=host.example.com, O=Org, C=US").
-    // Extract the CN for hostname-based SAN matching.
-    if !auth.subject_alt_names.is_empty() {
-        let cn = extract_cn(csr_subject);
-        let match_target = cn.as_deref().unwrap_or(csr_subject);
-
-        let matched = auth.subject_alt_names.iter().any(|san| {
-            super::name_match::matches_domain(san, match_target)
-                || super::name_match::matches_email(san, match_target)
-        });
-        if matched {
-            return Ok(());
-        }
-        return Err(format!(
-            "POP linking failed: no SAN in TLS cert matches CSR CN {match_target:?} \
-             (RFC 6125 §6.4.4: SANs present, CN ignored)"
-        ));
-    }
-
-    // Fallback: subject DN comparison (deprecated per RFC 6125 §6.4.4
-    // but still needed for legacy certificates without SANs).
+    // Reenrollment preserves the complete distinguished name. Hostname SAN
+    // matching is not authorization to change other subject attributes.
     let cert_subject = auth
         .subject_dn
         .as_deref()
@@ -149,28 +121,10 @@ pub fn validate_pop_linking(auth: &AuthResult, csr_subject: &str) -> Result<(), 
     Ok(())
 }
 
-/// Extract the CN value from a formatted DN string.
-///
-/// Case-insensitive: handles `CN=`, `cn=`, `CN =`, etc.
-/// Returns `None` if no CN is found.
-fn extract_cn(dn: &str) -> Option<String> {
-    for part in dn.split(',') {
-        let part = part.trim();
-        let upper = part.to_ascii_uppercase();
-        if upper.starts_with("CN=") || upper.starts_with("CN =") {
-            let eq_pos = part.find('=')?;
-            return Some(part[eq_pos + 1..].trim().to_string());
-        }
-    }
-    None
-}
-
 /// Validate that the mTLS client certificate subject matches the CSR subject
 /// using simple string comparison (legacy API).
 ///
-/// This is the simplified form that takes raw strings. For RFC 6125-compliant
-/// matching that considers SANs, use [`validate_pop_linking`] with an
-/// [`AuthResult`] instead.
+/// This is the equivalent comparison for callers holding raw subject strings.
 pub fn validate_pop_linking_simple(
     client_cert_subject: Option<&str>,
     csr_subject: &str,
@@ -353,7 +307,7 @@ fn extract_extended_key_usage(cert_der: &[u8]) -> Vec<String> {
 ///
 /// Uses the [`OcspClient`] when OCSP is configured; falls back to CRL
 /// checking when the OCSP responder is unreachable and soft-fail is enabled.
-pub async fn check_revocation(cert_der: &[u8], app: &Arc<AppState>) -> Result<(), String> {
+pub(crate) async fn check_revocation(cert_der: &[u8], app: &Arc<AppState>) -> Result<(), String> {
     let ocsp_config = &app.config.ocsp;
 
     if !ocsp_config.enabled {
@@ -364,17 +318,8 @@ pub async fn check_revocation(cert_der: &[u8], app: &Arc<AppState>) -> Result<()
     let ocsp_client = OcspClient::new(ocsp_config.clone());
 
     // The issuer certificate DER is needed for building the OCSP CertID.
-    // In production, this comes from the CA truststore. For now, use the
-    // default CA cert if available.
-    let issuer_der = app.default_ca_cert_der().unwrap_or_default();
-
-    if issuer_der.is_empty() {
-        warn!("no issuer certificate available for OCSP check");
-        if ocsp_config.soft_fail {
-            return Ok(());
-        }
-        return Err("OCSP check failed: no issuer certificate available".to_string());
-    }
+    // Resolve the actual signing issuer from configured certificate stores.
+    let issuer_der = super::certificate::issuer_for(cert_der, app)?;
 
     match ocsp_client
         .check_certificate_status(cert_der, &issuer_der)
@@ -452,12 +397,7 @@ async fn check_crl_fallback(cert_der: &[u8], app: &Arc<AppState>) -> Result<(), 
     let client_serial = client_cert.tbs_certificate.serial_number.clone();
 
     // 3. Get the issuer certificate for CRL signature verification.
-    let issuer_der = app
-        .default_ca_cert_der()
-        .ok_or_else(|| "no issuer certificate available for CRL verification".to_string())?;
-    if issuer_der.is_empty() {
-        return Err("issuer certificate is empty".to_string());
-    }
+    let issuer_der = super::certificate::issuer_for(cert_der, app)?;
     let issuer_ranges = cert_byte_ranges(&issuer_der)
         .ok_or_else(|| "failed to extract byte ranges from issuer certificate".to_string())?;
     let issuer_spki = &issuer_der[issuer_ranges.subject_public_key_info.clone()];
@@ -466,9 +406,19 @@ async fn check_crl_fallback(cert_der: &[u8], app: &Arc<AppState>) -> Result<(), 
     let mut last_err = String::new();
     for url in &cdp_urls {
         debug!(url = %url, "fetching CRL from distribution point");
-        match fetch_and_check_crl(url, &client_serial, issuer_spki).await {
+        match fetch_and_check_crl(
+            url,
+            &client_serial,
+            issuer_spki,
+            client_cert.tbs_certificate.issuer.as_bytes(),
+        )
+        .await
+        {
             Ok(()) => return Ok(()),
             Err(e) => {
+                if e.starts_with("certificate serial") {
+                    return Err(e);
+                }
                 warn!(url = %url, error = %e, "CRL check failed for this distribution point");
                 last_err = e;
             }
@@ -486,13 +436,14 @@ async fn fetch_and_check_crl(
     url: &str,
     client_serial: &synta::Integer,
     issuer_spki_der: &[u8],
+    issuer_name_der: &[u8],
 ) -> Result<(), String> {
     // Fetch the CRL via HTTP with timeout and size limit.
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .map_err(|e| format!("CRL client error: {e}"))?;
-    let response = client
+    let mut response = client
         .get(url)
         .send()
         .await
@@ -512,14 +463,49 @@ async fn fetch_and_check_crl(
         return Err(format!("CRL from {url} too large ({len} bytes, max 10 MB)"));
     }
 
-    let crl_der = response
-        .bytes()
-        .await
-        .map_err(|e| format!("failed to read CRL response body: {e}"))?;
+    let mut crl_der = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
+        if chunk.len() > 10_000_000usize.saturating_sub(crl_der.len()) {
+            return Err("CRL body exceeds 10 MB".into());
+        }
+        crl_der.extend_from_slice(&chunk);
+    }
 
     // Parse the CRL.
     let crl =
         CertificateList::from_der(&crl_der).map_err(|e| format!("failed to parse CRL DER: {e}"))?;
+
+    if crl
+        .tbs_cert_list
+        .issuer
+        .to_der()
+        .map_err(|e| e.to_string())?
+        != issuer_name_der
+    {
+        return Err("CRL issuer name does not match certificate issuer".into());
+    }
+    let now = chrono::Utc::now();
+    let this_update = super::certificate::time(&crl.tbs_cert_list.this_update)?;
+    let next_update = crl
+        .tbs_cert_list
+        .next_update
+        .as_ref()
+        .ok_or("CRL missing nextUpdate")?;
+    let next_update = super::certificate::time(next_update)?;
+    if this_update > now || next_update <= now || next_update <= this_update {
+        return Err("CRL is stale or future-dated".into());
+    }
+    if let Some(extensions) = &crl.tbs_cert_list.crl_extensions {
+        for ext in extensions {
+            let oid = ext.extn_id.to_string();
+            if oid == "2.5.29.27"
+                || oid == "2.5.29.28"
+                || ext.critical.as_ref().is_some_and(|v| v.0)
+            {
+                return Err("unsupported scoped, delta or critical CRL extension".into());
+            }
+        }
+    }
 
     // Verify the CRL signature against the issuer's SPKI.
     // The CRL has the same outer SEQUENCE { TBS, AlgId, Sig } structure

@@ -106,6 +106,27 @@ pub async fn post_cms_simpleenroll(
     body: Bytes,
 ) -> Result<Response, KipukaError> {
     let cms_config = get_cms_est_config(&state)?;
+    if label.disconnected.unwrap_or(state.config.est.disconnected) {
+        return Err(KipukaError::ServiceUnavailable(
+            "CMS enrollment is unavailable in disconnected mode; use queued EST simpleenroll"
+                .into(),
+        ));
+    }
+    if state
+        .config
+        .est
+        .labels
+        .iter()
+        .find(|c| c.name == label.label)
+        .is_some_and(|c| {
+            !c.auth_methods.is_empty()
+                && !c.auth_methods.contains(&crate::config::EstAuthMethod::Cms)
+        })
+    {
+        return Err(KipukaError::Forbidden(
+            "CMS authentication is not permitted for this label".into(),
+        ));
+    }
     let ca_id = label.ca_id();
 
     tracing::info!(
@@ -124,10 +145,14 @@ pub async fn post_cms_simpleenroll(
     // Verify the CMS SignedData and extract the CSR payload.
     let truststore = build_truststore(&state);
     let cms_result = cms_auth::verify_cms_signed_data(&body, &truststore)?;
+    crate::auth::mtls::check_revocation(&cms_result.signer_cert_der, &state)
+        .await
+        .map_err(KipukaError::Auth)?;
 
     // Extract the signer identity for authorization decisions.
     let auth_result = cms_auth::extract_signer_identity(&cms_result)?;
     let identity = &auth_result.identity;
+    state.admit_enrollment(identity, "cms_est").await?;
 
     tracing::info!(
         ca_id = %ca_id,
@@ -142,6 +167,25 @@ pub async fn post_cms_simpleenroll(
         return Err(KipukaError::BadRequest(
             "extracted CSR is too short to be valid".into(),
         ));
+    }
+
+    // Enrollment authorization (FDP_ACF.1): bind the CMS signer identity to the
+    // requested names and enforce the label allowlist — the same policy the
+    // direct /simpleenroll path applies, so the CMS transport is not a bypass.
+    if let Err(reason) =
+        crate::auth::enroll_authz::authorize_csr_der(csr_der, identity, &label.enroll_policy())
+    {
+        tracing::warn!(ca_id = %ca_id, identity = %identity, %reason, "CMS simpleenroll authorization denied");
+        state
+            .record_audit_event_with_actor(
+                "cms_simpleenroll_denied",
+                identity,
+                &format!("ca_id={ca_id}, identity={identity}, reason={reason}"),
+            )
+            .await;
+        return Err(KipukaError::Forbidden(format!(
+            "enrollment not authorized: {reason}"
+        )));
     }
 
     // Delegate to the standard direct-signing enrollment pipeline.
@@ -185,6 +229,27 @@ pub async fn post_cms_simplereenroll(
     body: Bytes,
 ) -> Result<Response, KipukaError> {
     let cms_config = get_cms_est_config(&state)?;
+    if label.disconnected.unwrap_or(state.config.est.disconnected) {
+        return Err(KipukaError::ServiceUnavailable(
+            "CMS enrollment is unavailable in disconnected mode; use queued EST simpleenroll"
+                .into(),
+        ));
+    }
+    if state
+        .config
+        .est
+        .labels
+        .iter()
+        .find(|c| c.name == label.label)
+        .is_some_and(|c| {
+            !c.auth_methods.is_empty()
+                && !c.auth_methods.contains(&crate::config::EstAuthMethod::Cms)
+        })
+    {
+        return Err(KipukaError::Forbidden(
+            "CMS authentication is not permitted for this label".into(),
+        ));
+    }
     let ca_id = label.ca_id();
 
     tracing::info!(
@@ -201,8 +266,12 @@ pub async fn post_cms_simplereenroll(
 
     let truststore = build_truststore(&state);
     let cms_result = cms_auth::verify_cms_signed_data(&body, &truststore)?;
+    crate::auth::mtls::check_revocation(&cms_result.signer_cert_der, &state)
+        .await
+        .map_err(KipukaError::Auth)?;
     let auth_result = cms_auth::extract_signer_identity(&cms_result)?;
     let identity = &auth_result.identity;
+    state.admit_enrollment(identity, "cms_est").await?;
 
     tracing::info!(
         ca_id = %ca_id,
@@ -254,6 +323,25 @@ pub async fn post_cms_simplereenroll(
         tracing::info!("CMS simplereenroll POP linking: CSR subject matches signer");
     }
 
+    // Enrollment authorization (FDP_ACF.1): POP linking above proves the CSR
+    // subject equals the signer, but the per-label SAN binding and name
+    // allowlist are independent controls — apply them here too.
+    if let Err(reason) =
+        crate::auth::enroll_authz::authorize_csr_der(csr_der, identity, &label.enroll_policy())
+    {
+        tracing::warn!(ca_id = %ca_id, identity = %identity, %reason, "CMS simplereenroll authorization denied");
+        state
+            .record_audit_event_with_actor(
+                "cms_simplereenroll_denied",
+                identity,
+                &format!("ca_id={ca_id}, identity={identity}, reason={reason}"),
+            )
+            .await;
+        return Err(KipukaError::Forbidden(format!(
+            "enrollment not authorized: {reason}"
+        )));
+    }
+
     // Delegate to the standard direct-signing enrollment pipeline.
     // Re-enrollment uses the same certificate issuance path as simple enrollment;
     // the authentication difference is that the CMS signer cert IS the existing
@@ -297,6 +385,27 @@ pub async fn post_cms_serverkeygen(
     body: Bytes,
 ) -> Result<Response, KipukaError> {
     let cms_config = get_cms_est_config(&state)?;
+    if label.disconnected.unwrap_or(state.config.est.disconnected) {
+        return Err(KipukaError::ServiceUnavailable(
+            "CMS enrollment is unavailable in disconnected mode; use queued EST simpleenroll"
+                .into(),
+        ));
+    }
+    if state
+        .config
+        .est
+        .labels
+        .iter()
+        .find(|c| c.name == label.label)
+        .is_some_and(|c| {
+            !c.auth_methods.is_empty()
+                && !c.auth_methods.contains(&crate::config::EstAuthMethod::Cms)
+        })
+    {
+        return Err(KipukaError::Forbidden(
+            "CMS authentication is not permitted for this label".into(),
+        ));
+    }
     let ca_id = label.ca_id();
 
     if !state.config.est.serverkeygen {
@@ -319,8 +428,12 @@ pub async fn post_cms_serverkeygen(
 
     let truststore = build_truststore(&state);
     let cms_result = cms_auth::verify_cms_signed_data(&body, &truststore)?;
+    crate::auth::mtls::check_revocation(&cms_result.signer_cert_der, &state)
+        .await
+        .map_err(KipukaError::Auth)?;
     let auth_result = cms_auth::extract_signer_identity(&cms_result)?;
     let identity = &auth_result.identity;
+    state.admit_enrollment(identity, "cms_est").await?;
 
     tracing::info!(
         ca_id = %ca_id,
@@ -332,17 +445,40 @@ pub async fn post_cms_serverkeygen(
     // The payload is the CSR template with the desired subject/extensions.
     let csr_template = &cms_result.payload;
 
-    // Issue the certificate using the CSR template as the enrollment request.
-    let cert_der = issue_certificate_from_csr(&state, ca_id, csr_template).await?;
+    // Enrollment authorization (FDP_ACF.1): the requested subject/SANs in the
+    // template must be authorized for this signer identity and label, exactly
+    // as for a client-supplied CSR.
+    if let Err(reason) =
+        crate::auth::enroll_authz::authorize_csr_der(csr_template, identity, &label.enroll_policy())
+    {
+        tracing::warn!(ca_id = %ca_id, identity = %identity, %reason, "CMS serverkeygen authorization denied");
+        state
+            .record_audit_event_with_actor(
+                "cms_serverkeygen_denied",
+                identity,
+                &format!("ca_id={ca_id}, identity={identity}, reason={reason}"),
+            )
+            .await;
+        return Err(KipukaError::Forbidden(format!(
+            "enrollment not authorized: {reason}"
+        )));
+    }
 
-    // For server-side key generation, the private key would be generated
-    // server-side and returned alongside the certificate.  The current
-    // implementation issues the certificate from the client-provided CSR;
-    // full server-keygen (RSA/EC key pair generation on the server) will be
-    // added when the keygen module is implemented.
-    //
-    // The cert DER is used as the response payload.  When server-keygen is
-    // complete, this will be replaced with a combined cert + private key blob.
+    let key_type = super::serverkeygen::detect_key_type_from_csr(csr_template);
+    let generated = crate::ca::keygen::generate_key_pair(
+        &key_type,
+        &crate::ca::keygen::KeyGenConfig::default(),
+    )
+    .map_err(|e| KipukaError::Ca(format!("CMS key generation failed: {e}")))?;
+    let new_csr = super::serverkeygen::build_keygen_csr(
+        csr_template,
+        &generated.public_key_der,
+        &generated.private_key_der,
+    )?;
+    let cert_der = issue_certificate_from_csr(&state, ca_id, &new_csr).await?;
+    let certificates = super::cacerts::build_certs_only_pkcs7(&[cert_der])?;
+    let key_and_cert =
+        super::serverkeygen::build_multipart_response(&certificates, &generated.private_key_der);
 
     // Server key generation responses MUST always be encrypted —
     // the response may contain the private key.
@@ -352,8 +488,11 @@ pub async fn post_cms_serverkeygen(
         .map(|s| s.as_str())
         .unwrap_or("AES-256-GCM");
 
-    let response_body =
-        cms_auth::build_cms_enveloped_data(&cert_der, &cms_result.signer_cert_der, enc_alg)?;
+    let response_body = cms_auth::build_cms_enveloped_data(
+        key_and_cert.as_bytes(),
+        &cms_result.signer_cert_der,
+        enc_alg,
+    )?;
 
     state
         .record_audit_event(
@@ -378,6 +517,27 @@ pub async fn post_cms_fullcmc(
     body: Bytes,
 ) -> Result<Response, KipukaError> {
     let cms_config = get_cms_est_config(&state)?;
+    if label.disconnected.unwrap_or(state.config.est.disconnected) {
+        return Err(KipukaError::ServiceUnavailable(
+            "CMS enrollment is unavailable in disconnected mode; use queued EST simpleenroll"
+                .into(),
+        ));
+    }
+    if state
+        .config
+        .est
+        .labels
+        .iter()
+        .find(|c| c.name == label.label)
+        .is_some_and(|c| {
+            !c.auth_methods.is_empty()
+                && !c.auth_methods.contains(&crate::config::EstAuthMethod::Cms)
+        })
+    {
+        return Err(KipukaError::Forbidden(
+            "CMS authentication is not permitted for this label".into(),
+        ));
+    }
     let ca_id = label.ca_id();
 
     if !state.config.est.fullcmc {
@@ -398,8 +558,12 @@ pub async fn post_cms_fullcmc(
 
     let truststore = build_truststore(&state);
     let cms_result = cms_auth::verify_cms_signed_data(&body, &truststore)?;
+    crate::auth::mtls::check_revocation(&cms_result.signer_cert_der, &state)
+        .await
+        .map_err(KipukaError::Auth)?;
     let auth_result = cms_auth::extract_signer_identity(&cms_result)?;
     let identity = &auth_result.identity;
+    state.admit_enrollment(identity, "cms_est").await?;
 
     // RHELBU-3536 R15: Validate id-kp-cmcRA EKU on the signer certificate.
     //
@@ -470,18 +634,18 @@ pub async fn post_cms_fullcmc(
     let pki_data = synta_cmc::parser::parse_pki_data(&pki_data_der)
         .map_err(|e| KipukaError::BadRequest(format!("CMC PKIData parse failed: {e}")))?;
 
-    let transaction_id = synta_cmc::controls::extract_transaction_id(&pki_data.controls);
-    let sender_nonce = synta_cmc::controls::extract_sender_nonce(&pki_data.controls);
+    let transaction_id = synta_cmc::controls::extract_transaction_id(&pki_data.control_sequence);
+    let sender_nonce = synta_cmc::controls::extract_sender_nonce(&pki_data.control_sequence);
 
     tracing::info!(
         ca_id = %ca_id,
         identity = %identity,
         transaction_id = ?transaction_id,
-        num_requests = pki_data.certification_requests.len(),
+        num_requests = pki_data.req_sequence.len(),
         "CMS fullcmc: PKIData parsed"
     );
 
-    if pki_data.certification_requests.is_empty() {
+    if pki_data.req_sequence.is_empty() {
         return Err(KipukaError::BadRequest(
             "CMC request contains no certification requests".into(),
         ));
@@ -492,10 +656,17 @@ pub async fn post_cms_fullcmc(
     let mut body_part_ids: Vec<u32> = Vec::new();
     let mut failed_body_part_ids: Vec<u32> = Vec::new();
 
-    for entry in &pki_data.certification_requests {
+    let requests = crate::ca::protocol::cmc_requests(&pki_data)?;
+    for entry in &requests {
         let body_part_id = entry.body_part_id;
 
-        if entry.request_type == synta_cmc::parser::RequestType::Pkcs10 {
+        if entry.request_type == 0 {
+            crate::auth::enroll_authz::authorize_csr_der(
+                &entry.der,
+                identity,
+                &label.enroll_policy(),
+            )
+            .map_err(KipukaError::Forbidden)?;
             match issue_certificate_from_csr(&state, ca_id, &entry.der).await {
                 Ok(cert) => {
                     issued_certs.push(cert);
@@ -545,6 +716,22 @@ pub async fn post_cms_fullcmc(
         .build()
         .map_err(|e| KipukaError::Ca(format!("CMC PKIResponse build failed: {e}")))?;
 
+    let ca = state.get_ca(ca_id).ok_or(KipukaError::NotFound)?;
+    let ca_cfg = state
+        .config
+        .cas
+        .iter()
+        .find(|c| c.id == ca_id)
+        .ok_or(KipukaError::NotFound)?;
+    let key = crate::ca::issue::resolve_signing_key(ca_cfg, state.hsm.as_ref()).await?;
+    let cmc_response_der = crate::ca::protocol::cmc_transaction(&cmc_response_der, transaction_id)?;
+    let cmc_response_der = crate::ca::protocol::signed_cmc(
+        &cmc_response_der,
+        &issued_certs,
+        &ca.cert_der,
+        key.as_signing_key(),
+        &ca.hash_algorithm,
+    )?;
     let response_body = if cms_config.encrypt_responses {
         let enc_alg = cms_config
             .allowed_content_encryption
@@ -627,5 +814,6 @@ async fn issue_certificate_from_csr(
     )
     .map_err(|e| KipukaError::Ca(format!("certificate issuance failed: {e}")))?;
 
+    crate::ca::issue::persist_certificate(state, ca_id, &profile.name, &result).await?;
     Ok(result.certificate_der)
 }

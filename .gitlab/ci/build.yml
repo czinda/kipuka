@@ -1,55 +1,25 @@
-# =============================================================================
-# Stage: build — compile debug, release, and documentation
-# =============================================================================
-
-.build-base:
-  stage: build
-  image: ${RUST_IMAGE}
-  variables:
-    GIT_SUBMODULE_STRATEGY: recursive
-    LIBCLANG_PATH: "/usr/lib/llvm-16/lib"
-  before_script:
-    - apt-get update -qq && apt-get install -y -qq libssl-dev pkg-config clang cmake libclang-dev libc6-dev llvm-dev >/dev/null 2>&1
-    - git config --global core.symlinks true
-    - export LIBCLANG_PATH="$(find /usr/lib -name 'libclang*.so*' -print -quit | xargs dirname 2>/dev/null || echo /usr/lib/llvm-16/lib)"
-  cache:
-    key: build-${CI_COMMIT_REF_SLUG}
-    paths:
-      - target/
-      - ${CARGO_HOME}/registry/
-      - ${CARGO_HOME}/git/
-    policy: pull-push
-
 build-debug:
-  extends: .build-base
+  extends: .rust-base
+  stage: build
   script:
-    - cargo build --all-features
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - cargo build --locked --workspace --all-features
 
 build-release:
-  extends: .build-base
+  extends: .rust-base
+  stage: build
   script:
-    - cargo build --release --all-features
+    - cargo build --locked --workspace --release --all-features
   artifacts:
-    paths:
-      - target/release/kipuka
+    paths: [target/release/kipuka, target/release/kipuka-keygen]
     expire_in: 7 days
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-    - if: $CI_COMMIT_TAG
 
 build-docs:
-  extends: .build-base
+  variables:
+    RUSTDOCFLAGS: "-D warnings"
+  extends: .rust-base
+  stage: build
   script:
-    - cargo doc --all-features --no-deps
-    - echo '<meta http-equiv="refresh" content="0; url=kipuka/index.html">' > target/doc/index.html
+    - cargo doc --locked --workspace --all-features --no-deps
   artifacts:
-    paths:
-      - target/doc/
+    paths: [target/doc/]
     expire_in: 7 days
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

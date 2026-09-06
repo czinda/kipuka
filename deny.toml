@@ -10,32 +10,18 @@ all-features = true
 
 # ── Advisories ──────────────────────────────────────────────────────────────
 
+# CI uses contrib/security/audit.py for scoped, expiring advisory exceptions.
+# Running the cargo-deny advisories check directly stays strict: no blanket ignores.
 [advisories]
-version = 2
-ignore = [
-    # Transitive dependencies — no direct fix available, tracking upstream.
-    "RUSTSEC-2023-0071", # rsa: Marvin Attack timing sidechannel (transitive via rustls)
-    "RUSTSEC-2025-0134", # rustls-pemfile: unmaintained (migrating to rustls-pki-types)
-    "RUSTSEC-2026-0190", # anyhow: unsoundness in downcast_mut (no context+downcast_mut usage in kipuka)
-    "RUSTSEC-2026-0258", # h2: unbounded empty DATA frames (transitive, fix pending h2 0.4.16)
-]
+ignore = []
 
 # ── Licenses ────────────────────────────────────────────────────────────────
 # kipuka is GPL-3.0-or-later. Allow GPL-compatible dependency licenses.
 
 [licenses]
-version = 2
 allow = [
-    "GPL-2.0",
-    "GPL-2.0-only",
-    "GPL-2.0-or-later",
-    "GPL-3.0",
-    "GPL-3.0-only",
     "GPL-3.0-or-later",
-    "LGPL-2.1-only",
     "LGPL-2.1-or-later",
-    "LGPL-3.0-only",
-    "LGPL-3.0-or-later",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "MIT",
@@ -44,25 +30,10 @@ allow = [
     "ISC",
     "Zlib",
     "Unicode-3.0",
-    "Unicode-DFS-2016",
-    "OpenSSL",
-    "0BSD",
     "BSL-1.0",
     "CC0-1.0",
-    "MPL-2.0",
-    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.8
-
-# ring uses a non-standard license file.
-exceptions = [
-    { allow = ["OpenSSL"], name = "ring", version = "*" },
-]
-
-[[licenses.clarify]]
-name = "ring"
-expression = "MIT AND ISC AND OpenSSL"
-license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
 
 # ── Bans ────────────────────────────────────────────────────────────────────
 
@@ -75,7 +46,8 @@ highlight = "all"
 
 [sources]
 unknown-registry = "deny"
-unknown-git = "warn"
+unknown-git = "deny"
+required-git-spec = "rev"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = [
     "https://github.com/czinda/synta.git",

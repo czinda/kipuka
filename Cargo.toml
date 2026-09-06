@@ -21,10 +21,10 @@ repository = "https://github.com/czinda/kipuka"
 
 [workspace.dependencies]
 # ASN.1 / X.509 / CMS (Synta)
-synta = { git = "https://github.com/czinda/synta.git", branch = "main" }
-synta-certificate = { git = "https://github.com/czinda/synta.git", branch = "main", features = ["openssl"] }
-synta-cmc = { git = "https://github.com/czinda/synta.git", rev = "e1159fe" }
-synta-krb5 = { git = "https://github.com/czinda/synta.git", branch = "main", features = ["std"] }
+synta = { git = "https://github.com/czinda/synta.git", rev = "1fbba09dd92fdd37ac87426c0cac202c36bd55fe" }
+synta-certificate = { git = "https://github.com/czinda/synta.git", rev = "1fbba09dd92fdd37ac87426c0cac202c36bd55fe", features = ["openssl"] }
+synta-cmc = { git = "https://github.com/czinda/synta.git", rev = "1fbba09dd92fdd37ac87426c0cac202c36bd55fe" }
+synta-krb5 = { git = "https://github.com/czinda/synta.git", rev = "1fbba09dd92fdd37ac87426c0cac202c36bd55fe", features = ["std"] }
 
 # Web framework
 axum = { version = "0.8", features = ["macros"] }
@@ -106,7 +106,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "EST (RFC 7030) enrollment server with Multi-CA HA, HSM support, and NIAP CA PP compliance"
+description = "EST enrollment server with configurable CA routing and HSM support"
 default-run = "kipuka"
 
 [[bin]]
@@ -169,16 +169,8 @@ backend-postgres = []
 backend-mariadb = []
 gssapi = ["dep:libgssapi"]
 
-[lints.rust]
-unexpected_cfgs = { level = "allow", check-cfg = ['cfg(feature, values("fullcmc"))'] }
-
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["native-tls", "json"] }  # json feature only for tests
 tempfile = "3"
-
-[patch."https://github.com/czinda/synta.git"]
-synta = { path = "../synta" }
-synta-certificate = { path = "../synta/synta-certificate" }
-synta-krb5 = { path = "../synta/synta-krb5" }
-synta-cmc = { path = "../synta/synta-cmc" }
+kipuka-coap.workspace = true  # direct handler tests (FDP_ACF.1 enforcement over CoAP)
 
