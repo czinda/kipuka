@@ -1,5 +1,8 @@
 # Both feature configurations exercise every workspace member and doctests.
 unit-tests:
+  variables:
+    KUBERNETES_MEMORY_REQUEST: "4Gi"
+    KUBERNETES_MEMORY_LIMIT: "8Gi"
   extends: .rust-base
   stage: test
   timeout: 45 minutes

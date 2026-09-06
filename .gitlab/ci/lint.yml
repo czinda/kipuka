@@ -5,6 +5,9 @@ rustfmt:
     - cargo fmt --all -- --check
 
 clippy:
+  variables:
+    KUBERNETES_MEMORY_REQUEST: "4Gi"
+    KUBERNETES_MEMORY_LIMIT: "8Gi"
   extends: .rust-base
   stage: lint
   script:

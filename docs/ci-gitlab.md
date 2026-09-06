@@ -74,3 +74,9 @@ source compilation failure. GitHub Actions built the same Containerfile and ran
 `kipuka --version` successfully in run 33992960640. Independent GitLab Rust and
 packaging checks run without waiting on container verification; publishing still
 requires all earlier stages to succeed.
+
+Clippy and workspace tests request 4 GiB and an 8 GiB memory limit via the
+Kubernetes executor variables. Runner administrators must permit these overrides.
+The job logs print the effective cgroup memory limit so ignored overrides are
+visible. The default-feature test build was OOM-killed with the previous runner
+allocation even after debug symbols and compiler concurrency were reduced.

@@ -30,6 +30,14 @@ variables:
     - apt-get update -qq
     - apt-get install -y --no-install-recommends libssl-dev libkrb5-dev pkg-config clang cmake libclang-dev libc6-dev python3
     - rustc --version
+    - |
+      if [ -r /sys/fs/cgroup/memory.max ]; then
+        printf "Runner memory limit (bytes): "
+        cat /sys/fs/cgroup/memory.max
+      elif [ -r /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then
+        printf "Runner memory limit (bytes): "
+        cat /sys/fs/cgroup/memory/memory.limit_in_bytes
+      fi
     - python3 -c 'import os, tomllib; assert tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"] == os.environ["RUST_VERSION"]'
     - git config --global core.symlinks true
 
