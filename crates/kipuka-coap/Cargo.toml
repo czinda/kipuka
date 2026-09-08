@@ -15,4 +15,4 @@ bytes.workspace = true
 synta-certificate.workspace = true
 openssl = "0.10"
 openssl-sys = "0.9"
-foreign-types = "0.3"
+foreign-types = "0.5"
