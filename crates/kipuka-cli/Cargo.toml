@@ -16,7 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 kipuka-est.workspace = true
-reqwest = { version = "0.12", default-features = false, features = ["native-tls"] }
+reqwest = { version = "0.13", default-features = false, features = ["native-tls"] }
 tokio.workspace = true
 clap.workspace = true
 base64.workspace = true
