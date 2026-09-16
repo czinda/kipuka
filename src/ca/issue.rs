@@ -400,6 +400,16 @@ pub fn issue_certificate(
     ocsp_url: Option<&str>,
     crl_url: Option<&str>,
 ) -> Result<IssuanceResult, IssuanceError> {
+    // Step 0: Verify CSR proof-of-possession (RFC 7030 §4.2 / RFC 2986 §3).
+    //
+    // This is the central PoP gate for *every* direct-signing enrollment path
+    // (simpleenroll, simplereenroll, CMS-EST, CoAP, STAR, CMP/fullcmc, and the
+    // software serverkeygen path). Enforcing it here — rather than per-route —
+    // guarantees a CA never signs a CSR whose private key the requester has not
+    // proven possession of, regardless of which transport delivered the request.
+    verify_csr_pop(csr_der)?;
+
+    // Step 1: Parse and validate CSR.
     validate_csr(csr_der)?;
     issue_verified_request(
         csr_der,
@@ -1317,5 +1327,87 @@ pub(crate) async fn persist_certificate_on<'e, E: sqlx::Executor<'e, Database = 
         .bind(result.not_after.format("%Y-%m-%dT%H:%M:%SZ").to_string())
         .bind(&result.certificate_der).bind(ca_id).bind(profile).execute(executor).await
         .map_err(|e| crate::error::KipukaError::Db(format!("certificate persistence failed: {e}")))?;
+    Ok(())
+}
+
+/// Verify CSR proof-of-possession (RFC 7030 §4.2, RFC 2986 §3).
+///
+/// A PKCS#10 CSR is self-signed: the `signature` field is produced with the
+/// private key corresponding to the public key carried in the CSR's own
+/// `SubjectPublicKeyInfo`. Verifying that signature over the
+/// `CertificationRequestInfo` (the TBS portion) proves the requester holds the
+/// private key — proof-of-possession. RFC 7030 §4.2 requires an EST server to
+/// perform this check before issuing.
+///
+/// ML-KEM keys are a special case: ML-KEM is a key-encapsulation mechanism and
+/// cannot produce a signature, so a FIPS 203 CSR carries proof-of-possession as
+/// a *separate* ML-DSA signature (see RFC 9688 and issue #9/#17/#25) rather than
+/// a self-signature. That mechanism is not implemented here, so we **fail
+/// closed** — rejecting the CSR — rather than skipping PoP and issuing blindly.
+fn verify_csr_pop(csr_der: &[u8]) -> Result<(), IssuanceError> {
+    use synta_certificate::SignatureVerifier;
+
+    let csr = synta_certificate::csr::CertificationRequest::from_der(csr_der)
+        .map_err(|e| IssuanceError::InvalidCsr(format!("CSR parse failed: {e}")))?;
+
+    // Reject key-encapsulation keys up front: they cannot self-sign, so the
+    // generic verifier below would fail with a cryptic algorithm error. An
+    // explicit rejection makes the fail-closed behaviour clear in the logs.
+    let spki_alg_oid = &csr
+        .certification_request_info
+        .subject_pkinfo
+        .algorithm
+        .algorithm;
+    if let Some(name) = synta_certificate::identify_public_key_algorithm(spki_alg_oid)
+        && matches!(
+            name,
+            synta_certificate::names::ML_KEM_512
+                | synta_certificate::names::ML_KEM_768
+                | synta_certificate::names::ML_KEM_1024
+        )
+    {
+        warn!(
+            algorithm = %name,
+            "rejecting ML-KEM CSR: separate ML-DSA proof-of-possession not yet supported"
+        );
+        return Err(IssuanceError::InvalidCsr(format!(
+            "{name} is a key-encapsulation key and cannot self-sign; \
+             ML-KEM proof-of-possession (a separate ML-DSA signature) is not yet supported"
+        )));
+    }
+
+    // Encode the CertificationRequestInfo (the signed TBS portion).
+    let cri_der = csr
+        .certification_request_info
+        .to_der()
+        .map_err(|e| IssuanceError::InvalidCsr(format!("CSR CRI encode failed: {e}")))?;
+
+    // Encode the signature algorithm identifier.
+    let sig_alg_der = csr
+        .signature_algorithm
+        .to_der()
+        .map_err(|e| IssuanceError::InvalidCsr(format!("CSR sig alg encode failed: {e}")))?;
+
+    // Raw signature bytes from the BIT STRING.
+    let signature_bits = csr.signature.as_bytes();
+
+    // The CSR is self-signed, so the verifying key is the CSR's own SPKI.
+    let spki_der = csr
+        .certification_request_info
+        .subject_pkinfo
+        .to_der()
+        .map_err(|e| IssuanceError::InvalidCsr(format!("CSR SPKI encode failed: {e}")))?;
+
+    let verifier = synta_certificate::default_signature_verifier();
+    verifier
+        .verify_certificate_signature(&cri_der, &sig_alg_der, signature_bits, &spki_der)
+        .map_err(|e| {
+            warn!(error = %e, "CSR proof-of-possession verification failed");
+            IssuanceError::InvalidCsr(format!(
+                "CSR self-signature (proof-of-possession) verification failed: {e}"
+            ))
+        })?;
+
+    debug!("CSR proof-of-possession verified");
     Ok(())
 }
