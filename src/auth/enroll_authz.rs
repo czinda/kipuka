@@ -98,6 +98,18 @@ fn check_names(
     policy: &EnrollAuthzPolicy,
 ) -> Result<(), String> {
     // ── Identity binding (FDP_ACF.1) ───────────────────────────────────────
+    // An identity-binding policy is meaningless without an authenticated
+    // identity.  With an empty identity, an empty CSR Common Name would
+    // "match" it (both `""`) and let an unauthenticated requester satisfy
+    // `require_cn_match`.  Fail closed: when the label demands identity
+    // binding, require that an identity was actually presented.
+    if (policy.require_cn_match || policy.require_san_match) && identity.is_empty() {
+        return Err(
+            "enrollment authorization requires an authenticated identity, but none was presented"
+                .to_string(),
+        );
+    }
+
     if policy.require_cn_match {
         match cn {
             Some(cn) if cn.eq_ignore_ascii_case(identity) => {}
