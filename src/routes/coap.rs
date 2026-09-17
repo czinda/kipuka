@@ -53,7 +53,7 @@ impl kipuka_coap::EstHandler for CoapEstHandler {
             EstOperation::SimpleReenroll => {
                 handle_simplereenroll(payload, label, client_cert, &self.state)
             }
-            EstOperation::CsrAttrs => handle_csrattrs(&self.state),
+            EstOperation::CsrAttrs => handle_csrattrs(label, &self.state),
             EstOperation::ServerKeygen => Err(CoapError::Internal(
                 "server key generation not yet implemented for CoAP transport".into(),
             )),
@@ -324,30 +324,43 @@ fn handle_simplereenroll(
 ///
 /// RFC 9483 §5.1: The response Content-Format is 287
 /// (`application/csrattrs`).
-fn handle_csrattrs(state: &Arc<AppState>) -> Result<EstResponse, CoapError> {
-    let attributes = &state.config.est.csr_attributes;
+fn handle_csrattrs(label: Option<&str>, state: &Arc<AppState>) -> Result<EstResponse, CoapError> {
+    // Resolve the label so per-label CSR attributes and the RFC 9908 template
+    // are honoured, matching the HTTP `/csrattrs` handler (transport parity).
+    // An unknown label is a client addressing error → 4.04 Not Found, exactly
+    // as for `/cacerts`.  Previously this read the global attribute list
+    // directly, silently ignoring per-label overrides.
+    let label_ex = resolve_label(state, label)?;
 
-    if attributes.is_empty() {
-        // No attributes configured — return empty payload.
-        return Ok(EstResponse {
-            payload: Vec::new(),
-            content_format: kipuka_coap::content_format::APPLICATION_CSRATTRS,
-            audit_event: Some(AuditInfo {
-                event_type: "coap_csrattrs".into(),
-                detail: "empty attributes".into(),
-            }),
-        });
-    }
+    // Per-label attributes override the global list when non-empty.
+    let attributes = if label_ex.csr_attributes.is_empty() {
+        &state.config.est.csr_attributes
+    } else {
+        &label_ex.csr_attributes
+    };
 
-    let csrattrs_der = crate::routes::csrattrs::encode_csr_attrs(attributes)
-        .map_err(|e| CoapError::Internal(format!("CSR attributes encoding failed: {e}")))?;
+    // Per-label template overrides the global template.
+    let template = label_ex
+        .csr_template
+        .as_ref()
+        .or(state.config.est.csr_template.as_ref());
+
+    let csrattrs_der =
+        crate::routes::csrattrs::encode_csr_attrs_with_template(attributes, template)
+            .map_err(|e| CoapError::Internal(format!("CSR attributes encoding failed: {e}")))?;
+
+    let detail = if csrattrs_der.is_empty() {
+        "empty attributes".to_string()
+    } else {
+        format!("{} attributes", attributes.len())
+    };
 
     Ok(EstResponse {
         payload: csrattrs_der,
         content_format: kipuka_coap::content_format::APPLICATION_CSRATTRS,
         audit_event: Some(AuditInfo {
             event_type: "coap_csrattrs".into(),
-            detail: format!("{} attributes", attributes.len()),
+            detail,
         }),
     })
 }
