@@ -45,7 +45,7 @@ impl kipuka_coap::EstHandler for CoapEstHandler {
         _content_format: Option<u16>,
         client_cert: Option<&ClientCertInfo>,
     ) -> Result<EstResponse, CoapError> {
-        match operation {
+        let result = match operation {
             EstOperation::CaCerts => handle_cacerts(label, &self.state),
             EstOperation::SimpleEnroll => {
                 handle_simpleenroll(payload, label, client_cert, &self.state)
@@ -57,7 +57,79 @@ impl kipuka_coap::EstHandler for CoapEstHandler {
             EstOperation::ServerKeygen => Err(CoapError::Internal(
                 "server key generation not yet implemented for CoAP transport".into(),
             )),
+        };
+
+        // NIAP FAU_GEN.1: persist an audit event for every CoAP EST operation,
+        // on success and on authorization denial alike.  The `kipuka-coap`
+        // transport layer has no `AppState` access, so audit persistence must
+        // happen here — the one dispatch point that holds it.  Previously CoAP
+        // events were only logged by the server loop and never written to the
+        // `audit_events` table, leaving the entire transport un-audited.
+        let actor = client_cert.map(|c| c.subject_dn.clone()).unwrap_or_default();
+        match &result {
+            Ok(resp) => {
+                if let Some(audit) = resp.audit_event.as_ref() {
+                    self.spawn_audit(audit.event_type.clone(), actor, audit.detail.clone());
+                }
+            }
+            Err(err) => {
+                if let Some((event_type, detail)) = coap_denial_audit(operation, err) {
+                    self.spawn_audit(event_type, actor, detail);
+                }
+            }
         }
+
+        result
+    }
+}
+
+impl CoapEstHandler {
+    /// Persist a CoAP EST audit event (NIAP FAU_GEN.1) from the synchronous
+    /// [`kipuka_coap::EstHandler`] context.
+    ///
+    /// `record_audit_event*` is async but the trait method is synchronous, so
+    /// the write is spawned onto the current Tokio runtime (the CoAP server
+    /// loop that invoked us).  When an authenticated DTLS identity is present it
+    /// is recorded as the actor, so the FAU_SAR.1 review filter is populated.
+    fn spawn_audit(&self, event_type: String, actor: String, detail: String) {
+        let state = Arc::clone(&self.state);
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(async move {
+                    if actor.is_empty() {
+                        state.record_audit_event(&event_type, &detail).await;
+                    } else {
+                        state
+                            .record_audit_event_with_actor(&event_type, &actor, &detail)
+                            .await;
+                    }
+                });
+            }
+            Err(_) => {
+                tracing::warn!(
+                    %event_type,
+                    "no Tokio runtime available; CoAP audit event dropped"
+                );
+            }
+        }
+    }
+}
+
+/// Map a failed CoAP EST operation to its audit event, when the failure is a
+/// security-relevant authorization denial (FDP_ACF.1 → FAU_GEN.1).
+///
+/// Only `Forbidden` (authorization) denials produce an `*_denied` audit event;
+/// operational errors (malformed message, internal faults) are surfaced to the
+/// client and logged but are not enrollment-authorization decisions.
+fn coap_denial_audit(operation: EstOperation, err: &CoapError) -> Option<(String, String)> {
+    match (operation, err) {
+        (EstOperation::SimpleEnroll, CoapError::Forbidden(msg)) => {
+            Some(("coap_simpleenroll_denied".to_string(), msg.clone()))
+        }
+        (EstOperation::SimpleReenroll, CoapError::Forbidden(msg)) => {
+            Some(("coap_simplereenroll_denied".to_string(), msg.clone()))
+        }
+        _ => None,
     }
 }
 

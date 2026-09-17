@@ -1757,7 +1757,10 @@ impl CoapDtlsServer {
             self.send_response(peer_addr, &response).await?;
         }
 
-        // Record audit event asynchronously (NIAP FAU_GEN.1).
+        // Log the audit event for transport-level observability (NIAP
+        // FAU_GEN.1).  Durable persistence to the `audit_events` table is
+        // performed by the `EstHandler` implementation, which holds `AppState`;
+        // this transport layer has no database access and only logs.
         if let Some(audit) = audit_event {
             info!(
                 event_type = %audit.event_type,
@@ -1765,9 +1768,6 @@ impl CoapDtlsServer {
                 peer = %peer_addr,
                 "CoAP audit event"
             );
-            // When integrated with AppState, the caller can invoke
-            // state.record_audit_event(&audit.event_type, &audit.detail).await
-            // from the server loop after this method returns.
         }
 
         Ok(())
