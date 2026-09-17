@@ -49,6 +49,25 @@ impl DbKind {
 /// `?` before passing it to sqlx.
 static IS_POSTGRES: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
+/// Rewrite `?` placeholders to PostgreSQL positional `$1`, `$2`, … form.
+///
+/// Shared by [`pg_sql`] (static literals, cached) and [`pg_sql_dynamic`]
+/// (owned strings) so the rewrite logic lives in exactly one place.
+fn rewrite_qmark_to_positional(s: &str) -> String {
+    let mut result = String::with_capacity(s.len() + 16);
+    let mut param_num = 0u32;
+    for ch in s.chars() {
+        if ch == '?' {
+            param_num += 1;
+            result.push('$');
+            result.push_str(&param_num.to_string());
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
 /// Rewrite `?` → `$1`, `$2`, … for PostgreSQL; return unchanged for others.
 ///
 /// The rewritten string is cached permanently (via `Box::leak`) keyed by the
@@ -71,18 +90,7 @@ pub fn pg_sql(s: &'static str) -> &'static str {
         }
     }
     // Slow path: rewrite then store for the lifetime of the process.
-    let mut result = String::with_capacity(s.len() + 16);
-    let mut param_num = 0u32;
-    for ch in s.chars() {
-        if ch == '?' {
-            param_num += 1;
-            result.push('$');
-            result.push_str(&param_num.to_string());
-        } else {
-            result.push(ch);
-        }
-    }
-    let leaked: &'static str = Box::leak(result.into_boxed_str());
+    let leaked: &'static str = Box::leak(rewrite_qmark_to_positional(s).into_boxed_str());
     cache.lock().unwrap().insert(key, leaked);
     leaked
 }
@@ -97,18 +105,7 @@ pub(crate) fn pg_sql_dynamic(s: String) -> String {
     if !IS_POSTGRES.get().copied().unwrap_or(false) {
         return s;
     }
-    let mut result = String::with_capacity(s.len() + 16);
-    let mut param_num = 0u32;
-    for ch in s.chars() {
-        if ch == '?' {
-            param_num += 1;
-            result.push('$');
-            result.push_str(&param_num.to_string());
-        } else {
-            result.push(ch);
-        }
-    }
-    result
+    rewrite_qmark_to_positional(&s)
 }
 
 /// Initialize the primary (read-write) database connection pool.
