@@ -125,8 +125,9 @@ pub async fn try_extract_otp(
             warn!(entity_id = %entity_id, error = %e, "OTP validation failed");
 
             // Audit log the failed OTP attempt.
-            app.record_audit_event(
+            app.record_audit_event_with_actor(
                 "otp_auth_failure",
+                &entity_id,
                 &format!("entity_id={entity_id}, reason={e}"),
             )
             .await;
@@ -137,8 +138,9 @@ pub async fn try_extract_otp(
             match app.failure_tracker.record_failure(&entity_id) {
                 LockoutStatus::LockedOut { retry_after } => {
                     warn!(entity_id = %entity_id, "OTP failure threshold reached: identity locked out");
-                    app.record_audit_event(
+                    app.record_audit_event_with_actor(
                         "auth_lockout",
+                        &entity_id,
                         &format!(
                             "entity_id={entity_id}, lockout_secs={}",
                             retry_after.as_secs()
