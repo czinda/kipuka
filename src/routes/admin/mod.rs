@@ -264,26 +264,33 @@ fn validate_admin_cert(
         .as_deref()
         .ok_or_else(|| "admin_ca_file not configured for mTLS validation".to_string())?;
 
-    let trust_certs_der = ADMIN_TRUST_ANCHORS.get_or_init(|| {
-        let pem_data = match std::fs::read(ca_file) {
-            Ok(d) => d,
-            Err(e) => {
-                tracing::error!(error = %e, path = %ca_file, "failed to read admin CA file");
-                return Vec::new();
+    // Load and cache the trust anchors on first success.  A transient read
+    // failure must NOT be cached: `get_or_init` would memoise the empty Vec
+    // permanently and reject every admin mTLS request until process restart.
+    // Instead, return an error for this request and retry on the next one.
+    let trust_certs_der = match ADMIN_TRUST_ANCHORS.get() {
+        Some(cached) => cached,
+        None => {
+            let pem_data = std::fs::read(ca_file)
+                .map_err(|e| format!("failed to read admin CA file '{ca_file}': {e}"))?;
+            let mut reader = BufReader::new(&pem_data[..]);
+            let certs: Vec<Vec<u8>> = rustls_pemfile::certs(&mut reader)
+                .filter_map(|r| r.ok())
+                .map(|c| c.to_vec())
+                .collect();
+            if certs.is_empty() {
+                return Err(format!(
+                    "no CA certificates found in admin CA file '{ca_file}'"
+                ));
             }
-        };
-        let mut reader = BufReader::new(&pem_data[..]);
-        rustls_pemfile::certs(&mut reader)
-            .filter_map(|r| r.ok())
-            .map(|c| c.to_vec())
-            .collect()
-    });
-
-    if trust_certs_der.is_empty() {
-        return Err(format!(
-            "no CA certificates found in admin CA file '{ca_file}'"
-        ));
-    }
+            // Cache for reuse.  If a concurrent request populated it first, the
+            // set is a no-op and we use whichever value is now stored.
+            let _ = ADMIN_TRUST_ANCHORS.set(certs);
+            ADMIN_TRUST_ANCHORS
+                .get()
+                .expect("admin trust anchors were just set")
+        }
+    };
 
     // 3. Verify the client certificate signature against trust anchors.
     //
