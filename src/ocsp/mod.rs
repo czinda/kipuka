@@ -241,9 +241,9 @@ impl OcspClient {
 
         // Build OCSP request DER.
         let nonce = if self.config.require_nonce {
-            use rand::RngCore;
+            use rand::Rng;
             let mut n = vec![0; 32];
-            rand::thread_rng().fill_bytes(&mut n);
+            rand::rng().fill_bytes(&mut n);
             Some(n)
         } else {
             None

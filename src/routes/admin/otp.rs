@@ -12,8 +12,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use rand::RngCore;
-use rand::rngs::OsRng;
+use rand::TryRng;
+use rand::rngs::SysRng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -148,7 +148,20 @@ pub async fn generate_otp(
     // Generate the OTP token with configured entropy.
     let entropy_bytes = (otp_config.entropy_bits / 8) as usize;
     let mut raw = vec![0u8; entropy_bytes];
-    OsRng.fill_bytes(&mut raw);
+    // SysRng draws from the OS CSPRNG (getrandom); fallible because OS entropy
+    // retrieval can fail. Fail closed with a 500 rather than issue a token
+    // backed by low or zero entropy.
+    if let Err(e) = SysRng.try_fill_bytes(&mut raw) {
+        tracing::error!(error = %e, "OS RNG failed while generating OTP token");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": "rng_failure",
+                "detail": "failed to obtain secure random bytes for OTP generation"
+            })),
+        )
+            .into_response();
+    }
     let token = URL_SAFE_NO_PAD.encode(&raw);
 
     // Hash the token with SHA-256 before storing (RHELBU-3536 R11).

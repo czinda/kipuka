@@ -600,7 +600,7 @@ pub async fn run_migrations(pool: &sqlx::AnyPool, kind: DbKind) -> Result<(), Ki
             if trimmed.is_empty() {
                 continue;
             }
-            sqlx::query(trimmed)
+            sqlx::query(sqlx::AssertSqlSafe(trimmed.to_string()))
                 .execute(pool)
                 .await
                 .map_err(|e| KipukaError::Db(format!("migration v1 failed on [{trimmed}]: {e}")))?;
@@ -651,7 +651,7 @@ pub async fn run_migrations(pool: &sqlx::AnyPool, kind: DbKind) -> Result<(), Ki
             if trimmed.is_empty() {
                 continue;
             }
-            sqlx::query(trimmed)
+            sqlx::query(sqlx::AssertSqlSafe(trimmed.to_string()))
                 .execute(pool)
                 .await
                 .map_err(|e| KipukaError::Db(format!("migration v3 failed on [{trimmed}]: {e}")))?;

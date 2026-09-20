@@ -1,14 +1,14 @@
 //! OTP token generation with configurable entropy.
 //!
-//! Implements RHELBU-3536 R7: minimum 128-bit entropy using FIPS-approved
-//! RNG (`OsRng`). Tokens are base64url-encoded for safe embedding in
+//! Implements RHELBU-3536 R7: minimum 128-bit entropy using the OS CSPRNG
+//! (`SysRng`, getrandom-backed). Tokens are base64url-encoded for safe embedding in
 //! HTTP headers and URIs.
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Duration, Utc};
-use rand::RngCore;
-use rand::rngs::OsRng;
+use rand::TryRng;
+use rand::rngs::SysRng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::debug;
@@ -70,7 +70,7 @@ pub struct GeneratedOtp {
 
 /// Generates cryptographically random OTP tokens.
 ///
-/// Uses `OsRng` (FIPS-approved on supported platforms) to produce
+/// Uses the OS CSPRNG (`SysRng`, getrandom-backed) to produce
 /// tokens with at least 128 bits of entropy (RHELBU-3536 R7).
 pub struct OtpGenerator {
     config: OtpGeneratorConfig,
@@ -118,7 +118,12 @@ impl OtpGenerator {
         max_uses: u32,
     ) -> OtpResult<GeneratedOtp> {
         let mut raw = vec![0u8; self.config.entropy_bytes];
-        OsRng.fill_bytes(&mut raw);
+        // SysRng draws from the OS CSPRNG (getrandom); fallible because OS
+        // entropy retrieval can fail. Fail closed rather than emit a
+        // low-entropy token.
+        SysRng
+            .try_fill_bytes(&mut raw)
+            .map_err(|e| OtpError::GenerationError(format!("OS RNG failed: {e}")))?;
 
         let plaintext_token = URL_SAFE_NO_PAD.encode(&raw);
         let token_hash = Sha256::digest(plaintext_token.as_bytes()).to_vec();

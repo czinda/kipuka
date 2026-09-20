@@ -161,7 +161,7 @@ async fn list_audit_from_db(
          LIMIT ? OFFSET ?"
     ));
 
-    let mut q = sqlx::query_as::<_, AuditEventSummary>(&sql);
+    let mut q = sqlx::query_as::<_, AuditEventSummary>(sqlx::AssertSqlSafe(sql));
     if let Some(et) = event_type {
         q = q.bind(et.to_string());
     }

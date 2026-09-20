@@ -397,9 +397,8 @@ pub async fn post_fullcmc(
     // Generate a fresh sender nonce for the response.
     let response_nonce: Vec<u8> = {
         use rand::Rng;
-        let mut rng = rand::thread_rng();
         let mut n = vec![0u8; 16];
-        rng.fill(&mut n[..]);
+        rand::rng().fill_bytes(&mut n);
         n
     };
     resp_builder = resp_builder

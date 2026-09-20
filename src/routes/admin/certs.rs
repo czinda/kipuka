@@ -411,7 +411,7 @@ async fn list_certs_from_db(
          LIMIT ? OFFSET ?"
     ));
 
-    let mut query = sqlx::query_as::<_, CertRow>(&sql);
+    let mut query = sqlx::query_as::<_, CertRow>(sqlx::AssertSqlSafe(sql));
 
     // Bind filter values in the same order as the WHERE conditions.
     if let Some(ca) = ca_id {

@@ -234,7 +234,7 @@ impl OtpStore for DbOtpStore {
              VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0)",
         );
 
-        sqlx::query(&sql)
+        sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(&token_hash_hex)
             .bind(&record.entity_id)
             .bind(&record.label)
@@ -272,7 +272,7 @@ impl OtpStore for DbOtpStore {
                 i32,    // current_uses
                 i32,    // revoked (integer 0/1 for SQLite compat)
             ),
-        >(&sql)
+        >(sqlx::AssertSqlSafe(sql))
         .bind(&hash_hex)
         .fetch_optional(&self.pool)
         .await
@@ -330,7 +330,7 @@ impl OtpStore for DbOtpStore {
              WHERE id = ? AND current_uses < ?",
         );
 
-        let result = sqlx::query(&sql)
+        let result = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(db_id)
             .bind(max_uses as i32)
             .execute(&self.pool)
@@ -352,7 +352,7 @@ impl OtpStore for DbOtpStore {
 
         let sql = self.sql("UPDATE otp_tokens SET revoked = 1, revoked_at = ? WHERE id = ?");
 
-        let result = sqlx::query(&sql)
+        let result = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(&now_str)
             .bind(db_id)
             .execute(&self.pool)
@@ -372,7 +372,7 @@ impl OtpStore for DbOtpStore {
 
         let sql = self.sql("DELETE FROM otp_tokens WHERE expires_at < ?");
 
-        let result = sqlx::query(&sql)
+        let result = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(&now_str)
             .execute(&self.pool)
             .await

@@ -334,12 +334,12 @@ pub fn generate_test_csr(subject: &str, key_type: &str) -> (Vec<u8>, Vec<u8>) {
 ///
 /// Returns a 24-character alphanumeric token suitable for HTTP Basic auth.
 pub fn generate_test_otp() -> String {
-    use rand::Rng;
+    use rand::RngExt;
     const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     (0..24)
         .map(|_| {
-            let idx = rng.gen_range(0..CHARSET.len());
+            let idx = rng.random_range(0..CHARSET.len());
             CHARSET[idx] as char
         })
         .collect()

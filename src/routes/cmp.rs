@@ -927,9 +927,9 @@ pub async fn post_cmp(
 
 /// Generate a 16-byte random nonce for CMP replay protection.
 fn generate_nonce() -> Vec<u8> {
-    use rand::RngCore;
+    use rand::Rng;
     let mut nonce = vec![0u8; 16];
-    rand::thread_rng().fill_bytes(&mut nonce);
+    rand::rng().fill_bytes(&mut nonce);
     nonce
 }
 
@@ -1376,7 +1376,7 @@ fn compute_pbm_hmac(
     data: &[u8],
     mac_alg: &synta_certificate::AlgorithmIdentifier<'_>,
 ) -> Result<Vec<u8>, KipukaError> {
-    use hmac::{Hmac, Mac};
+    use hmac::{Hmac, KeyInit, Mac};
     use sha2::{Sha256, Sha384, Sha512};
 
     let mac_oid = mac_alg.algorithm.to_string();

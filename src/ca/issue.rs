@@ -693,9 +693,8 @@ fn issue_verified_request(
 /// well above the 64-bit minimum recommended by CA/B Forum.
 fn generate_serial_bytes() -> Vec<u8> {
     use rand::Rng;
-    let mut rng = rand::thread_rng();
     let mut bytes = vec![0u8; 20];
-    rng.fill(&mut bytes[..]);
+    rand::rng().fill_bytes(&mut bytes);
     // Ensure positive by clearing the high bit.
     bytes[0] &= 0x7F;
     // Ensure non-zero first byte.
