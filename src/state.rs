@@ -213,6 +213,17 @@ impl AppState {
             "star_order_cancelled" | "admin_audit_review" => {
                 crate::audit::AuditEventType::AdminAction
             }
+            // EST-coaps transport (RFC 9148) — mirror the HTTP taxonomy so the
+            // FAU_SAR.1 review endpoint can filter CoAP events by class rather
+            // than lumping them under the admin.action default.  Denials map to
+            // enroll.reject (an access decision, not a SecurityViolation alarm),
+            // matching the HTTP `*_denied` events above.
+            "coap_cacerts" | "coap_csrattrs" => crate::audit::AuditEventType::EnrollRequest,
+            "coap_simpleenroll" => crate::audit::AuditEventType::CertIssue,
+            "coap_simplereenroll" => crate::audit::AuditEventType::CertReenroll,
+            "coap_simpleenroll_denied" | "coap_simplereenroll_denied" => {
+                crate::audit::AuditEventType::EnrollReject
+            }
             _ => crate::audit::AuditEventType::AdminAction,
         }
     }
