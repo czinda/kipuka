@@ -250,7 +250,17 @@ async fn run() -> Result<(), String> {
     };
 
     // ── Audit state ──────────────────────────────────────────────────────────
-    let audit = Arc::new(AuditState::with_config(config.audit.clone()));
+    // The tamper-evident audit hash chain (FAU_STG.1) is always active; when
+    // `[audit].signed = true` it is keyed by the resolved integrity key
+    // (HMAC-SHA256), otherwise it is an unkeyed SHA-256 chain.
+    let audit_integrity_key = secrets
+        .audit_integrity_key
+        .as_ref()
+        .map(|k| k.clone().into_bytes());
+    let audit = Arc::new(AuditState::from_config(
+        config.audit.clone(),
+        audit_integrity_key,
+    ));
 
     // Record server startup
     kipuka::audit::record(

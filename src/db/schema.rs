@@ -14,7 +14,7 @@ use crate::db::DbKind;
 use crate::error::KipukaError;
 
 /// Current schema version.  Increment this when adding new migrations.
-pub const SCHEMA_VERSION: i32 = 3;
+pub const SCHEMA_VERSION: i32 = 6;
 
 // ---------------------------------------------------------------------------
 // SQLite migration v1
@@ -696,6 +696,42 @@ pub async fn run_migrations(pool: &sqlx::AnyPool, kind: DbKind) -> Result<(), Ki
             .execute(pool)
             .await
             .map_err(|e| KipukaError::Db(e.to_string()))?;
+    }
+
+    if current < 6 {
+        tracing::info!("applying migration v6 (audit hash-chain columns)");
+        // NIAP CA PP FAU_STG.1: each audit row carries the hash of the
+        // previous row (`prev_hash`) and its own chained hash (`record_hash`),
+        // forming a tamper-evident trail.  Added as nullable columns so the
+        // migration is non-destructive on an existing populated table; rows
+        // written before this migration have NULL hashes and mark the start of
+        // the verifiable chain segment.  Each backend gets one ADD COLUMN per
+        // statement (SQLite permits only one column per ALTER).
+        let alters: &[&str] = match kind {
+            DbKind::Postgres => &[
+                "ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS prev_hash TEXT",
+                "ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS record_hash TEXT",
+            ],
+            DbKind::MariaDb => &[
+                "ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS prev_hash TEXT",
+                "ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS record_hash TEXT",
+            ],
+            DbKind::Sqlite => &[
+                "ALTER TABLE audit_events ADD COLUMN prev_hash TEXT",
+                "ALTER TABLE audit_events ADD COLUMN record_hash TEXT",
+            ],
+        };
+        for stmt in alters {
+            sqlx::query(*stmt)
+                .execute(pool)
+                .await
+                .map_err(|e| KipukaError::Db(format!("migration v6 failed on [{stmt}]: {e}")))?;
+        }
+        sqlx::query("INSERT INTO schema_version (version) VALUES (6)")
+            .execute(pool)
+            .await
+            .map_err(|e| KipukaError::Db(e.to_string()))?;
+        tracing::info!("migration v6 applied successfully");
     }
 
     Ok(())
