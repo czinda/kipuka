@@ -13,6 +13,8 @@
 
 use serde::Deserialize;
 
+use super::SecretRef;
+
 /// Audit log rotation policy.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -70,12 +72,26 @@ pub struct AuditConfig {
     #[serde(default = "default_log_path")]
     pub log_path: String,
 
-    /// Enable cryptographic signing of audit log entries.
+    /// Enable keyed (HMAC) integrity protection of the audit hash chain.
     ///
-    /// When `true`, each audit entry includes an RFC 3161-style timestamp
-    /// signature chain for tamper detection.
+    /// Every audit row stores `record_hash = H(prev_hash || record_bytes)`,
+    /// forming a tamper-evident chain (NIAP CA PP FAU_STG.1).  When `signed`
+    /// is `false` (the default), `H` is plain SHA-256 — this detects in-place
+    /// edits, deletions, and reordering as long as the chain head is anchored
+    /// out-of-band.  When `signed` is `true`, `H` is HMAC-SHA256 keyed by
+    /// [`integrity_key`](Self::integrity_key), which additionally prevents an
+    /// attacker who can write to the database from forging a valid chain.
     #[serde(default)]
     pub signed: bool,
+
+    /// Secret reference for the HMAC integrity key (required when
+    /// `signed = true`).
+    ///
+    /// Resolved at startup via the standard [`SecretRef`] backends
+    /// (`env:`, `file:`, `keyring:`, `systemd-creds:`).  Never store the raw
+    /// key inline in the config file.
+    #[serde(default)]
+    pub integrity_key: Option<SecretRef>,
 
     /// Log rotation policy.
     #[serde(default)]
@@ -167,6 +183,7 @@ impl Default for AuditConfig {
             enabled: true,
             log_path: default_log_path(),
             signed: false,
+            integrity_key: None,
             rotation_policy: RotationPolicy::default(),
             max_file_size: default_max_file_size(),
             retention_count: default_retention_count(),
@@ -204,9 +221,16 @@ impl AuditConfig {
         if self.max_rows.is_some_and(|n| n > i64::MAX as u64) {
             return Err("[audit].max_rows exceeds the database integer range".into());
         }
-        if self.signed {
+        // Keyed integrity (HMAC) requires a resolvable, non-empty key.  The
+        // unkeyed SHA-256 chain is always active and needs no configuration;
+        // `signed = true` upgrades it to HMAC-SHA256 keyed by `integrity_key`.
+        let integrity_key_missing = match &self.integrity_key {
+            None => true,
+            Some(k) => k.is_empty(),
+        };
+        if self.signed && integrity_key_missing {
             return Err(
-                "[audit].signed is unsupported: no audit signing implementation is available"
+                "[audit].integrity_key is required (and must be non-empty) when signed = true"
                     .into(),
             );
         }

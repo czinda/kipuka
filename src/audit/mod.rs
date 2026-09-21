@@ -10,11 +10,25 @@
 //! | SFR | Requirement | Implementation |
 //! |-----|-------------|----------------|
 //! | FAU_GEN.1 | Audit record generation | [`AuditEventType`] taxonomy covers all required events |
-//! | FAU_STG.1(1) | Audit trail protection | Append-only at application level |
+//! | FAU_STG.1(1) | Audit trail protection | Append-only + tamper-evident hash chain ([`verify_chain`]) |
 //! | FAU_STG.4 | Audit storage exhaustion | `OverflowAction::Halt` rejects EST operations |
 //! | FAU_ARP.1 | Security alarm | Alarm after N consecutive violations |
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+use hmac::{Hmac, Mac};
+use hmac::digest::KeyInit;
+use sha2::{Digest, Sha256};
+
+use crate::error::KipukaError;
+
+/// HMAC-SHA256, used for the keyed audit hash chain when `signed = true`.
+type HmacSha256 = Hmac<Sha256>;
+
+/// ASCII Record Separator (0x1e).  Delimits fields in the canonical hash
+/// preimage so that field values cannot be shifted across boundaries to
+/// produce a colliding preimage (e.g. `"a" + "bc"` vs `"ab" + "c"`).
+const RS: u8 = 0x1e;
 
 /// Every auditable operation the server can perform.
 ///
@@ -192,6 +206,10 @@ pub struct AuditState {
     /// Rolling count of consecutive security violations.
     /// Reset to 0 after a successful authentication.
     pub violation_count: AtomicU32,
+
+    /// HMAC key for keyed chain integrity (`signed = true`); `None` selects
+    /// the unkeyed SHA-256 chain (NIAP CA PP FAU_STG.1).
+    integrity_key: Option<Vec<u8>>,
 }
 
 impl AuditState {
@@ -200,12 +218,54 @@ impl AuditState {
         Self::with_config(crate::config::AuditConfig::default())
     }
 
+    /// Build audit state from the `[audit]` config with the unkeyed
+    /// (SHA-256) hash chain.  Equivalent to [`from_config`] with no key.
+    ///
+    /// [`from_config`]: AuditState::from_config
     pub fn with_config(config: crate::config::AuditConfig) -> Self {
+        Self::from_config(config, None)
+    }
+
+    /// Build audit state from the `[audit]` config plus a resolved integrity
+    /// key (present only when `signed = true`).  With a key the hash chain is
+    /// HMAC-SHA256 keyed; without one it is plain SHA-256.
+    pub fn from_config(
+        config: crate::config::AuditConfig,
+        integrity_key: Option<Vec<u8>>,
+    ) -> Self {
         Self {
             config,
             write_lock: tokio::sync::Mutex::new(()),
             halted: AtomicBool::new(false),
             violation_count: AtomicU32::new(0),
+            integrity_key,
+        }
+    }
+
+    /// Compute the chained hash `H(prev || RS || canonical)` in lowercase hex.
+    ///
+    /// `H` is HMAC-SHA256 keyed by [`integrity_key`](Self::integrity_key) when
+    /// one is configured, otherwise plain SHA-256.  The same [`AuditState`]
+    /// (key + algorithm) that wrote the rows must be used by [`verify_chain`],
+    /// or every recomputed hash mismatches.
+    fn chain_hash(&self, prev: Option<&str>, canonical: &[u8]) -> String {
+        let prev_bytes = prev.unwrap_or("").as_bytes();
+        match &self.integrity_key {
+            Some(key) => {
+                let mut mac =
+                    HmacSha256::new_from_slice(key).expect("HMAC accepts a key of any length");
+                mac.update(prev_bytes);
+                mac.update(&[RS]);
+                mac.update(canonical);
+                hex::encode(mac.finalize().into_bytes())
+            }
+            None => {
+                let mut h = Sha256::new();
+                h.update(prev_bytes);
+                h.update([RS]);
+                h.update(canonical);
+                hex::encode(h.finalize())
+            }
         }
     }
 
@@ -271,7 +331,6 @@ async fn record_inner(
     state: &AuditState,
     event: AuditEvent,
 ) -> Result<(), crate::error::KipukaError> {
-    use crate::error::KipukaError;
     if state.is_halted() {
         return Err(KipukaError::Db("audit operation admission halted".into()));
     }
@@ -344,12 +403,24 @@ pub(crate) async fn commit_issuance(
     Ok(())
 }
 
+/// The single insert point shared by every audit write path
+/// ([`record`]/[`record_checked`] and [`record_issuance_in_transaction`]).
+///
+/// Threading the tamper-evident hash chain (NIAP CA PP FAU_STG.1) through
+/// this one function — rather than through each caller — guarantees that the
+/// transactional issuance path is chained too: an un-chained row anywhere is a
+/// silent hole in the evidence.  The `audit_writer_lock` row is updated first,
+/// which takes a write lock held for the whole enclosing transaction; because
+/// the chain tail is then read (`SELECT ... ORDER BY id DESC LIMIT 1`) and the
+/// new row inserted under that same lock, the read-compute-append sequence is
+/// atomic against every other writer, including writers in other server
+/// processes.  Reading the tail from the database (not from in-memory state)
+/// keeps the chain correct across restarts and replicas.
 async fn write_event(
     connection: &mut sqlx::AnyConnection,
     state: &AuditState,
     event: &AuditEvent,
 ) -> Result<(), crate::error::KipukaError> {
-    use crate::error::KipukaError;
     if state.is_halted() {
         return Err(KipukaError::Db("audit operation admission halted".into()));
     }
@@ -394,22 +465,199 @@ async fn write_event(
         (None, None) => None,
     };
 
+    // ── Tamper-evident hash chain (FAU_STG.1) ──────────────────────────────
+    // Generate the timestamp in Rust (not via a DB DEFAULT) so the stored
+    // value is exactly what the chain commits to.  Read the current tail —
+    // still holding the writer lock acquired above — then chain onto it.  The
+    // enclosing transaction sees its own prior inserts, so multiple writes in
+    // one transaction chain correctly.
+    let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let prev_hash: Option<String> = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT record_hash FROM audit_events ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(|e| KipukaError::Db(format!("loading audit chain tail: {e}")))?
+    .flatten();
+    let canonical = canonical_bytes(
+        &timestamp,
+        event.event_type.as_str(),
+        event.operator.as_deref(),
+        event.subject.as_deref(),
+        detail_json.as_deref(),
+        event.client_addr.as_deref(),
+        None, // session_id is not yet populated
+    );
+    let record_hash = state.chain_hash(prev_hash.as_deref(), &canonical);
+
     let sql = crate::db::pg_sql(
-        "INSERT INTO audit_events (event_type, actor, target, detail_json, source_ip, session_id) \
-         VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO audit_events \
+         (timestamp, event_type, actor, target, detail_json, source_ip, session_id, prev_hash, record_hash) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     );
     let result = sqlx::query(sql)
+        .bind(&timestamp)
         .bind(event.event_type.as_str())
         .bind(&event.operator)
         .bind(&event.subject)
         .bind(&detail_json)
         .bind(&event.client_addr)
         .bind(None::<String>)
+        .bind(&prev_hash)
+        .bind(&record_hash)
         .execute(&mut *connection)
         .await;
 
     result.map_err(|e| KipukaError::Db(format!("audit insert failed: {e}")))?;
     Ok(())
+}
+
+/// Build the deterministic byte serialization of a record for hashing.
+///
+/// Field order and separators MUST match between [`write_event`] (insert
+/// time) and [`verify_chain`] (verification time), or every hash would
+/// mismatch.  Each field is followed by an `RS` byte so that no field value
+/// can absorb an adjacent one to forge a colliding preimage.
+fn canonical_bytes(
+    timestamp: &str,
+    event_type: &str,
+    actor: Option<&str>,
+    target: Option<&str>,
+    detail_json: Option<&str>,
+    source_ip: Option<&str>,
+    session_id: Option<&str>,
+) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(128);
+    for field in [
+        timestamp,
+        event_type,
+        actor.unwrap_or(""),
+        target.unwrap_or(""),
+        detail_json.unwrap_or(""),
+        source_ip.unwrap_or(""),
+        session_id.unwrap_or(""),
+    ] {
+        buf.extend_from_slice(field.as_bytes());
+        buf.push(RS);
+    }
+    buf
+}
+
+/// One `audit_events` row, as read back for chain verification.
+///
+/// The `Option` columns mirror the nullable table schema; the empty-string
+/// substitution in [`canonical_bytes`] means a `NULL` and an empty string
+/// hash identically, which is intentional — both encode "field absent".
+#[derive(sqlx::FromRow)]
+struct AuditRow {
+    id: i64,
+    timestamp: String,
+    event_type: String,
+    actor: Option<String>,
+    target: Option<String>,
+    detail_json: Option<String>,
+    source_ip: Option<String>,
+    session_id: Option<String>,
+    prev_hash: Option<String>,
+    record_hash: Option<String>,
+}
+
+/// Outcome of a full hash-chain verification pass (NIAP CA PP FAU_STG.1).
+///
+/// `ok == true` means every row's `record_hash` recomputed correctly and every
+/// `prev_hash` linked to its predecessor.  On failure, `broken_at` carries the
+/// `id` of the first offending row and `detail` explains which invariant broke.
+#[derive(Debug, Clone)]
+pub struct ChainVerifyReport {
+    /// Number of rows examined.
+    pub total: u64,
+    /// `true` when the entire chain verified.
+    pub ok: bool,
+    /// `id` of the first row that failed verification, if any.
+    pub broken_at: Option<i64>,
+    /// Human-readable description of the first failure, if any.
+    pub detail: Option<String>,
+}
+
+/// Re-walk the entire audit trail and verify the tamper-evident hash chain.
+///
+/// Reads every row in `id` order and checks, for each, that (1) its `prev_hash`
+/// equals the previous row's stored `record_hash` (linkage — detects deletion
+/// and reordering) and (2) its `record_hash` recomputes from its own fields via
+/// the configured [`AuditState::chain_hash`] (integrity — detects in-place
+/// edits).  The first violation short-circuits and is reported in
+/// [`ChainVerifyReport::broken_at`]/`detail`.
+///
+/// This is the review-time counterpart to the write-time chaining in
+/// [`write_event`]; the same [`AuditState`] (key + algorithm) that wrote the
+/// rows must be supplied, or unkeyed rows would be checked with an HMAC (or
+/// vice versa) and every hash would mismatch.
+pub async fn verify_chain(
+    pool: &sqlx::AnyPool,
+    state: &AuditState,
+) -> Result<ChainVerifyReport, KipukaError> {
+    let rows: Vec<AuditRow> = sqlx::query_as(
+        "SELECT id, timestamp, event_type, actor, target, detail_json, source_ip, \
+         session_id, prev_hash, record_hash FROM audit_events ORDER BY id ASC",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| KipukaError::Db(format!("reading audit trail for verification: {e}")))?;
+
+    let total = rows.len() as u64;
+    let mut expected_prev: Option<String> = None;
+
+    for row in &rows {
+        // (1) Linkage: this row must point at the previous row's record_hash.
+        if row.prev_hash.as_deref() != expected_prev.as_deref() {
+            return Ok(ChainVerifyReport {
+                total,
+                ok: false,
+                broken_at: Some(row.id),
+                detail: Some(format!(
+                    "prev_hash linkage broken at id={}: stored prev_hash does not match the \
+                     preceding record_hash (row deleted, inserted, or reordered)",
+                    row.id
+                )),
+            });
+        }
+
+        // (2) Integrity: recompute this row's record_hash from its own fields.
+        let canonical = canonical_bytes(
+            &row.timestamp,
+            &row.event_type,
+            row.actor.as_deref(),
+            row.target.as_deref(),
+            row.detail_json.as_deref(),
+            row.source_ip.as_deref(),
+            row.session_id.as_deref(),
+        );
+        let recomputed = state.chain_hash(row.prev_hash.as_deref(), &canonical);
+        match &row.record_hash {
+            Some(stored) if *stored == recomputed => {}
+            _ => {
+                return Ok(ChainVerifyReport {
+                    total,
+                    ok: false,
+                    broken_at: Some(row.id),
+                    detail: Some(format!(
+                        "record_hash mismatch at id={}: row contents were altered after \
+                         insertion",
+                        row.id
+                    )),
+                });
+            }
+        }
+
+        expected_prev = row.record_hash.clone();
+    }
+
+    Ok(ChainVerifyReport {
+        total,
+        ok: true,
+        broken_at: None,
+        detail: None,
+    })
 }
 
 /// Send an actual LOG_AUTHPRIV/LOG_ALERT datagram to the system logger.
@@ -518,5 +766,202 @@ mod issuance_commit_tests {
             .await
             .unwrap();
         assert_eq!(count, 0);
+    }
+}
+
+#[cfg(test)]
+mod chain_tests {
+    use super::*;
+
+    /// Spin up an in-memory SQLite DB with the full migration set applied.
+    async fn test_db() -> sqlx::AnyPool {
+        let (db, kind) =
+            crate::db::init_pool(&crate::config::DbConfig::default(), "sqlite::memory:")
+                .await
+                .unwrap();
+        crate::db::run_migrations(&db, kind).await.unwrap();
+        db
+    }
+
+    /// The hash chain is threaded through every write path — the best-effort
+    /// [`record`], the checked [`record_checked`], and the transactional
+    /// [`record_issuance_in_transaction`] — so exercising all three and then
+    /// verifying proves there is no un-chained hole in the evidence.
+    #[tokio::test]
+    async fn chain_verifies_across_all_write_paths() {
+        let db = test_db().await;
+        let state = AuditState::new();
+
+        // Path 1: record() (best-effort, wraps record_checked).
+        record(
+            &db,
+            &state,
+            AuditEvent::new(AuditEventType::AdminLogin).with_operator("admin"),
+        )
+        .await;
+
+        // Path 2: record_checked() (propagates failure).
+        record_checked(
+            &db,
+            &state,
+            AuditEvent::new(AuditEventType::EnrollRequest).with_detail("simpleenroll"),
+        )
+        .await
+        .unwrap();
+
+        // Path 3: record_issuance_in_transaction() (+ commit_issuance).
+        let mut tx = db.begin().await.unwrap();
+        record_issuance_in_transaction(&mut tx, &state, "ca-a", "serial=01".into())
+            .await
+            .unwrap();
+        // Two issuance rows in one transaction exercise intra-tx chaining.
+        record_issuance_in_transaction(&mut tx, &state, "ca-a", "serial=02".into())
+            .await
+            .unwrap();
+        commit_issuance(tx, &state).await.unwrap();
+
+        let report = verify_chain(&db, &state).await.unwrap();
+        assert_eq!(report.total, 4, "all four events must be present");
+        assert!(report.ok, "chain must verify: {:?}", report.detail);
+        assert!(report.broken_at.is_none());
+
+        // The first row anchors the chain with a NULL prev_hash.
+        let first_prev: Option<String> =
+            sqlx::query_scalar("SELECT prev_hash FROM audit_events ORDER BY id ASC LIMIT 1")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert!(first_prev.is_none(), "chain head has no predecessor");
+    }
+
+    /// Editing a row's contents in place must be detected: the stored
+    /// `record_hash` no longer recomputes from the altered fields.
+    #[tokio::test]
+    async fn tampering_with_a_row_breaks_the_chain() {
+        let db = test_db().await;
+        let state = AuditState::new();
+
+        for i in 0..3 {
+            record_checked(
+                &db,
+                &state,
+                AuditEvent::new(AuditEventType::AdminAction).with_detail(format!("op-{i}")),
+            )
+            .await
+            .unwrap();
+        }
+        assert!(verify_chain(&db, &state).await.unwrap().ok);
+
+        // Forge the detail of the middle row without updating its record_hash.
+        let victim: i64 =
+            sqlx::query_scalar("SELECT id FROM audit_events ORDER BY id ASC LIMIT 1 OFFSET 1")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        sqlx::query("UPDATE audit_events SET detail_json = ? WHERE id = ?")
+            .bind(Some(r#"{"detail":"tampered"}"#.to_string()))
+            .bind(victim)
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let report = verify_chain(&db, &state).await.unwrap();
+        assert!(!report.ok, "tampering must be detected");
+        assert_eq!(report.broken_at, Some(victim));
+    }
+
+    /// Deleting a row must be detected via the prev_hash linkage check even
+    /// though every surviving row's own record_hash still recomputes.
+    #[tokio::test]
+    async fn deleting_a_row_breaks_linkage() {
+        let db = test_db().await;
+        let state = AuditState::new();
+
+        for i in 0..3 {
+            record_checked(
+                &db,
+                &state,
+                AuditEvent::new(AuditEventType::AdminAction).with_detail(format!("op-{i}")),
+            )
+            .await
+            .unwrap();
+        }
+
+        // Delete the middle row: row 3's prev_hash now dangles.
+        let victim: i64 =
+            sqlx::query_scalar("SELECT id FROM audit_events ORDER BY id ASC LIMIT 1 OFFSET 1")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        sqlx::query("DELETE FROM audit_events WHERE id = ?")
+            .bind(victim)
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let report = verify_chain(&db, &state).await.unwrap();
+        assert!(!report.ok, "deletion must break linkage");
+    }
+
+    /// With keyed HMAC (`signed = true`), an attacker who can write to the
+    /// database but lacks the key cannot forge a valid `record_hash`.  Here we
+    /// simulate the forgery attempt by recomputing the chain with the *wrong*
+    /// key (an unkeyed verifier) — verification must fail.
+    #[tokio::test]
+    async fn keyed_hmac_detects_forgery_without_the_key() {
+        let db = test_db().await;
+        let signed_cfg = crate::config::AuditConfig {
+            signed: true,
+            ..Default::default()
+        };
+        let keyed = AuditState::from_config(signed_cfg, Some(b"super-secret-key".to_vec()));
+
+        for i in 0..3 {
+            record_checked(
+                &db,
+                &keyed,
+                AuditEvent::new(AuditEventType::CertIssue).with_detail(format!("serial-{i}")),
+            )
+            .await
+            .unwrap();
+        }
+
+        // With the correct key, the chain verifies.
+        assert!(verify_chain(&db, &keyed).await.unwrap().ok);
+
+        // An attacker forges a row's record_hash using the *unkeyed* SHA-256
+        // algorithm (they don't have the HMAC key).  Recompute what they would
+        // write for the first row and plant it.
+        let first = &sqlx::query_as::<_, AuditRow>(
+            "SELECT id, timestamp, event_type, actor, target, detail_json, source_ip, \
+             session_id, prev_hash, record_hash FROM audit_events ORDER BY id ASC LIMIT 1",
+        )
+        .fetch_all(&db)
+        .await
+        .unwrap()[0];
+        let unkeyed = AuditState::new();
+        let canonical = canonical_bytes(
+            &first.timestamp,
+            &first.event_type,
+            first.actor.as_deref(),
+            first.target.as_deref(),
+            Some(r#"{"detail":"forged"}"#),
+            first.source_ip.as_deref(),
+            first.session_id.as_deref(),
+        );
+        let forged = unkeyed.chain_hash(first.prev_hash.as_deref(), &canonical);
+        sqlx::query("UPDATE audit_events SET detail_json = ?, record_hash = ? WHERE id = ?")
+            .bind(Some(r#"{"detail":"forged"}"#.to_string()))
+            .bind(Some(forged))
+            .bind(first.id)
+            .execute(&db)
+            .await
+            .unwrap();
+
+        // The keyed verifier rejects the forgery: the unkeyed hash is not a
+        // valid HMAC under the secret key.
+        let report = verify_chain(&db, &keyed).await.unwrap();
+        assert!(!report.ok, "keyed HMAC must reject a forgery made without the key");
+        assert_eq!(report.broken_at, Some(first.id));
     }
 }

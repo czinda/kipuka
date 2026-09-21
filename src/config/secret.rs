@@ -391,6 +391,16 @@ impl SecretResolver {
             }
         }
 
+        // Keyed audit-chain integrity (FAU_STG.1); resolved only when the
+        // operator configured `[audit].integrity_key`.  `AuditConfig::validate`
+        // has already enforced that a key is present whenever `signed = true`.
+        let audit_integrity_key = match &config.audit.integrity_key {
+            Some(key_ref) if !key_ref.is_empty() => {
+                Some(self.resolve("audit.integrity_key", key_ref)?)
+            }
+            _ => None,
+        };
+
         Ok(ResolvedSecrets {
             db_url,
             hsm_pin,
@@ -398,6 +408,7 @@ impl SecretResolver {
             auditor_bearer_token,
             ldap_bind_password,
             cmp_mac_secrets,
+            audit_integrity_key,
         })
     }
 
@@ -422,6 +433,8 @@ pub struct ResolvedSecrets {
     pub auditor_bearer_token: Option<String>,
     pub ldap_bind_password: Option<String>,
     pub cmp_mac_secrets: HashMap<String, String>,
+    /// HMAC key for keyed audit-chain integrity (`[audit].signed = true`).
+    pub audit_integrity_key: Option<String>,
 }
 
 impl std::fmt::Debug for ResolvedSecrets {
@@ -444,6 +457,10 @@ impl std::fmt::Debug for ResolvedSecrets {
             .field(
                 "cmp_mac_secrets",
                 &format!("{} entries", self.cmp_mac_secrets.len()),
+            )
+            .field(
+                "audit_integrity_key",
+                &self.audit_integrity_key.as_ref().map(|_| "<redacted>"),
             )
             .finish()
     }
