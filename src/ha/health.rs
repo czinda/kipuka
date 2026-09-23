@@ -117,8 +117,7 @@ pub fn probe_local_ca(
     let cert = openssl::x509::X509::from_der(&ca_state.cert_der).map_err(|e| e.to_string())?;
     match key {
         crate::ca::issue::ResolvedSigningKey::Pem(pem) => {
-            let key =
-                openssl::pkey::PKey::private_key_from_pem(&pem).map_err(|e| e.to_string())?;
+            let key = openssl::pkey::PKey::private_key_from_pem(&pem).map_err(|e| e.to_string())?;
             let public_key = cert.public_key().map_err(|e| e.to_string())?;
             if !key.public_eq(&public_key) {
                 return Err("CA key does not match its certificate".into());
@@ -412,7 +411,8 @@ mod probe_local_ca_tests {
 
         let mut serial = BigNum::new().unwrap();
         serial.rand(128, MsbOption::MAYBE_ZERO, false).unwrap();
-        b.set_serial_number(&serial.to_asn1_integer().unwrap()).unwrap();
+        b.set_serial_number(&serial.to_asn1_integer().unwrap())
+            .unwrap();
 
         b.set_subject_name(&name).unwrap();
         b.set_issuer_name(&name).unwrap();
@@ -459,7 +459,8 @@ mod probe_local_ca_tests {
 
     fn write_key(key: &PKey<Private>) -> tempfile::NamedTempFile {
         let mut f = tempfile::NamedTempFile::new().unwrap();
-        f.write_all(&key.private_key_to_pem_pkcs8().unwrap()).unwrap();
+        f.write_all(&key.private_key_to_pem_pkcs8().unwrap())
+            .unwrap();
         f.flush().unwrap();
         f
     }

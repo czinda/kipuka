@@ -16,8 +16,8 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use hmac::{Hmac, Mac};
 use hmac::digest::KeyInit;
+use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 
 use crate::error::KipukaError;
@@ -229,10 +229,7 @@ impl AuditState {
     /// Build audit state from the `[audit]` config plus a resolved integrity
     /// key (present only when `signed = true`).  With a key the hash chain is
     /// HMAC-SHA256 keyed; without one it is plain SHA-256.
-    pub fn from_config(
-        config: crate::config::AuditConfig,
-        integrity_key: Option<Vec<u8>>,
-    ) -> Self {
+    pub fn from_config(config: crate::config::AuditConfig, integrity_key: Option<Vec<u8>>) -> Self {
         Self {
             config,
             write_lock: tokio::sync::Mutex::new(()),
@@ -961,7 +958,10 @@ mod chain_tests {
         // The keyed verifier rejects the forgery: the unkeyed hash is not a
         // valid HMAC under the secret key.
         let report = verify_chain(&db, &keyed).await.unwrap();
-        assert!(!report.ok, "keyed HMAC must reject a forgery made without the key");
+        assert!(
+            !report.ok,
+            "keyed HMAC must reject a forgery made without the key"
+        );
         assert_eq!(report.broken_at, Some(first.id));
     }
 }

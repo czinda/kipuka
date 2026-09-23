@@ -114,7 +114,9 @@ impl kipuka_coap::EstHandler for CoapEstHandler {
         // happen here — the one dispatch point that holds it.  Previously CoAP
         // events were only logged by the server loop and never written to the
         // `audit_events` table, leaving the entire transport un-audited.
-        let actor = client_cert.map(|c| c.subject_dn.clone()).unwrap_or_default();
+        let actor = client_cert
+            .map(|c| c.subject_dn.clone())
+            .unwrap_or_default();
         match &result {
             Ok(resp) => {
                 if let Some(audit) = resp.audit_event.as_ref() {
