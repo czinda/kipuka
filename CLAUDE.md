@@ -34,7 +34,7 @@ describe a ⛔ item as working in commits, docs, or user-facing output until its
 - ⛔ STAR certificates (RFC 8739) — fully implemented but StarManager/renewal task never started; routes return 503 (#11)
 - 🟡 synta-cmc: RFC 5272 CMC (PKIData/PKIResponse builders/parsers) — PKCS#10 only; see #20/#24/#25
 - ✅ CMS SignedData verification and EnvelopedData construction (RFC 5652)
-- 🟡 Multi-CA HA failover — HaManager **is** wired (main.rs:328-331) and runs when `[ha].enabled`; failover strategies, circuit breaker, and the health loop are exercised by `tests/ha_failover.rs`/`tests/multi_ca_ha.rs`. Residual gaps (#12): `QueueAndRetry` unreachable (`Reject` hardcoded), no shipped `[ha]` example config; the HA-*disabled* `/admin/health` count that used to falsely report "healthy" is fixed on branch `fix/ha-health-honesty` (pending merge)
+- 🟡 Multi-CA HA failover — HaManager **is** wired (main.rs:328-331) and runs when `[ha].enabled`; failover strategies, circuit breaker, and the health loop are exercised by `tests/ha_failover.rs`/`tests/multi_ca_ha.rs`. Residual gaps (#12): `QueueAndRetry` unreachable (`Reject` hardcoded), no shipped `[ha]` example config; the HA-*disabled* `/admin/health` count that used to falsely report "healthy" is now fixed (merged: 7568d75, PR #31 / MR !6)
 - ✅ PKCS#11 HSM integration for CA key protection (generic PKCS#11; vendors are library-path mappings, no FIPS-mode enforcement — #18)
 - ✅ Dogtag PKI integration (CA enrollment, KRA key generation, CMC passthrough)
 - ✅ mTLS and GSSAPI/Kerberos authentication; ⛔ OTP authentication — `OtpStore::placeholder()` wired instead of the real store; non-functional (#10)
