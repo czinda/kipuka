@@ -94,6 +94,46 @@ pub struct LocalProbeContext {
     pub hsm: Option<Arc<kipuka_hsm::HsmContext>>,
 }
 
+/// One-shot liveness check for a single locally-hosted CA.
+///
+/// Verifies that the CA's signing key resolves and matches its certificate
+/// (or, for an HSM-backed CA, that the PKCS#11 session is live), and that the
+/// CA certificate is currently within its validity window.
+///
+/// This is the exact assertion the background probe makes for a `local:` CA,
+/// factored out so callers can run it on demand without a running
+/// [`HealthChecker`] — notably the admin health endpoint when the HA
+/// subsystem is disabled, so that its healthy-CA count reflects a real check
+/// rather than an unconditional assumption.
+///
+/// Returns `Ok(())` when the CA is live, or `Err` with a human-readable
+/// reason otherwise.
+pub fn probe_local_ca(
+    ca_cfg: &crate::config::CaConfig,
+    ca_state: &crate::state::CaState,
+    hsm: Option<&Arc<kipuka_hsm::HsmContext>>,
+) -> Result<(), String> {
+    let key = crate::ca::issue::resolve_signing_key_sync(ca_cfg, hsm).map_err(|e| e.to_string())?;
+    let cert = openssl::x509::X509::from_der(&ca_state.cert_der).map_err(|e| e.to_string())?;
+    match key {
+        crate::ca::issue::ResolvedSigningKey::Pem(pem) => {
+            let key = openssl::pkey::PKey::private_key_from_pem(&pem).map_err(|e| e.to_string())?;
+            let public_key = cert.public_key().map_err(|e| e.to_string())?;
+            if !key.public_eq(&public_key) {
+                return Err("CA key does not match its certificate".into());
+            }
+        }
+        crate::ca::issue::ResolvedSigningKey::Hsm { context, .. } => {
+            context.health_check().map_err(|e| e.to_string())?
+        }
+    }
+    let now = openssl::asn1::Asn1Time::days_from_now(0).map_err(|e| e.to_string())?;
+    if cert.not_before() > now || cert.not_after() <= now {
+        return Err("CA certificate is outside its validity period".into());
+    }
+    Ok(())
+}
+
 /// Runs periodic health probes against each CA backend.
 ///
 /// The checker is cloneable (behind `Arc`) and designed to run in a
@@ -200,27 +240,7 @@ impl HealthChecker {
                 .iter()
                 .find(|ca| ca.id == id.0)
                 .ok_or("local CA configuration missing")?;
-            let key = crate::ca::issue::resolve_signing_key_sync(config, context.hsm.as_ref())
-                .map_err(|e| e.to_string())?;
-            let cert = openssl::x509::X509::from_der(&ca.cert_der).map_err(|e| e.to_string())?;
-            match key {
-                crate::ca::issue::ResolvedSigningKey::Pem(pem) => {
-                    let key = openssl::pkey::PKey::private_key_from_pem(&pem)
-                        .map_err(|e| e.to_string())?;
-                    let public_key = cert.public_key().map_err(|e| e.to_string())?;
-                    if !key.public_eq(&public_key) {
-                        return Err("CA key does not match its certificate".into());
-                    }
-                }
-                crate::ca::issue::ResolvedSigningKey::Hsm { context, .. } => {
-                    context.health_check().map_err(|e| e.to_string())?
-                }
-            }
-            let now = openssl::asn1::Asn1Time::days_from_now(0).map_err(|e| e.to_string())?;
-            if cert.not_before() > now || cert.not_after() <= now {
-                return Err("CA certificate is outside its validity period".into());
-            }
-            return Ok(());
+            return probe_local_ca(config, ca, context.hsm.as_ref());
         }
 
         // Build the health check URL.
@@ -350,5 +370,142 @@ impl HealthChecker {
     /// Snapshot of probe metrics for monitoring.
     pub fn metrics_snapshot(&self) -> std::collections::HashMap<CaId, ProbeMetrics> {
         self.metrics.read().clone()
+    }
+}
+
+#[cfg(test)]
+mod probe_local_ca_tests {
+    //! Regression tests for the on-demand local-CA liveness check.
+    //!
+    //! These pin the honest behaviour the admin health endpoint depends on when
+    //! the HA subsystem is disabled: a CA is only counted "healthy" if its
+    //! signing key actually resolves, matches its certificate, and that
+    //! certificate is currently in date. Previously the endpoint assumed every
+    //! configured CA was healthy without checking anything.
+
+    use super::*;
+    use openssl::asn1::Asn1Time;
+    use openssl::bn::{BigNum, MsbOption};
+    use openssl::ec::{EcGroup, EcKey};
+    use openssl::hash::MessageDigest;
+    use openssl::nid::Nid;
+    use openssl::pkey::{PKey, Private};
+    use openssl::x509::{X509, X509NameBuilder};
+    use std::io::Write;
+
+    fn gen_ec_key() -> PKey<Private> {
+        let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
+        let ec = EcKey::generate(&group).unwrap();
+        PKey::from_ec_key(ec).unwrap()
+    }
+
+    /// Self-sign a CA certificate for `key`. `valid_days` sets `notAfter`
+    /// relative to now — pass a negative value to build an expired certificate.
+    fn self_signed(key: &PKey<Private>, valid_days: i64) -> X509 {
+        let mut nb = X509NameBuilder::new().unwrap();
+        nb.append_entry_by_text("CN", "probe-test-ca").unwrap();
+        let name = nb.build();
+
+        let mut b = X509::builder().unwrap();
+        b.set_version(2).unwrap();
+
+        let mut serial = BigNum::new().unwrap();
+        serial.rand(128, MsbOption::MAYBE_ZERO, false).unwrap();
+        b.set_serial_number(&serial.to_asn1_integer().unwrap())
+            .unwrap();
+
+        b.set_subject_name(&name).unwrap();
+        b.set_issuer_name(&name).unwrap();
+        b.set_pubkey(key).unwrap();
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        b.set_not_before(&Asn1Time::from_unix(now - 3600).unwrap())
+            .unwrap();
+        b.set_not_after(&Asn1Time::from_unix(now + valid_days * 86_400).unwrap())
+            .unwrap();
+
+        b.sign(key, MessageDigest::sha256()).unwrap();
+        b.build()
+    }
+
+    fn ca_state(cert_der: Vec<u8>) -> crate::state::CaState {
+        crate::state::CaState {
+            id: "probe-test".into(),
+            key_type: "ec:P-256".into(),
+            cert_der,
+            cert_chain: vec![],
+            hash_algorithm: "sha256".into(),
+            validity_days: 90,
+            crl_url: None,
+            ocsp_url: None,
+            crl_cache: parking_lot::Mutex::new(None),
+            cab_forum_compliant: false,
+        }
+    }
+
+    fn ca_config(key_path: &std::path::Path) -> crate::config::CaConfig {
+        // Build via TOML so the fixture tracks CaConfig's real defaults; the
+        // probe only reads key_file (cert comes from CaState), so cert_file is
+        // a throwaway.
+        let toml = format!(
+            "id = \"probe-test\"\nkey_file = \"{}\"\ncert_file = \"/dev/null\"\n",
+            key_path.display()
+        );
+        toml::from_str(&toml).expect("valid CaConfig toml")
+    }
+
+    fn write_key(key: &PKey<Private>) -> tempfile::NamedTempFile {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        f.write_all(&key.private_key_to_pem_pkcs8().unwrap())
+            .unwrap();
+        f.flush().unwrap();
+        f
+    }
+
+    #[test]
+    fn healthy_ca_passes_liveness_check() {
+        let key = gen_ec_key();
+        let cert = self_signed(&key, 365);
+        let key_file = write_key(&key);
+        let cfg = ca_config(key_file.path());
+        let state = ca_state(cert.to_der().unwrap());
+
+        assert!(
+            probe_local_ca(&cfg, &state, None).is_ok(),
+            "a CA whose on-disk key matches its in-date certificate must be reported live"
+        );
+    }
+
+    #[test]
+    fn mismatched_key_and_cert_fails_liveness_check() {
+        // The certificate is bound to key2's public key, but the config points
+        // key_file at key1 — precisely the "healthy" fabrication the old health
+        // endpoint could not detect.
+        let key1 = gen_ec_key();
+        let key2 = gen_ec_key();
+        let cert = self_signed(&key2, 365);
+        let key_file = write_key(&key1);
+        let cfg = ca_config(key_file.path());
+        let state = ca_state(cert.to_der().unwrap());
+
+        let err = probe_local_ca(&cfg, &state, None)
+            .expect_err("a CA whose key does not match its certificate must fail");
+        assert!(err.contains("does not match"), "unexpected reason: {err}");
+    }
+
+    #[test]
+    fn expired_ca_cert_fails_liveness_check() {
+        let key = gen_ec_key();
+        let cert = self_signed(&key, -1); // notAfter one day in the past
+        let key_file = write_key(&key);
+        let cfg = ca_config(key_file.path());
+        let state = ca_state(cert.to_der().unwrap());
+
+        let err = probe_local_ca(&cfg, &state, None)
+            .expect_err("an expired CA certificate must fail the liveness check");
+        assert!(err.contains("validity period"), "unexpected reason: {err}");
     }
 }

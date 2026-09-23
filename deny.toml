@@ -32,6 +32,9 @@ allow = [
     "Unicode-3.0",
     "BSL-1.0",
     "CC0-1.0",
+    # Data license on webpki-root-certs (Mozilla CA root bundle) — permissive,
+    # covers data not code; GPL-compatible for distribution.
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.8
 

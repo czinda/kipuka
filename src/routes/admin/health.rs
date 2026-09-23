@@ -79,17 +79,41 @@ pub async fn get_health(_admin: AdminAuth, State(state): State<Arc<AppState>>) -
 
     // Count healthy CAs.
     let ca_count = state.config.cas.len();
-    let healthy_ca_count = state
-        .ha_manager
-        .as_ref()
-        .map(|ha| {
-            ha.pool()
-                .status_snapshot()
-                .into_values()
-                .filter(|s| s.health.is_available())
-                .count()
-        })
-        .unwrap_or(ca_count);
+    let healthy_ca_count = match state.ha_manager.as_ref() {
+        // HA enabled: the background health checker maintains a live
+        // availability map for every backend; trust its snapshot.
+        Some(ha) => ha
+            .pool()
+            .status_snapshot()
+            .into_values()
+            .filter(|s| s.health.is_available())
+            .count(),
+        // HA disabled: there is no background probe, so actively verify each
+        // locally-hosted CA here. This branch previously assumed every CA was
+        // healthy (`.unwrap_or(ca_count)`), which meant the endpoint could
+        // report "healthy" for a CA whose signing key was missing or mismatched
+        // or whose certificate had expired — a false assurance.
+        None => state
+            .config
+            .cas
+            .iter()
+            .filter(|ca_cfg| match state.cas.get(&ca_cfg.id) {
+                Some(ca_state) => {
+                    match crate::ha::health::probe_local_ca(ca_cfg, ca_state, state.hsm.as_ref()) {
+                        Ok(()) => true,
+                        Err(reason) => {
+                            tracing::warn!(ca = %ca_cfg.id, %reason, "CA failed liveness check");
+                            false
+                        }
+                    }
+                }
+                None => {
+                    tracing::warn!(ca = %ca_cfg.id, "configured CA has no runtime state");
+                    false
+                }
+            })
+            .count(),
+    };
 
     // Determine overall status.
     let overall_status =
