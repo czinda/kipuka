@@ -581,12 +581,12 @@ pub struct ChainVerifyReport {
 /// Reads every row in `id` order and checks, for each, that (1) its `prev_hash`
 /// equals the previous row's stored `record_hash` (linkage — detects deletion
 /// and reordering) and (2) its `record_hash` recomputes from its own fields via
-/// the configured [`AuditState::chain_hash`] (integrity — detects in-place
+/// the configured `AuditState::chain_hash` (integrity — detects in-place
 /// edits).  The first violation short-circuits and is reported in
 /// [`ChainVerifyReport::broken_at`]/`detail`.
 ///
 /// This is the review-time counterpart to the write-time chaining in
-/// [`write_event`]; the same [`AuditState`] (key + algorithm) that wrote the
+/// `write_event`; the same [`AuditState`] (key + algorithm) that wrote the
 /// rows must be supplied, or unkeyed rows would be checked with an HMAC (or
 /// vice versa) and every hash would mismatch.
 pub async fn verify_chain(
