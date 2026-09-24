@@ -12,6 +12,12 @@ stages: [lint, build, test, security, integration, package, deploy]
 variables:
   RUST_VERSION: "1.97.1"
   RUST_IMAGE: "rust:1.97.1-bookworm"
+  # Runner selection tag. Defaults to the Red Hat ITUP ALM managed x86 fleet
+  # (gitlab.cee.redhat.com). Other GitLab instances whose runner fleet uses
+  # different tags override this with a project CI/CD variable — e.g. heebh.st
+  # sets CI_RUNNER_TAG=docker to target its shared Docker runner. A project
+  # variable takes precedence over this .gitlab-ci.yml default.
+  CI_RUNNER_TAG: "itup-alm-x86"
   CARGO_HOME: "${CI_PROJECT_DIR}/.cargo"
   CARGO_TERM_COLOR: "always"
   RUSTFLAGS: "-D warnings"
@@ -42,7 +48,7 @@ variables:
     - git config --global core.symlinks true
 
 default:
-  tags: [itup-alm-x86]
+  tags: [$CI_RUNNER_TAG]
   image: ${RUST_IMAGE}
   cache:
     key: "rust-${RUST_VERSION}-${CI_COMMIT_REF_SLUG}"
