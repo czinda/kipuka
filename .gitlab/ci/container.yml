@@ -2,7 +2,10 @@
 container-verify:
   stage: package
   needs: []
-  tags: [itup-alm-x86]
+  # Same per-instance runner selection as the pipeline default (see the
+  # CI_RUNNER_TAG note in .gitlab-ci.yml): cee's ITUP ALM fleet by default,
+  # overridable per project (heebh.st -> docker).
+  tags: [$CI_RUNNER_TAG]
   image:
     name: moby/buildkit:v0.33.0-rootless
     entrypoint: [""]
