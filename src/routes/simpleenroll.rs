@@ -75,12 +75,13 @@ pub async fn post_simpleenroll(
     let csr_der = decode_est_base64(&body)
         .map_err(|e| KipukaError::BadRequest(format!("CSR decoding failed: {e}")))?;
 
-    // Validate the CSR.  An authorization denial (FDP_ACF.1) is a
-    // security-relevant event: record it before returning 403 so the direct
-    // transport is audited exactly like the CMS-EST path, satisfying
-    // NIAP FAU_GEN.1 (audit every security-relevant event).
+    // Validate the CSR.  Both an authorization denial (FDP_ACF.1, 403) and a
+    // rejected CSR — a failed proof-of-possession / self-signature (RFC 7030
+    // §4.2, 400) — are security-relevant events: record them before returning
+    // so the direct transport is audited exactly like the CMS-EST path,
+    // satisfying NIAP FAU_GEN.1 (audit every security-relevant event).
     if let Err(e) = validate_csr(&csr_der, &auth.0, &label) {
-        if matches!(e, KipukaError::Forbidden(_)) {
+        if matches!(e, KipukaError::Forbidden(_) | KipukaError::BadRequest(_)) {
             state
                 .record_audit_event_with_actor(
                     "simpleenroll_denied",
@@ -310,7 +311,7 @@ pub async fn post_simpleenroll(
     };
 
     // Issue the certificate.
-    let result = crate::ca::issue::issue_certificate(
+    let result = match crate::ca::issue::issue_certificate(
         &csr_der,
         &profile,
         &ca.cert_der,
@@ -318,8 +319,26 @@ pub async fn post_simpleenroll(
         &ca.hash_algorithm,
         ca.ocsp_url.as_deref(),
         ca.crl_url.as_deref(),
-    )
-    .map_err(|e| KipukaError::Ca(format!("certificate issuance failed: {e}")))?;
+    ) {
+        Ok(result) => result,
+        Err(e) => {
+            // Client-content faults not caught by validate_csr above (e.g. an
+            // undersized key or a disallowed algorithm) map to BadRequest (400);
+            // server faults map to Ca (500).  Audit a client-caused rejection as
+            // enroll.reject (NIAP FAU_GEN.1).
+            let err = KipukaError::from(e);
+            if matches!(err, KipukaError::BadRequest(_)) {
+                state
+                    .record_audit_event_with_actor(
+                        "simpleenroll_denied",
+                        identity,
+                        &format!("ca_id={ca_id}, identity={identity}, reason={err}"),
+                    )
+                    .await;
+            }
+            return Err(err);
+        }
+    };
 
     // Store the issued certificate in the database for audit trail.
     let serial = &result.serial_number;

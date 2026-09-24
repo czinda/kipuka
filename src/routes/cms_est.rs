@@ -188,8 +188,26 @@ pub async fn post_cms_simpleenroll(
         )));
     }
 
-    // Delegate to the standard direct-signing enrollment pipeline.
-    let cert_der = issue_certificate_from_csr(&state, ca_id, csr_der).await?;
+    // Delegate to the standard direct-signing enrollment pipeline.  A bad CSR
+    // (e.g. failed proof-of-possession) surfaces as BadRequest (400); audit
+    // that client-caused rejection as enroll.reject before returning, so the
+    // CMS-EST transport is audited exactly like the direct HTTP path (NIAP
+    // FAU_GEN.1).
+    let cert_der = match issue_certificate_from_csr(&state, ca_id, csr_der).await {
+        Ok(cert_der) => cert_der,
+        Err(e) => {
+            if matches!(e, KipukaError::BadRequest(_)) {
+                state
+                    .record_audit_event_with_actor(
+                        "cms_simpleenroll_denied",
+                        identity,
+                        &format!("ca_id={ca_id}, identity={identity}, reason={e}"),
+                    )
+                    .await;
+            }
+            return Err(e);
+        }
+    };
 
     // Wrap in PKCS#7 certs-only, then optionally encrypt with CMS EnvelopedData.
     let pkcs7_der =
@@ -346,7 +364,22 @@ pub async fn post_cms_simplereenroll(
     // Re-enrollment uses the same certificate issuance path as simple enrollment;
     // the authentication difference is that the CMS signer cert IS the existing
     // certificate being renewed (verified above via CMS SignedData).
-    let cert_der = issue_certificate_from_csr(&state, ca_id, csr_der).await?;
+    let cert_der = match issue_certificate_from_csr(&state, ca_id, csr_der).await {
+        Ok(cert_der) => cert_der,
+        Err(e) => {
+            // Client-caused rejection (bad CSR/PoP) → audit enroll.reject.
+            if matches!(e, KipukaError::BadRequest(_)) {
+                state
+                    .record_audit_event_with_actor(
+                        "cms_simplereenroll_denied",
+                        identity,
+                        &format!("ca_id={ca_id}, identity={identity}, reason={e}"),
+                    )
+                    .await;
+            }
+            return Err(e);
+        }
+    };
 
     let pkcs7_der =
         crate::routes::cacerts::build_certs_only_pkcs7(std::slice::from_ref(&cert_der))?;
@@ -812,7 +845,7 @@ async fn issue_certificate_from_csr(
         ca.ocsp_url.as_deref(),
         ca.crl_url.as_deref(),
     )
-    .map_err(|e| KipukaError::Ca(format!("certificate issuance failed: {e}")))?;
+    .map_err(KipukaError::from)?;
 
     crate::ca::issue::persist_certificate(state, ca_id, &profile.name, &result).await?;
     Ok(result.certificate_der)

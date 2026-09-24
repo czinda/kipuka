@@ -167,18 +167,29 @@ impl CoapEstHandler {
 }
 
 /// Map a failed CoAP EST operation to its audit event, when the failure is a
-/// security-relevant authorization denial (FDP_ACF.1 → FAU_GEN.1).
+/// security-relevant enrollment rejection (FDP_ACF.1 / RFC 7030 §4.2 →
+/// FAU_GEN.1).
 ///
-/// Only `Forbidden` (authorization) denials produce an `*_denied` audit event;
-/// operational errors (malformed message, internal faults) are surfaced to the
-/// client and logged but are not enrollment-authorization decisions.
+/// Two failure classes produce an `*_denied` audit event, matching the HTTP
+/// taxonomy:
+/// - `Forbidden` — an authorization denial (the requester is not permitted to
+///   enroll the requested identity).
+/// - `InvalidMessage` — a rejected client CSR (empty payload, or a bad
+///   proof-of-possession / undersized key / disallowed algorithm classified by
+///   [`IssuanceError::is_client_error`](crate::ca::issue::IssuanceError::is_client_error)).
+///
+/// Purely operational faults (`Internal`, DTLS, block-transfer) are surfaced to
+/// the client and logged but are not enrollment decisions, so they are not
+/// audited here.
 fn coap_denial_audit(operation: EstOperation, err: &CoapError) -> Option<(String, String)> {
-    match (operation, err) {
-        (EstOperation::SimpleEnroll, CoapError::Forbidden(msg)) => {
-            Some(("coap_simpleenroll_denied".to_string(), msg.clone()))
-        }
-        (EstOperation::SimpleReenroll, CoapError::Forbidden(msg)) => {
-            Some(("coap_simplereenroll_denied".to_string(), msg.clone()))
+    let event_type = match operation {
+        EstOperation::SimpleEnroll => "coap_simpleenroll_denied",
+        EstOperation::SimpleReenroll => "coap_simplereenroll_denied",
+        _ => return None,
+    };
+    match err {
+        CoapError::Forbidden(msg) | CoapError::InvalidMessage(msg) => {
+            Some((event_type.to_string(), msg.clone()))
         }
         _ => None,
     }
@@ -313,7 +324,18 @@ fn handle_simpleenroll(
         ca.ocsp_url.as_deref(),
         ca.crl_url.as_deref(),
     )
-    .map_err(|e| CoapError::Internal(format!("certificate issuance failed: {e}")))?;
+    .map_err(|e| {
+        // A bad client CSR (e.g. failed proof-of-possession) maps to 4.00 Bad
+        // Request — the dispatch renders CoapError::InvalidMessage as
+        // CoapCode::BAD_REQUEST — while a server-side fault stays 5.00 Internal.
+        // The dispatch's coap_denial_audit records the client-caused rejection.
+        let msg = format!("certificate issuance failed: {e}");
+        if e.is_client_error() {
+            CoapError::InvalidMessage(msg)
+        } else {
+            CoapError::Internal(msg)
+        }
+    })?;
 
     tracing::info!(
         ca_id = %ca_id,

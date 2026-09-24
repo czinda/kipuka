@@ -15,6 +15,7 @@ mod common;
 
 use common::{TestCa, generate_test_csr};
 use kipuka::ca::issue::{CaSigningKey, EnrollmentProfile, IssuanceError, issue_certificate};
+use kipuka::error::KipukaError;
 
 /// A CSR whose self-signature is valid must be issued.
 #[test]
@@ -100,5 +101,38 @@ fn tampered_ecdsa_csr_pop_is_rejected() {
     assert!(
         matches!(result, Err(IssuanceError::InvalidCsr(_))),
         "expected InvalidCsr for a tampered ECDSA CSR, got: {result:?}"
+    );
+}
+
+/// A failed proof-of-possession must surface to the client as HTTP 400, not 500.
+///
+/// Ties the *real* PoP-verification failure (from a tampered CSR run through the
+/// central issuance chokepoint) to the transport status classification, so the
+/// enrollment paths that `?`-propagate through `From<IssuanceError>` return a
+/// client-fixable `BadRequest` (RFC 7030 §4.2.3) rather than masking a bad CSR
+/// behind a 500 that also leaks no reason. Regression guard for GitLab #9.
+#[test]
+fn tampered_csr_pop_maps_to_bad_request() {
+    let ca = TestCa::new();
+    let (mut csr_der, _key_der) = generate_test_csr("pop-status.example.com", "rsa:2048");
+
+    let last = csr_der.len() - 1;
+    csr_der[last] ^= 0xFF;
+
+    let profile = EnrollmentProfile::default();
+    let err = issue_certificate(
+        &csr_der,
+        &profile,
+        &ca.cert_der,
+        CaSigningKey::Pem(&ca.key_pem),
+        "sha256",
+        None,
+        None,
+    )
+    .expect_err("a tampered CSR must be rejected");
+
+    assert!(
+        matches!(KipukaError::from(err), KipukaError::BadRequest(_)),
+        "a PoP failure must map to BadRequest (HTTP 400), not a server error"
     );
 }

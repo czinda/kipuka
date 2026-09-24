@@ -199,7 +199,7 @@ pub async fn post_star_order(
             ca.ocsp_url.as_deref(),
             ca.crl_url.as_deref(),
         )
-        .map_err(|e| KipukaError::Ca(format!("STAR certificate issuance failed: {e}")))?;
+        .map_err(KipukaError::from)?;
 
         // Store the first certificate in the order.
         let first_cert = StarCertificate {
