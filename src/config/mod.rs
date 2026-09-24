@@ -543,4 +543,47 @@ ca_id = "nonexistent"
         assert!(!cfg.est.serverkeygen);
         assert!(cfg.est.csrattrs);
     }
+
+    /// The shipped Multi-CA HA example (issue #12) must stay parseable and
+    /// semantically valid so operators can copy it verbatim. Every config
+    /// table uses `deny_unknown_fields`, so a renamed or misspelled key here
+    /// fails this test. We parse and drive the HA semantic validator directly
+    /// rather than `Config::from_file`, because the realistic example enables
+    /// TLS with deployment paths that do not exist in the test sandbox (the
+    /// full validator hard-fails on missing TLS files by design).
+    #[test]
+    fn ha_example_config_is_valid() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/contrib/local-dev/kipuka-ha.toml"
+        );
+        let content = std::fs::read_to_string(path).expect("read kipuka-ha.toml");
+        let cfg: Config = toml::from_str(&content).expect("kipuka-ha.toml must parse");
+
+        // Two CAs, exactly one default (the multi-CA invariant).
+        assert_eq!(cfg.cas.len(), 2, "example should configure two CAs");
+        assert_eq!(
+            cfg.cas.iter().filter(|c| c.is_default).count(),
+            1,
+            "exactly one CA must be is_default"
+        );
+
+        // HA is enabled and its semantic validation passes against the CAs.
+        let ha = cfg.ha.as_ref().expect("[ha] table present");
+        assert!(ha.enabled, "example must enable HA to be illustrative");
+        ha.validate(&cfg.cas)
+            .expect("[ha] example must pass semantic validation");
+
+        // The secondary is probed remotely (endpoint mapping); the primary is
+        // omitted and therefore probed locally (`local:ca-primary`).
+        assert!(ha.endpoints.contains_key("ca-secondary"));
+        assert!(!ha.endpoints.contains_key("ca-primary"));
+
+        // The label pool authorizes exactly the two configured CAs. `ca_pool`
+        // is only legal with HA enabled, which the parse above confirms.
+        assert_eq!(
+            cfg.est.labels[0].ca_pool,
+            vec!["ca-primary".to_string(), "ca-secondary".to_string()],
+        );
+    }
 }

@@ -213,18 +213,39 @@ pub async fn get_health_ca(_admin: AdminAuth, State(state): State<Arc<AppState>>
     let mut ca_health: Vec<serde_json::Value> = Vec::new();
 
     for ca_config in &state.config.cas {
-        let (health, latency_ms) = state
-            .ha_manager
-            .as_ref()
-            .and_then(|ha| {
+        let (health, latency_ms) = match state.ha_manager.as_ref() {
+            // HA enabled: report the backend's live state from the background
+            // health checker's snapshot (Healthy/Degraded/Unavailable/Recovering).
+            Some(ha) => {
                 let ca_id_key = crate::ha::CaId(ca_config.id.clone());
-                ha.pool().status_snapshot().get(&ca_id_key).map(|s| {
-                    let h = format!("{:?}", s.health);
-                    let l = Some(s.latency_ema_ms as u64);
-                    (h, l)
-                })
-            })
-            .unwrap_or(("unknown".to_string(), None));
+                ha.pool()
+                    .status_snapshot()
+                    .get(&ca_id_key)
+                    .map(|s| (format!("{:?}", s.health), Some(s.latency_ema_ms as u64)))
+                    .unwrap_or(("unknown".to_string(), None))
+            }
+            // HA disabled: there is no background probe, so this endpoint used
+            // to report "unknown" for every CA. Actively run the same one-shot
+            // liveness check the aggregate `/admin/health` count uses, so the
+            // per-CA view is honest instead of uninformative. Reported in the
+            // HealthState vocabulary the HA-enabled branch already emits.
+            None => match state.cas.get(&ca_config.id) {
+                Some(ca_state) => {
+                    match crate::ha::health::probe_local_ca(ca_config, ca_state, state.hsm.as_ref())
+                    {
+                        Ok(()) => ("Healthy".to_string(), None),
+                        Err(reason) => {
+                            tracing::warn!(ca = %ca_config.id, %reason, "CA failed liveness check");
+                            ("Unavailable".to_string(), None)
+                        }
+                    }
+                }
+                None => {
+                    tracing::warn!(ca = %ca_config.id, "configured CA has no runtime state");
+                    ("unknown".to_string(), None)
+                }
+            },
+        };
 
         ca_health.push(serde_json::json!({
             "ca_id": ca_config.id,

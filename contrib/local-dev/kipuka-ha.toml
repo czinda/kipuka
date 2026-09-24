@@ -1,0 +1,129 @@
+# ── Kipuka EST Server — Multi-CA High Availability Example ────────────────
+#
+# Worked example of the opt-in Multi-CA HA subsystem (issue #12). HA is
+# **disabled by default**; nothing in this file takes effect until
+# `[ha].enabled = true` (set below).
+#
+# What HA does: each `[[ca]]` becomes a backend in a pool. A background health
+# checker probes every backend on an interval; the configured failover
+# strategy picks a healthy backend for each enrollment. A per-CA circuit
+# breaker opens after repeated failures and re-probes after a cooldown.
+#
+# Backend probe target (see src/ha/mod.rs::build_manager):
+#   - If `[ha].endpoints.<ca-id>` is set to an HTTPS URL, that CA is treated as
+#     REMOTE and probed over HTTPS (Dogtag CAs hit `/ca/admin/ca/getStatus`).
+#   - Otherwise the CA is LOCAL (`local:<id>`) and probed in-process: its
+#     signing key must resolve and match its certificate, and that certificate
+#     must be within its validity window.
+#
+# Usage:
+#   cargo run -- --config contrib/local-dev/kipuka-ha.toml
+# ────────────────────────────────────────────────────────────────────────
+
+# ── Server ───────────────────────────────────────────────────────────────
+[server]
+listen_addr = "0.0.0.0:9443"
+
+# ── TLS ──────────────────────────────────────────────────────────────────
+[tls]
+enabled     = true
+cert_file   = "/etc/kipuka/tls/server.pem"
+key_file    = "/etc/kipuka/tls/server-key.pem"
+ca_file     = "/etc/kipuka/ca/ca.pem"
+client_auth = "optional"
+
+# ── Database ─────────────────────────────────────────────────────────────
+[database]
+url = "sqlite:///var/lib/kipuka/kipuka.db?mode=rwc"
+
+# ── Certificate Authorities ──────────────────────────────────────────────
+# With HA enabled you configure multiple `[[ca]]` entries. Array order sets
+# the ActivePassive priority: the first healthy CA wins. Exactly one entry
+# must be `is_default = true` (used by labels that name neither `ca_id` nor a
+# `ca_pool`).
+
+# Primary: a locally-hosted CA that signs directly. Probed in-process — no
+# `[ha].endpoints` entry, so its target is `local:ca-primary`.
+[[ca]]
+id             = "ca-primary"
+is_default     = true
+key_file       = "/etc/kipuka/ca/primary-key.pem"
+cert_file      = "/etc/kipuka/ca/primary.pem"
+validity_days  = 365
+hash_algorithm = "sha256"
+common_name    = "Kipuka HA Primary CA"
+organization   = "Kipuka Development"
+
+# Secondary: a remote Dogtag CA. It still needs local key/cert material for
+# EST responses, but its *liveness* is probed over HTTPS via the endpoint
+# mapping below rather than in-process.
+[[ca]]
+id             = "ca-secondary"
+is_default     = false
+key_file       = "/etc/kipuka/ca/secondary-key.pem"
+cert_file      = "/etc/kipuka/ca/secondary.pem"
+validity_days  = 365
+hash_algorithm = "sha256"
+common_name    = "Kipuka HA Secondary CA"
+organization   = "Kipuka Development"
+
+# ── High Availability ────────────────────────────────────────────────────
+[ha]
+# Master switch. Leave false to run single-CA with no background probing;
+# set true to activate the pool, health checker, and failover.
+enabled = true
+
+# Failover strategy (src/ha/strategy.rs::FailoverStrategy), snake_case:
+#   active_passive — ordered priority; prefer the highest-priority healthy CA
+#   round_robin    — even distribution across healthy CAs
+#   weighted       — proportional to weights
+#   latency_based  — prefer the lowest-latency CA (EMA), adapts over time
+strategy = "active_passive"
+
+# Health-probe cadence and per-probe timeout (seconds). Must be > 0.
+probe_interval_secs = 30
+probe_timeout_secs  = 5
+
+# Circuit breaker: open after this many consecutive probe failures, then wait
+# `cooldown_secs` before re-probing an Unavailable CA. Both must be > 0.
+failure_threshold = 3
+cooldown_secs     = 60
+
+# Remote health endpoints keyed by CA id. Every key must name a configured
+# `[[ca]]`. Endpoints MUST be HTTPS with no embedded credentials. Any CA
+# omitted here is probed locally (`local:<id>`).
+#   - ca-primary is intentionally omitted → probed in-process.
+#   - ca-secondary points at a Dogtag CA status endpoint.
+[ha.endpoints]
+ca-secondary = "https://dogtag.example.internal:8443/ca"
+
+# ── EST Protocol ─────────────────────────────────────────────────────────
+[est]
+simpleenroll   = true
+simplereenroll = true
+csrattrs       = true
+fullcmc        = false
+serverkeygen   = false
+
+# A label may authorize a specific set of pool members via `ca_pool`
+# (mutually exclusive with `ca_id`). `ca_pool` REQUIRES `[ha].enabled = true`;
+# enrollments under this label fail over across exactly these CAs.
+[[est.label]]
+name         = "devices"
+ca_pool      = ["ca-primary", "ca-secondary"]
+auth_methods = ["mtls"]
+
+# ── Admin API ────────────────────────────────────────────────────────────
+# With HA enabled, `GET /admin/health/ca` reports each backend's live state
+# (Healthy / Degraded / Unavailable / Recovering) from the probe loop. With
+# HA disabled, that endpoint actively runs the local liveness check instead.
+[admin]
+enabled       = true
+auth_method   = "mtls"
+admin_ca_file = "/etc/kipuka/ca/ca.pem"
+
+# ── Audit ────────────────────────────────────────────────────────────────
+[audit]
+enabled   = true
+log_path  = "/dev/stdout"
+log_to_db = true
