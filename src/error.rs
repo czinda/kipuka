@@ -121,6 +121,29 @@ impl From<std::io::Error> for KipukaError {
     }
 }
 
+impl From<crate::ca::issue::IssuanceError> for KipukaError {
+    /// Classify an issuance failure into the correct HTTP domain.
+    ///
+    /// A fault in the client-supplied CSR (bad self-signature/PoP, undersized
+    /// key, disallowed algorithm, prohibited DN attribute) is a
+    /// [`BadRequest`](KipukaError::BadRequest) → `400`: the requester can fix
+    /// the CSR and retry, and the specific reason is safe to return.  Every
+    /// other failure — signing, storage, or a server-side profile
+    /// misconfiguration — is a [`Ca`](KipukaError::Ca) error → `500`, whose
+    /// detail is logged but never exposed to the client.
+    ///
+    /// The client/server split is owned by
+    /// [`IssuanceError::is_client_error`](crate::ca::issue::IssuanceError::is_client_error)
+    /// so HTTP and CoAP transports classify identically.
+    fn from(e: crate::ca::issue::IssuanceError) -> Self {
+        if e.is_client_error() {
+            KipukaError::BadRequest(e.to_string())
+        } else {
+            KipukaError::Ca(e.to_string())
+        }
+    }
+}
+
 impl KipukaError {
     /// Map the error variant to an HTTP status code.
     ///
