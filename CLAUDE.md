@@ -38,7 +38,7 @@ describe a ⛔ item as working in commits, docs, or user-facing output until its
 - ✅ PKCS#11 HSM integration for CA key protection (generic PKCS#11; vendors are library-path mappings, no FIPS-mode enforcement — #18)
 - ✅ Dogtag PKI integration (CA enrollment, KRA key generation, CMC passthrough)
 - ✅ mTLS and GSSAPI/Kerberos authentication; ⛔ OTP authentication — `OtpStore::placeholder()` wired instead of the real store; non-functional (#10)
-- 🟡 Revocation/security: OCSP checking ✅; CRL fallback only on mTLS re-enroll path (#23); OCSP stapling built but not wired into TLS (#16); CSR self-signature/PoP **not** enforced (#9)
+- 🟡 Revocation/security: OCSP checking ✅; CRL fallback only on mTLS re-enroll path (#23); OCSP stapling built but not wired into TLS (#16); ✅ CSR self-signature/PoP **is** enforced at the `ca::issue::issue_certificate` chokepoint (RFC 7030 §4.2), so every direct-signing path inherits it; a failed PoP now returns 400 and is audited as enroll.reject (#9 core done; see tests/csr_pop.rs)
 - ⛔ CoAP transport (RFC 7252/9148/9483): EST-coaps enrollment works over **plaintext** CoAP; DTLS not implemented (#13); serverkeygen over CoAP returns error (#22)
 - ✅ SQLite/PostgreSQL/MariaDB database backends (via sqlx Any driver)
 - Container image: quay.io/czinda/kipuka (x86_64 latest, arm64 latest-arm64)
@@ -47,7 +47,7 @@ describe a ⛔ item as working in commits, docs, or user-facing output until its
 
 ### Not wired / partial today (see tracking issues #9–#26)
 These are advertised elsewhere but do **not** serve traffic in the current build:
-CSR proof-of-possession (#9), OTP auth (#10), STAR runtime (#11),
+OTP auth (#10), STAR runtime (#11),
 EST-coaps DTLS (#13), CMS-EST routes (#14), /fullcmc (#15), OCSP stapling (#16),
 PQC issuance (#17), server-side keygen (#21/#22), CNSA validation (#24), RFC 9688 CMC
 validation (#25).
