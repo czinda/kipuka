@@ -58,6 +58,41 @@ pub enum IssuanceError {
     ProhibitedDnAttribute { oid: String, name: String },
 }
 
+impl IssuanceError {
+    /// Whether this failure was caused by the *client's* request content
+    /// (the CSR) rather than a server-side fault.
+    ///
+    /// This is the single source of truth for HTTP/CoAP status classification:
+    /// client-content faults must surface as `4xx` (RFC 7030 §4.2.3 — the
+    /// requester can fix the CSR and retry), while server/profile/signing
+    /// faults must surface as `5xx` (the client cannot fix them, and internal
+    /// detail must not leak).  A misclassification here would either blame the
+    /// client for a server misconfiguration or hide a bad CSR behind a 500.
+    ///
+    /// Note the two profile-driven variants — [`MissingExtension`] and
+    /// [`ValidityTooLong`] — are **server** errors: they originate from the
+    /// server's [`EnrollmentProfile`] (`check_required_extensions`,
+    /// `check_validity_period`), not from anything the client sent.
+    ///
+    /// [`MissingExtension`]: Self::MissingExtension
+    /// [`ValidityTooLong`]: Self::ValidityTooLong
+    pub fn is_client_error(&self) -> bool {
+        match self {
+            // Faults in the client-supplied CSR — the requester can fix and retry.
+            Self::InvalidCsr(_)
+            | Self::KeyTooSmall { .. }
+            | Self::AlgorithmNotAllowed { .. }
+            | Self::ProhibitedDnAttribute { .. } => true,
+            // Server-side faults: signing, storage, and profile configuration.
+            Self::SigningError(_)
+            | Self::StorageError(_)
+            | Self::MissingExtension(_)
+            | Self::ValidityTooLong { .. }
+            | Self::UnknownProfile(_) => false,
+        }
+    }
+}
+
 /// Result of a successful certificate issuance.
 #[derive(Debug, Clone)]
 pub struct IssuanceResult {
@@ -1410,4 +1445,65 @@ fn verify_csr_pop(csr_der: &[u8]) -> Result<(), IssuanceError> {
 
     debug!("CSR proof-of-possession verified");
     Ok(())
+}
+
+#[cfg(test)]
+mod issuance_error_classification_tests {
+    //! Pin the client/server split that drives HTTP and CoAP status codes.
+    //!
+    //! A regression here silently mislabels a bad CSR as a server fault (500,
+    //! reason hidden) or blames the client for a server misconfiguration (400).
+
+    use super::IssuanceError;
+    use crate::error::KipukaError;
+
+    #[test]
+    fn csr_content_faults_are_client_errors() {
+        let client = [
+            IssuanceError::InvalidCsr("bad self-signature".into()),
+            IssuanceError::KeyTooSmall {
+                algorithm: "RSA".into(),
+                bits: 1024,
+                min_bits: 2048,
+            },
+            IssuanceError::AlgorithmNotAllowed {
+                algorithm: "MD5".into(),
+                profile: "default".into(),
+            },
+            IssuanceError::ProhibitedDnAttribute {
+                oid: "2.5.4.5".into(),
+                name: "serialNumber".into(),
+            },
+        ];
+        for e in client {
+            assert!(e.is_client_error(), "{e} must classify as a client error");
+            assert!(
+                matches!(KipukaError::from(e), KipukaError::BadRequest(_)),
+                "a client CSR fault must map to BadRequest (400)"
+            );
+        }
+    }
+
+    #[test]
+    fn server_and_profile_faults_are_server_errors() {
+        // MissingExtension and ValidityTooLong come from the server-side
+        // EnrollmentProfile, not the client's CSR — they must stay 500.
+        let server = [
+            IssuanceError::SigningError("HSM offline".into()),
+            IssuanceError::StorageError("db write failed".into()),
+            IssuanceError::MissingExtension("keyUsage".into()),
+            IssuanceError::ValidityTooLong {
+                requested_days: 900,
+                max_days: 825,
+            },
+            IssuanceError::UnknownProfile("ghost".into()),
+        ];
+        for e in server {
+            assert!(!e.is_client_error(), "{e} must classify as a server error");
+            assert!(
+                matches!(KipukaError::from(e), KipukaError::Ca(_)),
+                "a server/profile fault must map to Ca (500)"
+            );
+        }
+    }
 }

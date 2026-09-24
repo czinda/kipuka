@@ -181,7 +181,7 @@ pub async fn post_simplereenroll(
     };
 
     // Issue the renewed certificate.
-    let result = crate::ca::issue::issue_certificate(
+    let result = match crate::ca::issue::issue_certificate(
         &csr_der,
         &profile,
         &ca.cert_der,
@@ -189,8 +189,27 @@ pub async fn post_simplereenroll(
         &ca.hash_algorithm,
         ca.ocsp_url.as_deref(),
         ca.crl_url.as_deref(),
-    )
-    .map_err(|e| KipukaError::Ca(format!("certificate re-issuance failed: {e}")))?;
+    ) {
+        Ok(result) => result,
+        Err(e) => {
+            // `From<IssuanceError>` maps a bad client CSR (e.g. failed
+            // proof-of-possession) to BadRequest (400) and server faults to
+            // Ca (500).  A client-caused rejection is a security-relevant
+            // event: audit it as enroll.reject before returning, mirroring the
+            // authorization-denial path (NIAP FAU_GEN.1).
+            let err = KipukaError::from(e);
+            if matches!(err, KipukaError::BadRequest(_)) {
+                state
+                    .record_audit_event_with_actor(
+                        "simplereenroll_denied",
+                        identity,
+                        &format!("ca_id={ca_id}, identity={identity}, reason={err}"),
+                    )
+                    .await;
+            }
+            return Err(err);
+        }
+    };
 
     // Store the re-enrolled certificate in the database for audit trail.
     let serial = &result.serial_number;
