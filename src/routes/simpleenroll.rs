@@ -158,131 +158,10 @@ pub async fn post_simpleenroll(
     // If a Dogtag PKI backend is configured, forward the enrollment to
     // Dogtag CA instead of using direct signing.  The direct-signing path
     // below remains the fallback when `[dogtag]` is absent.
-    if let Some(ref dogtag_pool) = state.dogtag {
-        let client = dogtag_pool
-            .get_client()
-            .map_err(|e| KipukaError::ServiceUnavailable(format!("Dogtag CA unavailable: {e}")))?;
-
-        // Convert DER CSR to PEM for the Dogtag REST API.
-        use base64::Engine;
-        let csr_b64 = base64::engine::general_purpose::STANDARD.encode(&csr_der);
-        let csr_pem = format!(
-            "-----BEGIN CERTIFICATE REQUEST-----\n{csr_b64}\n-----END CERTIFICATE REQUEST-----"
-        );
-
-        let profile_id = &state
-            .config
-            .dogtag
-            .as_ref()
-            .expect("dogtag config present when pool is set")
-            .profile_id;
-
-        tracing::info!(
-            ca_id = %ca_id,
-            identity = %identity,
-            profile_id = %profile_id,
-            "forwarding enrollment to Dogtag CA"
-        );
-
-        let enroll_result = client
-            .enroll_certificate(&csr_pem, profile_id)
-            .await
-            .map_err(|e| KipukaError::Ca(format!("Dogtag enrollment failed: {e}")))?;
-
-        match enroll_result.status {
-            kipuka_dogtag::EnrollStatus::Complete => {
-                let cert_der = enroll_result.certificate_der.ok_or_else(|| {
-                    KipukaError::Ca("Dogtag returned complete status but no certificate".into())
-                })?;
-
-                // Store the Dogtag-issued certificate in our DB for audit trail.
-                if let Err(e) = sqlx::query(crate::db::pg_sql(
-                    "INSERT INTO certificates (serial, subject_dn, issuer_dn, not_before, not_after, der_encoded, ca_id, profile, status) \
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')",
-                ))
-                .bind(&enroll_result.request_id)
-                .bind("(dogtag-issued)")
-                .bind("(dogtag)")
-                .bind("")
-                .bind("")
-                .bind(&cert_der)
-                .bind(ca_id)
-                .bind(profile_id.as_str())
-                .execute(&state.db)
-                .await
-                {
-                    tracing::error!(
-                        error = %e,
-                        request_id = %enroll_result.request_id,
-                        "failed to store Dogtag-issued certificate in DB"
-                    );
-                }
-
-                let pkcs7_der = crate::routes::cacerts::build_certs_only_pkcs7(
-                    std::slice::from_ref(&cert_der),
-                )?;
-                let body = encode_est_base64(&pkcs7_der);
-                let mut resp = (StatusCode::OK, body).into_response();
-                resp.headers_mut().insert(
-                    header::CONTENT_TYPE,
-                    HeaderValue::from_static(content_types::PKCS7_CERTS),
-                );
-                resp.headers_mut().insert(
-                    header::HeaderName::from_static("content-transfer-encoding"),
-                    HeaderValue::from_static(content_types::TRANSFER_ENCODING_BASE64),
-                );
-
-                state
-                    .record_audit_event(
-                        "simpleenroll_success",
-                        &format!(
-                            "ca_id={ca_id}, identity={identity}, backend=dogtag, request_id={}",
-                            enroll_result.request_id
-                        ),
-                    )
-                    .await;
-
-                return Ok(resp);
-            }
-            kipuka_dogtag::EnrollStatus::Pending => {
-                // Dogtag profile requires agent approval — return 202 Accepted
-                // with Retry-After per RFC 7030 §4.2.3.
-                tracing::info!(
-                    request_id = %enroll_result.request_id,
-                    "Dogtag enrollment pending agent approval"
-                );
-
-                let retry_after = state.config.est.disconnected_retry_after_secs;
-                let mut resp = StatusCode::ACCEPTED.into_response();
-                if let Ok(hv) = HeaderValue::from_str(&retry_after.to_string()) {
-                    resp.headers_mut().insert(header::RETRY_AFTER, hv);
-                }
-
-                state
-                    .record_audit_event(
-                        "simpleenroll_deferred",
-                        &format!(
-                            "ca_id={ca_id}, identity={identity}, backend=dogtag, request_id={}",
-                            enroll_result.request_id
-                        ),
-                    )
-                    .await;
-
-                return Ok(resp);
-            }
-            kipuka_dogtag::EnrollStatus::Rejected => {
-                return Err(KipukaError::Ca(format!(
-                    "Dogtag CA rejected enrollment: request_id={}",
-                    enroll_result.request_id
-                )));
-            }
-            kipuka_dogtag::EnrollStatus::Canceled => {
-                return Err(KipukaError::Ca(format!(
-                    "Dogtag enrollment was canceled: request_id={}",
-                    enroll_result.request_id
-                )));
-            }
-        }
+    if let Some(response) =
+        enroll_with_dogtag(&state, &csr_der, ca_id, identity, "simpleenroll").await?
+    {
+        return Ok(response);
     }
 
     // ── Direct-signing path (no Dogtag) ─────────────────────────────────────
@@ -398,6 +277,120 @@ pub async fn post_simpleenroll(
     Ok(resp)
 }
 
+/// Forward a validated enrollment or re-enrollment to the configured Dogtag
+/// backend. `None` means no backend is configured; backend errors never cause
+/// fallback to local signing. Callers enforce authentication and CSR policy.
+pub(super) async fn enroll_with_dogtag(
+    state: &AppState,
+    csr_der: &[u8],
+    ca_id: &str,
+    identity: &str,
+    operation: &str,
+) -> Result<Option<Response>, KipukaError> {
+    let Some(dogtag_pool) = &state.dogtag else {
+        return Ok(None);
+    };
+    let client = dogtag_pool
+        .get_client()
+        .map_err(|e| KipukaError::ServiceUnavailable(format!("Dogtag CA unavailable: {e}")))?;
+
+    use base64::Engine;
+    let csr_b64 = base64::engine::general_purpose::STANDARD.encode(csr_der);
+    let csr_pem = format!(
+        "-----BEGIN CERTIFICATE REQUEST-----\n{csr_b64}\n-----END CERTIFICATE REQUEST-----"
+    );
+    let profile_id = &state
+        .config
+        .dogtag
+        .as_ref()
+        .expect("dogtag config present when pool is set")
+        .profile_id;
+
+    tracing::info!(
+        ca_id,
+        identity,
+        profile_id,
+        operation,
+        "forwarding enrollment to Dogtag CA"
+    );
+    let enroll_result = client
+        .enroll_certificate(&csr_pem, profile_id)
+        .await
+        .map_err(|e| KipukaError::Ca(format!("Dogtag enrollment failed: {e}")))?;
+
+    let (response, event) = match enroll_result.status {
+        kipuka_dogtag::EnrollStatus::Complete => {
+            let cert_der = enroll_result.certificate_der.ok_or_else(|| {
+                KipukaError::Ca("Dogtag returned complete status but no certificate".into())
+            })?;
+
+            // Preserve the enrollment persistence path for both operations.
+            if let Err(e) = sqlx::query(crate::db::pg_sql(
+                "INSERT INTO certificates (serial, subject_dn, issuer_dn, not_before, not_after, der_encoded, ca_id, profile, status) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')",
+            ))
+            .bind(&enroll_result.request_id)
+            .bind("(dogtag-issued)")
+            .bind("(dogtag)")
+            .bind("")
+            .bind("")
+            .bind(&cert_der)
+            .bind(ca_id)
+            .bind(profile_id.as_str())
+            .execute(&state.db)
+            .await
+            {
+                tracing::error!(error = %e, request_id = %enroll_result.request_id, "failed to store Dogtag-issued certificate in DB");
+            }
+
+            let pkcs7_der =
+                crate::routes::cacerts::build_certs_only_pkcs7(std::slice::from_ref(&cert_der))?;
+            let mut response = (StatusCode::OK, encode_est_base64(&pkcs7_der)).into_response();
+            response.headers_mut().insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static(content_types::PKCS7_CERTS),
+            );
+            response.headers_mut().insert(
+                header::HeaderName::from_static("content-transfer-encoding"),
+                HeaderValue::from_static(content_types::TRANSFER_ENCODING_BASE64),
+            );
+            (response, format!("{operation}_success"))
+        }
+        kipuka_dogtag::EnrollStatus::Pending => {
+            tracing::info!(request_id = %enroll_result.request_id, "Dogtag enrollment pending agent approval");
+            let retry_after = state.config.est.disconnected_retry_after_secs;
+            let mut response = StatusCode::ACCEPTED.into_response();
+            if let Ok(value) = HeaderValue::from_str(&retry_after.to_string()) {
+                response.headers_mut().insert(header::RETRY_AFTER, value);
+            }
+            (response, format!("{operation}_deferred"))
+        }
+        kipuka_dogtag::EnrollStatus::Rejected => {
+            return Err(KipukaError::Ca(format!(
+                "Dogtag CA rejected enrollment: request_id={}",
+                enroll_result.request_id
+            )));
+        }
+        kipuka_dogtag::EnrollStatus::Canceled => {
+            return Err(KipukaError::Ca(format!(
+                "Dogtag enrollment was canceled: request_id={}",
+                enroll_result.request_id
+            )));
+        }
+    };
+    state
+        .record_audit_event_with_actor(
+            &event,
+            identity,
+            &format!(
+                "ca_id={ca_id}, identity={identity}, backend=dogtag, request_id={}",
+                enroll_result.request_id
+            ),
+        )
+        .await;
+    Ok(Some(response))
+}
+
 /// Validate a PKCS#10 CSR for enrollment.
 ///
 /// RFC 7030 §4.2 and §3.5 validation checks:
@@ -415,7 +408,7 @@ pub async fn post_simpleenroll(
 ///
 /// 4. **CN match** — when `require_cn_match` is configured for the label,
 ///    the CSR subject CN must match the authenticated identity.
-fn validate_csr(
+pub(super) fn validate_csr(
     csr_der: &[u8],
     auth: &crate::auth::AuthResult,
     label: &LabelExtractor,

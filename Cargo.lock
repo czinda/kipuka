@@ -1427,6 +1427,7 @@ dependencies = [
  "reqwest",
  "rpassword",
  "rustls",
+ "rustls-native-ossl",
  "rustls-pemfile",
  "serde",
  "serde_json",
@@ -1437,6 +1438,7 @@ dependencies = [
  "synta-certificate",
  "synta-cmc",
  "synta-krb5",
+ "synta-x509-verification",
  "tempfile",
  "thiserror",
  "tokio",
@@ -2233,6 +2235,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustls-native-ossl"
+version = "0.1.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62cfa3879dc6bd19f7fe5e2e600500508c7b886065ab6731ffadef12359241da"
+dependencies = [
+ "log",
+ "native-ossl",
+ "rustls",
+ "rustls-pki-types",
+]
+
+[[package]]
 name = "rustls-pemfile"
 version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2864,6 +2878,16 @@ dependencies = [
  "synta",
  "synta-codegen",
  "synta-derive",
+]
+
+[[package]]
+name = "synta-x509-verification"
+version = "0.2.6"
+source = "git+https://github.com/czinda/synta.git?rev=1fbba09dd92fdd37ac87426c0cac202c36bd55fe#1fbba09dd92fdd37ac87426c0cac202c36bd55fe"
+dependencies = [
+ "openssl",
+ "synta",
+ "synta-certificate",
 ]
 
 [[package]]

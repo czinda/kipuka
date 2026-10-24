@@ -23,6 +23,7 @@ repository = "https://github.com/czinda/kipuka"
 # ASN.1 / X.509 / CMS (Synta)
 synta = { git = "https://github.com/czinda/synta.git", rev = "1fbba09dd92fdd37ac87426c0cac202c36bd55fe" }
 synta-certificate = { git = "https://github.com/czinda/synta.git", rev = "1fbba09dd92fdd37ac87426c0cac202c36bd55fe", features = ["openssl"] }
+synta-x509-verification = { git = "https://github.com/czinda/synta.git", rev = "1fbba09dd92fdd37ac87426c0cac202c36bd55fe" }
 synta-cmc = { git = "https://github.com/czinda/synta.git", rev = "1fbba09dd92fdd37ac87426c0cac202c36bd55fe" }
 synta-krb5 = { git = "https://github.com/czinda/synta.git", rev = "1fbba09dd92fdd37ac87426c0cac202c36bd55fe", features = ["std"] }
 
@@ -41,6 +42,7 @@ tokio = { version = "1", features = ["full"] }
 rustls = { version = "0.23", features = ["ring"] }
 tokio-rustls = "0.26"
 rustls-pemfile = "2"
+rustls-native-ossl = "0.1.13"
 
 # PKCS#11 / HSM
 cryptoki = "0.12"
@@ -123,6 +125,7 @@ kipuka-otp.workspace = true
 kipuka-util.workspace = true
 synta.workspace = true
 synta-certificate.workspace = true
+synta-x509-verification.workspace = true
 synta-cmc.workspace = true
 synta-krb5.workspace = true
 axum.workspace = true
@@ -135,6 +138,7 @@ tokio.workspace = true
 rustls.workspace = true
 tokio-rustls.workspace = true
 rustls-pemfile.workspace = true
+rustls-native-ossl.workspace = true
 sqlx.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -173,4 +177,3 @@ gssapi = ["dep:libgssapi"]
 reqwest = { version = "0.13", features = ["native-tls", "json"] }  # json feature only for tests; version must track the main reqwest dep
 tempfile = "3"
 kipuka-coap.workspace = true  # direct handler tests (FDP_ACF.1 enforcement over CoAP)
-

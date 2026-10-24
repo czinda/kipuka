@@ -186,7 +186,9 @@ impl AppState {
             "cert_issued" | "simpleenroll_success" | "simpleenroll_deferred" => {
                 crate::audit::AuditEventType::CertIssue
             }
-            "simplereenroll_success" => crate::audit::AuditEventType::CertReenroll,
+            "simplereenroll_success" | "simplereenroll_deferred" => {
+                crate::audit::AuditEventType::CertReenroll
+            }
             "fullcmc_success" => crate::audit::AuditEventType::CertIssue,
             "serverkeygen_success" => crate::audit::AuditEventType::CertIssue,
             // Enrollment-authorization denials (FDP_ACF.1) across every

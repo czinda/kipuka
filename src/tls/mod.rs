@@ -38,6 +38,8 @@ use tracing::{debug, error, info, warn};
 use crate::config::{ClientAuthMode, OcspStaplingConfig, TlsConfig};
 use crate::error::KipukaError;
 
+mod client_verifier;
+
 /// Build a `TlsAcceptor` from the Kipuka TLS configuration.
 ///
 /// When `hsm` is `Some` and `tls.key_file` starts with `pkcs11:`, the
@@ -179,41 +181,13 @@ fn load_private_key(path: &str) -> Result<PrivateKeyDer<'static>, KipukaError> {
     Ok(key)
 }
 
-/// Load CA certificates from a PEM file for client verification.
-fn load_trust_anchors(ca_file: &str) -> Result<rustls::RootCertStore, KipukaError> {
-    let file = std::fs::File::open(ca_file)
-        .map_err(|e| KipukaError::Tls(format!("cannot open CA file '{ca_file}': {e}")))?;
-    let mut reader = BufReader::new(file);
-
-    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut reader)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| KipukaError::Tls(format!("cannot parse CA file '{ca_file}': {e}")))?;
-
-    if certs.is_empty() {
-        return Err(KipukaError::Tls(format!(
-            "no CA certificates found in '{ca_file}'"
-        )));
-    }
-
-    let mut root_store = rustls::RootCertStore::empty();
-    for cert in certs {
-        root_store
-            .add(cert)
-            .map_err(|e| KipukaError::Tls(format!("invalid CA certificate: {e}")))?;
-    }
-
-    Ok(root_store)
-}
-
 /// Build a client certificate verifier that requires a valid certificate.
 fn build_client_verifier(
     ca_file: &str,
 ) -> Result<Arc<dyn rustls::server::danger::ClientCertVerifier>, KipukaError> {
-    let roots = load_trust_anchors(ca_file)?;
-    let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
-        .build()
-        .map_err(|e| KipukaError::Tls(format!("client verifier build: {e}")))?;
-    Ok(verifier)
+    let roots = load_cert_chain(ca_file)?;
+    let verifier = client_verifier::SyntaClientCertVerifier::new(&roots, true)?;
+    Ok(Arc::new(verifier))
 }
 
 /// Build a client certificate verifier that accepts but does not require
@@ -221,12 +195,9 @@ fn build_client_verifier(
 fn build_optional_client_verifier(
     ca_file: &str,
 ) -> Result<Arc<dyn rustls::server::danger::ClientCertVerifier>, KipukaError> {
-    let roots = load_trust_anchors(ca_file)?;
-    let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
-        .allow_unauthenticated()
-        .build()
-        .map_err(|e| KipukaError::Tls(format!("optional client verifier build: {e}")))?;
-    Ok(verifier)
+    let roots = load_cert_chain(ca_file)?;
+    let verifier = client_verifier::SyntaClientCertVerifier::new(&roots, false)?;
+    Ok(Arc::new(verifier))
 }
 
 /// Map config protocol version strings to rustls `SupportedProtocolVersion`.
