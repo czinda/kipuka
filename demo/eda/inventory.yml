@@ -1,0 +1,8 @@
+[all:vars]
+ansible_user=Administrator
+ansible_connection=ansible.windows.winrm
+ansible_winrm_transport=ntlm
+ansible_winrm_server_cert_validation=ignore
+
+[dc]
+dc01.demo.kipuka

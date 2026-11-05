@@ -1,0 +1,87 @@
+---
+# evict_dc.yml — revoke the compromised DC's certificate, then isolate the host.
+# Driven by rulebook.yml on a compromise-indicators alert.
+#
+# Staging note (matches the talk): revocation and status are automated
+# here; host eviction in production would be gated on approval for an
+# asset this critical. The recording narrates that distinction.
+
+- name: Revoke the compromised domain controller's certificate
+  hosts: localhost
+  gather_facts: false
+  vars:
+    kipuka_base: https://127.0.0.1:18443
+    kipuka_ca: ../../../pki/ca.crt
+    admin_token: "{{ lookup('env', 'KIPUKA_ADMIN_TOKEN') }}"
+    dc_subject: "CN=dc01.demo.kipuka"
+  tasks:
+    - name: Look up the DC certificate serial
+      ansible.builtin.uri:
+        url: "{{ kipuka_base }}/admin/certs?subject={{ dc_subject | urlencode }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ admin_token }}"
+        validate_certs: true
+        ca_path: "{{ kipuka_ca }}"
+        return_content: true
+      register: certs
+
+    - name: Set the serial to revoke
+      ansible.builtin.set_fact:
+        serial: "{{ (certs.json | last).serial }}"
+
+    - name: Revoke the certificate (reason: keyCompromise)
+      ansible.builtin.uri:
+        url: "{{ kipuka_base }}/admin/certs/{{ serial }}/revoke"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ admin_token }}"
+        validate_certs: true
+        ca_path: "{{ kipuka_ca }}"
+        status_code: [200, 204]
+      register: revoke
+
+    - name: Show the revocation result
+      ansible.builtin.debug:
+        msg: >-
+          Revoked serial {{ serial }} at {{ ansible_date_time.time }} —
+          HTTP {{ revoke.status }}.
+
+    - name: Fetch the regenerated CRL and confirm the serial is on it
+      ansible.builtin.uri:
+        url: "{{ kipuka_base }}/.well-known/est/crl"  # adjust to the demo CRL route
+        method: GET
+        validate_certs: true
+        ca_path: "{{ kipuka_ca }}"
+        return_content: true
+      register: crl
+      failed_when: false
+
+    - name: Emit the eviction event for the next stage
+      ansible.builtin.debug:
+        msg: >-
+          {{ {'evicted': true, 'serial': serial, 'host': 'dc01.demo.kipuka'} | to_json }}
+
+- name: Isolate the host (lab-safe eviction)
+  hosts: dc01.demo.kipuka
+  gather_facts: false
+  tasks:
+    - name: Block all inbound traffic except the management path
+      ansible.windows.win_firewall_rule:
+        name: EDA Eviction Isolation
+        direction: in
+        action: block
+        profiles: [domain, private, public]
+        enabled: true
+
+    - name: Verify LDAPS is now refused from this host's perspective
+      ansible.windows.win_shell: |
+        $c = New-Object Net.Sockets.TcpClient
+        try { $c.Connect('dc01.demo.kipuka', 636); 'LDAPS STILL UP' }
+        catch { 'LDAPS REFUSED' } finally { $c.Close() }
+      register: ldaps_check
+      changed_when: false
+
+    - name: Report the containment result
+      ansible.builtin.debug:
+        msg: "Isolation applied; LDAPS check: {{ ldaps_check.stdout_lines[0] }}"

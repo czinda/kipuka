@@ -1,0 +1,27 @@
+; dc.inf — certificate request for the domain controller under the
+; kipuka demo CA. Verified profile per MS-PKCA and the talk's Part 4:
+; Server Authentication + Client Authentication + KDC Authentication
+; EKUs, and the DC FQDN plus the domain DNS name in the SAN. The
+; domain controller's own certificate is not account-mapped, so
+; strong-mapping enforcement (live since Sept 2025) does not apply to
+; it; user certificates are the population that needs the SID
+; extension.
+
+[NewRequest]
+Subject = "CN=dc01.demo.kipuka,O=kipuka demo"
+KeyLength = 2048
+MachineKeySet = TRUE
+Exportable = FALSE
+ProviderName = "Microsoft Software Key Storage Provider"
+RequestType = PKCS10
+
+[Extensions]
+2.5.29.17 = "{text}dns=dc01.demo.kipuka&dns=demo.kipuka"
+2.5.29.37 = "{text}1.3.6.1.5.5.7.3.1,1.3.6.1.5.5.7.3.2,1.3.6.1.5.2.3.5"
+
+[RequestAttributes]
+; Submit the CSR to the kipuka demo CA (or an RHCS DC profile modeled
+; on FreeIPA's KDCs_PKINIT_Certs), then import the response with:
+;   certreq -accept dc-cert.pem
+; and publish the CA chain to NTAuth on the domain:
+;   certutil -dspublish -f ca.crt NTAuthCA
