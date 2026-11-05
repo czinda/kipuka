@@ -18,6 +18,9 @@ perf.data*
 *~
 .DS_Store
 
+# Git worktrees
+.worktrees/
+
 # Environment and secrets
 .env*
 !.env.example
