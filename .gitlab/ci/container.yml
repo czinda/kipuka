@@ -11,6 +11,14 @@ container-verify:
     entrypoint: [""]
   cache: []
   timeout: 60 minutes
+  # Capability probe, not a code gate, on runners whose security policy denies
+  # the devpts mount rootless BuildKit needs (the ITUP ALM fleet does). A
+  # denial here is an infrastructure fact, not a code defect, and leaving it
+  # blocking kept every pipeline red, which masked real failures. Remove this
+  # once a runner administrator establishes the capability (see
+  # docs/ci-gitlab.md); until then the job still surfaces capability status
+  # per pipeline without failing the pipeline on it.
+  allow_failure: true
   variables:
     BUILDKITD_FLAGS: --oci-worker-no-process-sandbox
   script:

@@ -24,7 +24,14 @@ the runner's security policy. `--oci-worker-no-process-sandbox` follows
 [GitLab's BuildKit setup](https://docs.gitlab.com/ci/docker/using_buildkit/).
 AppArmor or namespace denial is an infrastructure failure, not a passing smoke
 test; a runner administrator must resolve it. This capability has not yet been
-established on the shared runner by a completed build.
+established on the shared runner by a completed build — the ITUP ALM fleet
+denies the devpts mount rootless BuildKit requires — so `container-verify`
+runs with `allow_failure: true` as a capability probe. It still reports
+capability status on every pipeline without failing the pipeline on a known
+infrastructure gap; leaving it blocking kept every pipeline red and masked
+real failures (the 2026-11 advisory batch shipped undetected for exactly that
+reason). Remove `allow_failure` once a runner administrator establishes the
+capability.
 
 `container-publish` retains Podman build and runtime `--version` verification on
 a dedicated runner tagged `shell`. The existing project runner (63617) is stale
