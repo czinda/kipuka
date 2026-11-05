@@ -17,4 +17,4 @@ openssl = "0.10"
 openssl-sys = "0.9"
 # Must match the foreign-types major that the `openssl` crate uses (0.3),
 # so `SslRef` implements the `ForeignTypeRef` trait we import for `as_ptr()`.
-foreign-types = "0.3"
+foreign-types = "0.5"
