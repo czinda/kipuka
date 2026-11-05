@@ -21,6 +21,9 @@ perf.data*
 # Git worktrees
 .worktrees/
 
+# Superpowers scratch workspaces
+.superpowers/
+
 # Environment and secrets
 .env*
 !.env.example
