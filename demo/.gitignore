@@ -1,0 +1,9 @@
+# Generated demo artifacts — never commit keys, databases, logs, or config.
+pki/
+state/
+kipuka-demo.toml
+
+# Generated deck + QA renders (large binaries; rebuild from the plan/talk-track).
+*.pptx
+qa/
+.venv/
